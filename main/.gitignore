@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+coach_mvp.db
+server.log
+server.err.log
+.env
+config/ark.json
+rpa/debug_*.png
+xuexi.md

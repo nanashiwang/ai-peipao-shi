@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>陪跑师效率系统 MVP</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- 左侧导航负责切换不同业务页面。 -->
+  <aside class="sidebar">
+    <div class="brand">
+      <strong>陪跑师效率系统</strong>
+      <span>重庆机构试点</span>
+    </div>
+    <nav>
+      <button data-tab="dashboard" class="active">工作台</button>
+      <button data-tab="webChat">陪跑会话</button>
+      <button data-tab="familyDetailPanel">家庭档案</button>
+      <button data-tab="tasks">审核发送</button>
+      <button data-tab="templates">系统设置</button>
+    </nav>
+  </aside>
+
+  <!-- 右侧主内容区承载仪表盘、家庭详情、任务和模板。 -->
+  <main>
+    <!-- 顶部工具栏提供导入、样例载入和批量生成入口。 -->
+    <header class="topbar">
+      <div>
+        <strong id="pageTitle">工作台</strong>
+        <span id="health">检查中</span>
+        <span id="actionStatus"></span>
+      </div>
+      <div class="actions">
+        <label class="file">
+          导入 CSV/XLSX
+          <input id="fileInput" type="file" accept=".csv,.xlsx,.xlsm" />
+        </label>
+        <button id="sampleBtn">载入样例</button>
+        <button id="generateBtn">批量分析</button>
+        <button id="scanBtn">识别打卡</button>
+      </div>
+    </header>
+
+    <!-- 工作台：总览 KPI、待处理事项和最近的 AI 输出。 -->
+    <section id="dashboard" class="panel active">
+      <div id="kpis" class="kpi-grid"></div>
+      <div class="split">
+        <section>
+          <div class="section-head">
+            <h2>今日优先处理</h2>
+            <button onclick="refreshAll()">刷新</button>
+          </div>
+          <div id="priorityList" class="stack"></div>
+        </section>
+        <section>
+          <div class="section-head">
+            <h2>Agent 审核区</h2>
+            <span class="muted">所有 AI 输出先审核，再进入发送任务</span>
+          </div>
+          <div id="recentOutputs" class="stack"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- 陪跑会话：纯网页版陪跑师/家长聊天，用来绕开 RPA 测试 AI 效果。 -->
+    <section id="webChat" class="panel">
+      <div class="section-head">
+        <h2>陪跑会话</h2>
+        <div class="actions left">
+          <button id="seedChatBtn">生成模拟账号与对话</button>
+          <button id="chatReplyBtn">快速生成回复</button>
+          <button id="chatFullAiBtn">完整分析</button>
+        </div>
+      </div>
+      <div class="chat-shell">
+        <aside class="chat-side">
+          <h3>会话与账号</h3>
+          <form id="loginForm" class="compact-form">
+            <input name="username" placeholder="账号" value="coach_yitong" required />
+            <input name="password" type="password" placeholder="密码" value="123456" required />
+            <button>登录</button>
+          </form>
+          <details class="secondary-box">
+            <summary>注册测试账号</summary>
+            <form id="registerForm" class="compact-form">
+              <input name="username" placeholder="新账号" required />
+              <input name="password" type="password" placeholder="密码" required />
+              <input name="display_name" placeholder="显示名" required />
+              <select name="role">
+                <option value="parent">家长</option>
+                <option value="coach">陪跑师</option>
+              </select>
+              <button>注册</button>
+            </form>
+          </details>
+          <div id="loginStatus" class="login-status"></div>
+          <div id="chatConversations" class="stack"></div>
+        </aside>
+        <section class="chat-main">
+          <div class="section-head">
+            <h2 id="chatTitle">请选择会话</h2>
+            <span id="chatMeta" class="muted"></span>
+          </div>
+          <div id="chatMessages" class="chat-messages"></div>
+          <form id="chatForm" class="chat-compose">
+            <textarea name="content" placeholder="输入一条测试消息，直接写入数据库"></textarea>
+            <button>发送</button>
+          </form>
+        </section>
+        <aside class="chat-review">
+          <h2>AI 协助</h2>
+          <div id="chatAiOutputs" class="stack"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- 企微会话：陪跑师手动登记会话名，RPA 后续按这些名称搜索进入。 -->
+    <section id="wecom" class="panel">
+      <div class="section-head">
+        <h2>企微会话</h2>
+        <span class="muted">登记一次会话名后，RPA 使用 UIA 搜索进入该会话并同步聊天记录</span>
+      </div>
+      <form id="wecomForm" class="wecom-form">
+        <input name="parent_nickname" placeholder="企微会话名/家长名，如：艺博展讯" required />
+        <input name="family_id" placeholder="家庭编号，可空" />
+        <input name="child_grade" placeholder="孩子年级，可空" />
+        <input name="coach_name" placeholder="陪跑师，可空" />
+        <button>保存会话</button>
+      </form>
+      <div class="split">
+        <section>
+          <div class="section-head">
+            <h2>已登记会话</h2>
+            <button onclick="refreshAll()">刷新</button>
+          </div>
+          <div id="wecomFamilies" class="stack"></div>
+        </section>
+        <section>
+          <div class="section-head">
+            <h2>同步检查区</h2>
+            <span class="muted">聊天记录和 AI 输出会在这里汇总</span>
+          </div>
+          <div id="wecomPreview"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- 家庭/学员：查看基础列表并触发各类 Agent。 -->
+    <section id="families" class="panel">
+      <div class="section-head">
+        <h2>家庭/学员</h2>
+        <span class="muted">操作入口：查看、画像、周报、回复、打卡</span>
+      </div>
+      <div id="familySummary" class="summary-grid"></div>
+      <div id="familyTable"></div>
+    </section>
+
+    <!-- 家庭详情：聚合消息、画像和快捷 AI 操作。 -->
+    <section id="familyDetailPanel" class="panel">
+      <div class="section-head">
+        <h2>家庭详情</h2>
+        <select id="familySelect"></select>
+      </div>
+      <div id="familyDetail" class="detail-layout"></div>
+    </section>
+
+    <!-- AI画像：展示每个家庭的结构化画像结果。 -->
+    <section id="profiles" class="panel">
+      <div class="section-head">
+        <h2>AI画像</h2>
+        <div class="actions left">
+          <button onclick="batchAgent('profile')">批量生成画像</button>
+          <button onclick="refreshAll()">仅刷新</button>
+        </div>
+      </div>
+      <div id="profileTable"></div>
+    </section>
+
+    <!-- AI周报：展示周报正文、审核状态和任务创建入口。 -->
+    <section id="reports" class="panel">
+      <div class="section-head">
+        <h2>AI周报</h2>
+        <div class="actions left">
+          <button onclick="batchAgent('weekly')">批量生成周报</button>
+          <button id="approveAllBtn">批量审核确认</button>
+          <button id="taskFromReportsBtn">从已审核周报创建任务</button>
+        </div>
+      </div>
+      <div id="reportList" class="stack"></div>
+    </section>
+
+    <!-- AI回复：左侧是家庭列表，中间是上下文，右侧是建议。 -->
+    <section id="replies" class="panel">
+      <div class="three-col">
+        <section>
+          <h2>消息列表</h2>
+          <div id="replyFamilies" class="stack"></div>
+        </section>
+        <section>
+          <h2>聊天上下文</h2>
+          <select id="replyFamilySelect"></select>
+          <textarea id="replyMessage" placeholder="可粘贴家长最新消息；不填则读取该家庭最近一条消息"></textarea>
+          <div class="actions left">
+            <button onclick="runReplyAgent('standard')">生成回复</button>
+            <button onclick="runReplyAgent('gentle')">更温和</button>
+            <button onclick="runReplyAgent('short')">更简短</button>
+          </div>
+          <div id="replyContext" class="messages"></div>
+        </section>
+        <section>
+          <h2>AI回复建议</h2>
+          <div id="replyOutputs" class="stack"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- 打卡/PBL：展示识别结果和提醒话术。 -->
+    <section id="checkins" class="panel">
+      <div class="section-head">
+        <h2>打卡/PBL</h2>
+        <div class="actions left">
+          <button onclick="batchAgent('checkin')">批量识别</button>
+          <button id="taskFromScenesBtn">从白名单场景创建任务</button>
+        </div>
+      </div>
+      <div id="checkinBoard" class="stack"></div>
+    </section>
+
+    <!-- 待发送任务：RPA 真正消费的队列。 -->
+    <section id="tasks" class="panel">
+      <div class="section-head">
+        <h2>待发送任务</h2>
+        <div class="actions left">
+          <button id="sendAllBtn">发送全部</button>
+        </div>
+      </div>
+      <div id="taskTable"></div>
+    </section>
+
+    <!-- 发送日志：记录最终发送状态和失败原因。 -->
+    <section id="logs" class="panel">
+      <div class="section-head">
+        <h2>发送日志</h2>
+        <span class="muted">记录最终发送状态、失败原因和回写结果</span>
+      </div>
+      <div id="logTable"></div>
+    </section>
+
+    <!-- 话术模板：维护 Agent 和发送任务复用的固定话术。 -->
+    <section id="templates" class="panel">
+      <div class="section-head">
+        <h2>话术模板</h2>
+        <span class="muted">固定话术在这里维护，Agent 读取最新启用模板</span>
+      </div>
+      <form id="templateForm" class="template-form">
+        <input name="name" placeholder="模板名" required />
+        <input name="scene" placeholder="场景分类" required />
+        <input name="send_time" placeholder="发送时间，如 08:30" />
+        <textarea name="content" placeholder="正文，支持 {家长称呼} 等变量" required></textarea>
+        <button>保存为新模板</button>
+      </form>
+      <div id="templateTable"></div>
+    </section>
+  </main>
+
+  <!-- 右下角轻量提示，不打断主流程。 -->
+  <div id="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+.DS_Store
+
+# Python/runtime artifacts
+main/.venv/
+main/**/__pycache__/
+main/**/*.pyc
+
+# Local data and logs
+main/coach_mvp.db
+main/server.log
+main/server.err.log
+
+# Private local config
+main/.env
+main/config/ark.json
+main/rpa/config.json
+main/rpa/debug_*.png
+
+# Local scratch notes
+main/xuexi.md

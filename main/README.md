@@ -1,0 +1,364 @@
+# 重庆机构陪跑师效率系统 MVP
+
+本目录是独立本地试点工程，不依赖工作区其他文件。当前版本默认使用 mock AI 和 mock RPA，目标是快速跑通：
+
+`数据导入 -> 家庭归档 -> 周报/画像生成 -> 老师审核 -> 发送任务 -> mock 发送 -> 日志回写`
+
+## 本地运行
+
+```powershell
+cd chongqing-coach-mvp
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+打开后台：
+
+```text
+http://127.0.0.1:8000
+```
+
+## 暂停服务与压缩前释放占用
+
+如果是在当前 PowerShell 窗口里运行的本地服务，直接在运行 `uvicorn` 的窗口按：
+
+```text
+Ctrl + C
+```
+
+如果不确定服务是否还在占用 `8000` 端口，可以用下面命令查找并停止：
+
+```powershell
+Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort,State,OwningProcess
+Stop-Process -Id <上一步看到的 OwningProcess> -Force
+```
+
+如果是 Docker 启动的服务，在项目目录执行：
+
+```powershell
+docker compose down
+```
+
+如果正在运行企业微信 RPA 发送脚本，也需要先停止。若脚本就在当前窗口运行，同样按 `Ctrl + C`。如果找不到窗口，可以先查看相关 Python 进程：
+
+```powershell
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "wecom_sender|mock_sender|uvicorn" } | Select-Object ProcessId,CommandLine
+Stop-Process -Id <上一步看到的 ProcessId> -Force
+```
+
+压缩前建议确认没有服务占用：
+
+```powershell
+Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue
+```
+
+没有输出，通常就可以正常压缩项目目录。
+
+## 一键试点流程
+
+1. 点击「载入样例」导入 5 个家庭的聊天记录。
+2. 进入「家庭/学员」或「家庭详情」，点击画像、周报、回复、打卡/PBL 四个 Agent 按钮。
+3. 在「工作台」或对应 Agent 页面查看结构化结果卡片，人工编辑后保存审核稿。
+4. 点击「加入发送任务」，进入「待发送任务」集中审核最终内容。
+5. 点击「发送全部」或单条「发送」，任务会实际写入网页通讯会话。
+6. 进入「发送日志」查看回写结果，也可以回到「网页通讯」检查新消息。
+
+## Agent 接口与替换点
+
+四个 Agent 已接入豆包/火山 Ark。未配置本地私有配置文件时，系统会自动回退到本地规则逻辑：
+
+```text
+POST /api/agent/profile
+POST /api/agent/weekly-report
+POST /api/agent/reply
+POST /api/agent/checkin-pbl
+```
+
+兼容短路径：
+
+```text
+POST /agent/profile
+POST /agent/weekly-report
+POST /agent/reply
+POST /agent/checkin-pbl
+```
+
+统一输入：
+
+```json
+{
+  "family_id": "FAM001",
+  "message": "可选，AI回复使用",
+  "tone": "standard",
+  "source": "UI按钮触发"
+}
+```
+
+配置豆包 Ark：
+
+```text
+config/ark.json
+```
+
+`config/ark.json` 是私有文件，已写入 `.gitignore`，不要提交。可参考 `config/ark.example.json` 的结构。
+
+Agent 原始 JSON、展示文本、人工审核稿会写入 `ai_outputs` 表。真实 API 调用集中在：
+
+```text
+app/services/ark_client.py
+app/services/agent_service.py
+```
+
+豆包返回失败或 `config/ark.json` 缺失/字段为空时，系统会使用本地规则兜底，并把失败原因写进 Agent 原始 JSON。
+
+## Docker 运行
+
+```powershell
+cd chongqing-coach-mvp
+docker compose up --build
+```
+
+Docker 模式会启动 FastAPI、PostgreSQL、Redis。后台地址仍为：
+
+```text
+http://127.0.0.1:8000
+```
+
+## 数据导入字段
+
+支持 CSV / XLSX，字段可以使用英文或中文：
+
+| 标准字段 | 中文别名 |
+| --- | --- |
+| family_id | 家庭编号、家庭ID |
+| parent_nickname | 家长昵称 |
+| child_grade | 孩子年级 |
+| coach_name | 陪跑师 |
+| message_time | 聊天时间、时间 |
+| speaker | 说话人 |
+| content | 消息内容、内容 |
+| source | 群/单聊来源、来源 |
+| checkin_status | 打卡状态 |
+
+## 真实接口替换点
+
+- `app/services/ai_mock.py`：后续替换 DeepSeek / 通义 / Kimi / 混元适配器。
+- `app/services/scenario.py`：固定场景和打卡关键词规则。
+- `rpa/mock_sender.py`：mock 发送器，不触碰企业微信。
+- `rpa/wecom_sender.py`：真实企业微信 PC 端 RPA 发送器，使用 pywinauto / pywin32 / pyperclip。
+- `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL。
+
+## 企业微信 PC 端真实 RPA
+
+当前 RPA 已放弃截图/OCR 方案，主流程只走“页面登记会话名 -> UIA 搜索进入会话 -> UIA/剪贴板读取聊天文本”。RPA 支持两条链路：
+
+- 发送链路：读取后台待发送任务，定位企微会话，粘贴/发送内容，回写发送日志。
+- 同步链路：读取后台「企微会话」页面登记的会话名，逐个搜索进入会话，抽取聊天文本，回写数据库，并生成 AI回复、家庭画像、AI周报、打卡/PBL 结果。
+
+```powershell
+cd chongqing-coach-mvp
+.\.venv\Scripts\Activate.ps1
+```
+
+如果执行 RPA 时出现 `ModuleNotFoundError: No module named 'pywinauto'`，说明当前命令用到了系统 Python，而不是项目虚拟环境。优先使用下面这种写法：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --diagnose
+```
+
+如果 `.venv` 中也缺依赖，先安装：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 1. 先启动后台服务
+
+```powershell
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### 2. 在页面登记企微会话
+
+打开后台：
+
+```text
+http://127.0.0.1:8000
+```
+
+进入「企微会话」，填写企微搜索框里能搜到的会话名，例如：
+
+```text
+艺博展讯
+```
+
+家庭编号、孩子年级、陪跑师可空。只需要第一次登记，后续 RPA 会从后台家庭列表读取这些会话名，不再扫描红点。
+
+RPA 配置文件仍在：
+
+```text
+rpa/config.json
+```
+
+关键字段：
+
+| 配置 | 说明 |
+| --- | --- |
+| `allowed_conversations` | 允许 RPA 真实发送的企微会话白名单；只影响发送，不影响同步 |
+| `watch_conversations` | 旧未读监听字段，当前主流程不再依赖 |
+| `ignored_conversations` | 不需要同步的企微会话名，RPA 遇到后跳过 |
+| `conversation_family_map` | 兼容旧配置；当前建议直接在页面登记家庭 |
+| `unknown_conversation_policy` | 未知会话处理策略：`prompt` / `ignore` / `skip` |
+| `auto_launch_wecom` | 未找到企微窗口时是否尝试启动企业微信 |
+| `wecom_executable_paths` | 企业微信可执行文件路径列表 |
+| `dry_run` | `true` 只粘贴不发送；`false` 会真实按回车发送 |
+| `auto_generate_ai_reply` | 同步未读消息后是否调用 AI回复 Agent |
+| `auto_create_reply_task` | AI回复是否自动生成待发送任务 |
+| `auto_generate_all_agents` | 同步后是否生成画像、周报、打卡/PBL 等全部 Agent 输出 |
+| `auto_send_ai_replies` | 是否把本轮 AI回复任务直接交给 RPA 发送，默认关闭 |
+| `use_clipboard_chat_extract` | UIA 读不到消息控件时，是否允许剪贴板读取能力存在 |
+| `allow_clipboard_chat_extract` | 默认 `false`，避免误复制其他页面；只在命令行显式加 `--allow-clipboard-copy` 时开启 |
+| `search_result_click_ratio_x/y` | 搜索结果无法通过 UIA 精准点击时，兜底点击的窗口相对坐标 |
+
+建议试点初期保持：
+
+```json
+{
+  "dry_run": true,
+  "auto_generate_ai_reply": true,
+  "auto_create_reply_task": true,
+  "auto_generate_all_agents": true,
+  "auto_send_ai_replies": false
+}
+```
+
+这样 RPA 会同步聊天并生成所有 AI 结果，但不会越过人工审核直接发送。
+
+### 3. 诊断企微窗口和已登记会话
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --diagnose
+```
+
+如果诊断提示没有找到企微窗口，请确认：
+
+- 企业微信 PC 端已登录。
+- 企业微信主窗口没有最小化。
+- 如果企业微信是管理员权限启动，PowerShell 也需要用管理员权限启动。
+- 后台服务 `http://127.0.0.1:8000` 已运行。
+
+只检查窗口：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --check-window
+```
+
+### 4. 直接同步指定会话
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --sync-target "艺博展讯"
+```
+
+执行后：
+
+1. RPA 打开/定位企业微信。
+2. 通过 UIA 进入搜索框，搜索 `艺博展讯`。
+3. 进入对应会话。
+4. 优先用 UIA 抽取聊天文本；默认不会自动 `Ctrl+A` / `Ctrl+C`，避免误复制其他页面。
+4. POST 到 `/api/rpa/conversations/sync`。
+5. 后端写入 `raw_messages`，生成 AI回复、画像、周报、打卡/PBL，保存到前端可见区域。
+6. 如果 `auto_create_reply_task=true`，同时创建待发送任务。
+
+### 5. 同步页面登记的全部会话
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --sync-known
+```
+
+循环同步：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --watch-known
+```
+
+如果日志提示“已进入但 UIA/剪贴板都没有读到聊天文本”，说明当前企业微信版本没有把聊天记录暴露给 UIA，也没有允许复制聊天区文本。此时无需回到截图方案，优先考虑企业微信官方会话存档、聊天导出，或人工粘贴首轮历史记录。
+
+确实需要尝试剪贴板读取时，必须显式加参数：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --sync-target "艺博展讯" --allow-clipboard-copy
+```
+
+脚本会在每次快捷键前确认前台窗口仍是 `WXWork.exe` 的企业微信窗口；如果焦点跑到浏览器、IDE 或其他页面，会立即停止。
+
+### 6. 审核后发送
+
+进入后台：
+
+```text
+http://127.0.0.1:8000
+```
+
+打开「待发送任务」，检查并编辑最终内容。点击页面里的 `发送` 后，任务内容会作为陪跑师消息写入网页通讯会话，并同步生成发送日志。
+
+如果要用企微真实发送后台已有 pending 任务：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py
+```
+
+### 7. 自动发送 AI回复任务，仅建议小范围测试
+
+确认白名单、坐标、会话定位都稳定后，再打开：
+
+```json
+{
+  "dry_run": false,
+  "auto_send_ai_replies": true
+}
+```
+
+然后执行：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --reply-unread
+```
+
+这只会发送本轮未读同步中新建的 AI回复任务，不会批量扫历史 pending 任务。
+
+### 8. 循环监听未读
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --watch-unread
+```
+
+默认只同步并创建任务，不自动发送。轮询间隔由 `unread_poll_interval_seconds` 控制。
+
+如果需要监听模式里直接执行 AI回复链路：
+
+```json
+{
+  "auto_reply_in_watch_mode": true
+}
+```
+
+### 9. 创建一条测试发送任务
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py --create-test-task --target "艺博展讯" --content "RPA真实发送测试"
+```
+
+再执行：
+
+```powershell
+.\.venv\Scripts\python.exe rpa\wecom_sender.py
+```
+
+## 当前边界
+
+- mock 发送器不触碰企业微信；真实发送器会控制当前已登录的企业微信 PC 端。
+- Agent 已支持豆包/火山 Ark；未配置 `ARK_API_KEY` / `ARK_ENDPOINT_ID` 时使用本地规则兜底。
+- 企微 RPA 当前抽取“当前可见聊天文本”，不是企微官方会话存档；如需全量稳定同步，后续应接企微会话存档或 SCRM 接口。
+- 定时任务先通过后台按钮触发，后续可加 APScheduler/Celery Beat。
