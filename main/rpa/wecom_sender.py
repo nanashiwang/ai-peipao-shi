@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
 
 try:
     import pyperclip
@@ -126,6 +126,11 @@ def save_config(config: dict, path: Path):
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# 强制直连后端，忽略被控端机器上的系统/环境代理（V2Ray/Clash 等）。
+# 否则 urllib 默认会跟随系统代理，代理转发不到服务器时会返回 503，导致心跳/领取全部失败。
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
+
+
 # 对后端接口发起 JSON 请求，是 RPA 和后台的数据桥梁。
 def request_json(base_url: str, path: str, method: str = "GET", payload: dict | None = None, extra_headers: dict | None = None):
     data = None
@@ -137,7 +142,7 @@ def request_json(base_url: str, path: str, method: str = "GET", payload: dict | 
         headers.update(extra_headers)
     req = Request(f"{base_url.rstrip('/')}{path}", data=data, headers=headers, method=method)
     try:
-        with urlopen(req, timeout=10) as response:
+        with _DIRECT_OPENER.open(req, timeout=10) as response:
             body = response.read().decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
