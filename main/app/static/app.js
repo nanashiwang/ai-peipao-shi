@@ -8,6 +8,7 @@ const state = {
   tasks: [],
   logs: [],
   devices: [],
+  arkConfig: {},
   templates: [],
   outputs: [],
   accounts: [],
@@ -544,6 +545,16 @@ function renderDevices() {
   ], state.devices);
 }
 
+// 渲染 ARK 云端定位密钥配置状态。
+function renderArkConfig() {
+  const el = $("arkStatus");
+  if (!el) return;
+  const a = state.arkConfig || {};
+  el.textContent = a.configured
+    ? `已配置：${a.api_key_masked}　模型 ${a.endpoint_id || "qwen-vl-plus"}`
+    : "未配置 —— 被控端云端定位需要它，请填入阿里百炼 API-KEY";
+}
+
 // 渲染模板列表。
 function renderTemplates() {
   $("templateTable").innerHTML = table([
@@ -571,13 +582,14 @@ function renderAll() {
   renderTasks();
   renderLogs();
   renderDevices();
+  renderArkConfig();
   renderTemplates();
 }
 
 // 刷新所有内容。
 async function refreshAll() {
   return withAction("刷新数据", async () => {
-    const [families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -588,8 +600,9 @@ async function refreshAll() {
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
       api("/api/devices"),
+      api("/api/ark-config").catch(() => ({})),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices, arkConfig });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
@@ -899,6 +912,18 @@ $("deviceForm").onsubmit = async (event) => {
     const dev = await api("/api/devices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: data.device_id, name: data.name || "", conversations }) });
     event.target.reset();
     toast(`设备已添加：${dev.device_id}，可在列表点「下载接入包」发给对方`);
+    await refreshAll();
+  });
+};
+
+// 保存 ARK 云端定位密钥。
+$("arkConfigForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await withAction("保存ARK密钥", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    await api("/api/ark-config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: data.api_key, endpoint_id: data.endpoint_id || "qwen-vl-plus" }) });
+    event.target.reset();
+    toast("ARK 密钥已保存并生效");
     await refreshAll();
   });
 };

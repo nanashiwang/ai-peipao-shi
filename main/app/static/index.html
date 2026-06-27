@@ -266,6 +266,15 @@
     <!-- 话术模板：维护 Agent 和发送任务复用的固定话术。 -->
     <section id="templates" class="panel">
       <div class="section-head">
+        <h2>云端定位密钥（阿里 ARK）</h2>
+        <span class="muted" id="arkStatus">检查中…</span>
+      </div>
+      <form id="arkConfigForm" class="template-form">
+        <input name="api_key" placeholder="阿里百炼 API-KEY (sk-...)" required />
+        <input name="endpoint_id" placeholder="模型名，默认 qwen-vl-plus" />
+        <button>保存密钥</button>
+      </form>
+      <div class="section-head">
         <h2>话术模板</h2>
         <span class="muted">固定话术在这里维护，Agent 读取最新启用模板</span>
       </div>

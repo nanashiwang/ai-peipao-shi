@@ -26,16 +26,10 @@ fi
 docker --version
 echo ""
 
-echo "== 2/5 检查私密配置 config/ark.json =="
-if [ ! -f config/ark.json ]; then
-  cp -n config/ark.example.json config/ark.json 2>/dev/null || true
-  echo "⚠  已从示例创建 config/ark.json，请编辑它填入阿里 ARK（百炼）的："
-  echo "     api_key      —— 阿里云百炼 API-KEY（sk-...）"
-  echo "     endpoint_id  —— 模型名，如 qwen-vl-plus（被控端云端定位用）"
-  echo "   没有它：被控端无法用云端定位、AI 功能不可用。填好后建议重跑本脚本。"
-  echo "   现在仍继续启动后端（基础功能可用）。"
-  echo ""
-fi
+echo "== 2/5 准备配置目录 =="
+mkdir -p config
+echo "  ARK 云端定位密钥改为「部署后在看板 → 系统设置 页在线配置」，这里无需填写。"
+echo ""
 
 echo "== 3/5 构建并启动（api + postgres）=="
 docker compose up -d --build
@@ -60,6 +54,7 @@ docker compose ps
 echo ""
 echo "✅ 后端已就绪：http://<服务器公网IP>:8000"
 echo "   - 总控看板 + 设备监控 + 接入包下载都在这个地址"
+echo "   - 【重要】首次部署后，进看板「系统设置」填入阿里 ARK 密钥（被控端云端定位需要）"
 echo "   - 被控端 config 里的 api_base_url 要填这个公网地址"
 echo ""
 echo "常用命令："

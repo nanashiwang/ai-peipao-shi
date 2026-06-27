@@ -114,6 +114,13 @@ class HeartbeatIn(BaseModel):
     conversations: list[str] = []
 
 
+# 控制台在线配置阿里 ARK（百炼）云端定位密钥。
+class ArkConfigIn(BaseModel):
+    api_key: str
+    endpoint_id: str = "qwen-vl-plus"
+    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
 # RPA 同步会话里的单条消息结构。
 class RpaMessageIn(BaseModel):
     speaker: str = ""
@@ -1397,3 +1404,56 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
             claimed.append(task)
     db.commit()
     return [as_dict(db.get(SendTask, t.id)) for t in claimed]
+
+
+# ============ ARK（阿里百炼）云端定位密钥 · 控制台在线配置 ============
+ARK_CONFIG_PATH = ROOT / "config" / "ark.json"
+
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    return (key[:6] + "..." + key[-4:]) if len(key) > 12 else "已配置"
+
+
+# 读取当前 ARK 配置（api_key 脱敏，仅供看板展示是否已配）。
+@app.get("/api/ark-config")
+def get_ark_config():
+    if ARK_CONFIG_PATH.exists():
+        try:
+            data = json.loads(ARK_CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        key = str(data.get("api_key", ""))
+        return {
+            "configured": bool(key),
+            "api_key_masked": _mask_key(key),
+            "endpoint_id": data.get("endpoint_id", ""),
+            "base_url": data.get("base_url", ""),
+        }
+    return {"configured": False, "api_key_masked": "", "endpoint_id": "", "base_url": ""}
+
+
+# 保存 ARK 配置：写入 config/ark.json 并清缓存使其立即生效；被控端下载接入包时会带上这份配置。
+@app.post("/api/ark-config")
+def save_ark_config(payload: ArkConfigIn):
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(400, "api_key 不能为空")
+    ARK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    model = payload.endpoint_id.strip() or "qwen-vl-plus"
+    cfg = {
+        "base_url": payload.base_url.strip() or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": api_key,
+        "endpoint_id": model,
+        "model_name": model,
+    }
+    ARK_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 清掉 ark_client 的 lru_cache，使新密钥立即生效（否则要重启后端）。
+    try:
+        from app.services.ark_client import ark_config, ark_client
+        ark_config.cache_clear()
+        ark_client.cache_clear()
+    except Exception as exc:
+        print(f"ark_cache_clear_failed detail={exc}")
+    return {"ok": True, "endpoint_id": model}

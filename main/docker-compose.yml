@@ -12,8 +12,8 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      # 挂载 ark.json（云端定位/AI 密钥）——镜像内不打包密钥，部署时挂载
-      - ./config:/app/config:ro
+      # 挂载 ark.json（云端定位密钥）——读写：后端「系统设置」在线保存密钥会写回这里持久化
+      - ./config:/app/config
       - ./samples:/app/samples:ro
 
   postgres:
