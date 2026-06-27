@@ -1,0 +1,18 @@
+# 构建镜像时排除的文件（敏感/本地/构建产物不进镜像与构建上下文）
+**/__pycache__/
+**/*.pyc
+.venv/
+.git/
+*.db
+server.log
+server.err.log
+
+# 私密配置（通过 docker-compose 挂载提供，不打进镜像）
+config/ark.json
+rpa/config.json
+
+# 本地临时/调试产物
+.tmp_*
+.docker_wheelhouse/
+rpa/debug_*.png
+xuexi.md
