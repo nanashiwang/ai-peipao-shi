@@ -43,6 +43,15 @@ except ModuleNotFoundError as exc:
     sys.exit(1)
 
 
+# Pillow 与 PaddleOCR 是“整屏截图 + 本地 OCR 定位”新链路的可选依赖；
+# 没装也不阻断旧的 UIA/剪贴板链路加载，真正用到时再抛带安装提示的错误。
+try:
+    from PIL import Image, ImageGrab
+except ModuleNotFoundError:
+    Image = None
+    ImageGrab = None
+
+
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 DEFAULT_CONFIG = ROOT / "config.json"
@@ -52,6 +61,24 @@ FALLBACK_CONFIG = ROOT / "config.example.json"
 # 统一的 RPA 异常类型，便于上层捕获并打印友好提示。
 class RpaError(RuntimeError):
     pass
+
+
+# PaddleOCR 引擎单例：首次实例化会加载本地模型，开销较大，全程复用一个实例。
+_OCR_ENGINE = None
+
+
+def get_ocr_engine():
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        try:
+            from paddleocr import PaddleOCR
+        except ModuleNotFoundError as exc:
+            raise RpaError(
+                "本地 OCR 依赖未安装。请在 RPA 虚拟环境执行：\n"
+                "  .\\.venv\\Scripts\\python.exe -m pip install paddlepaddle paddleocr\n"
+            ) from exc
+        _OCR_ENGINE = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+    return _OCR_ENGINE
 
 
 # 这些词是企微界面里的通用导航/功能词，不能当作真实会话名。
@@ -100,12 +127,14 @@ def save_config(config: dict, path: Path):
 
 
 # 对后端接口发起 JSON 请求，是 RPA 和后台的数据桥梁。
-def request_json(base_url: str, path: str, method: str = "GET", payload: dict | None = None):
+def request_json(base_url: str, path: str, method: str = "GET", payload: dict | None = None, extra_headers: dict | None = None):
     data = None
     headers = {}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
+    if extra_headers:
+        headers.update(extra_headers)
     req = Request(f"{base_url.rstrip('/')}{path}", data=data, headers=headers, method=method)
     try:
         with urlopen(req, timeout=10) as response:
@@ -151,7 +180,60 @@ def capture_debug_image(window, config: dict, reason: str):
     return ""
 
 
+def capture_fullscreen_image(reason: str = "scan", config: dict | None = None) -> Path:
+    """整屏截图。新版企微是自绘渲染，pywinauto 的 capture_as_image（PrintWindow）会黑屏，
+    所以改用 PowerShell 的 CopyFromScreen 截整个虚拟屏；失败再回退到 PIL ImageGrab。"""
+    safe_reason = re.sub(r"[^0-9A-Za-z一-鿿_-]+", "_", reason)[:24] or "scan"
+    path = ROOT / f"debug_wecom_{safe_reason}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
+        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; "
+        "$g=[System.Drawing.Graphics]::FromImage($bmp); "
+        "$g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size); "
+        f"$bmp.Save('{path.as_posix()}',[System.Drawing.Imaging.ImageFormat]::Png); "
+        "$g.Dispose(); $bmp.Dispose()"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            check=True, timeout=20,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if path.exists():
+            return path
+    except Exception as exc:
+        print(f"powershell_capture_failed detail={exc}")
+    if ImageGrab is None:
+        raise RpaError("整屏截图失败，且未安装 Pillow 作后备。请先安装 OCR 依赖。")
+    ImageGrab.grab(all_screens=True).save(path)
+    return path
+
+
+def screenshot_wecom(window, config: dict, reason: str = "scan"):
+    """把企微提到最前并最大化再整屏截图。返回 (截图路径, 截图时窗口物理矩形 dict)。
+    这是所有 OCR 定位的统一入口：activate 把企微带到最前 + maximize 占满屏，
+    避免被其它窗口（如终端）遮挡导致 OCR 截到无关文字，且让会话列表布局稳定。"""
+    activate(window)
+    ensure_foreground_wecom(window, config)
+    if config.get("maximize_before_shot", True):
+        try:
+            window.maximize()
+        except Exception as exc:
+            print(f"maximize_failed detail={exc}")
+    time.sleep(float(config.get("screenshot_settle_seconds", 0.4)))
+    rect = window.rectangle()
+    path = capture_fullscreen_image(reason, config)
+    return path, {"left": rect.left, "top": rect.top, "width": rect.width(), "height": rect.height()}
+
+
+# 兼容旧调用点（detect_unread_badges_from_screenshot）：返回整屏截图路径。
 def capture_window_image(window, config: dict, reason: str = "scan") -> Path:
+    return capture_fullscreen_image(reason, config)
+
+
+# 旧的 PrintWindow 截图实现已废弃（对 Flutter 自绘窗口会黑屏），保留函数体但不再被调用。
+def _legacy_capture_window_image(window, config: dict, reason: str = "scan") -> Path:
     raise RpaError("截图方案已停用：当前 RPA 只使用 UIA/剪贴板链路。")
     safe_reason = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", reason)[:24] or "scan"
     path = ROOT / f"debug_wecom_{safe_reason}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
@@ -483,21 +565,257 @@ def open_search_result(window, conversation: str, config: dict):
     time.sleep(0.2)
 
 
-# 聚焦企微搜索框并输入会话名。
-def search_conversation(window, conversation: str, config: dict):
+# ============ 视觉定位（整屏截图 + 本地 OCR，ARK Vision 兜底）============
+# 新版企业微信是 Flutter/CEF 自绘渲染，UIA 读不到控件，Ctrl+F 也不触发搜索框。
+# 改用“整屏截图 -> 本地 OCR 识别会话名/标题 -> 相对窗口比例点击”的视觉方案。
+
+
+def get_screen_scale(image_width: int) -> float:
+    """截图(逻辑像素) 与 窗口物理像素 之间的缩放比 = 物理屏宽 / 截图宽。
+    DESKTOPHORZRES(118) 返回真实物理分辨率，不受进程 DPI 感知影响。单主屏假设。"""
+    try:
+        if image_width:
+            hdc = ctypes.windll.user32.GetDC(0)
+            phys_w = ctypes.windll.gdi32.GetDeviceCaps(hdc, 118)
+            ctypes.windll.user32.ReleaseDC(0, hdc)
+            if phys_w:
+                return float(phys_w) / float(image_width)
+    except Exception:
+        pass
+    return 1.0
+
+
+def _cleanup_debug_image(path, config: dict):
+    if config.get("keep_debug_screenshots", False):
+        return
+    try:
+        Path(path).unlink()
+    except Exception:
+        pass
+
+
+def click_window_ratio(window, rx: float, ry: float, config: dict):
+    """按相对企微窗口的比例点击。rx/ry∈[0,1]，用 window.rectangle()（物理像素）换算，
+    自动抵消屏幕 DPI 缩放。点击前只 ensure_foreground，不再 activate（activate 会 restore 改尺寸）。"""
+    ensure_foreground_wecom(window, config)
+    rect = window.rectangle()
+    x = int(rect.left + rx * rect.width())
+    y = int(rect.top + ry * rect.height())
+    mouse.click(button="left", coords=(x, y))
+    return x, y
+
+
+def ocr_region(image_path, region_ratio, win_rect_img: dict, config: dict) -> list[dict]:
+    """对整屏截图中“企微窗口的某个比例区域”做 OCR。
+    region_ratio=[x0,y0,x1,y1] 相对窗口；win_rect_img 是截图时窗口的物理矩形。
+    返回 [{text, score, rx, ry}]，rx/ry 是命中文字中心相对窗口的比例（可直接喂 click_window_ratio）。"""
+    if Image is None:
+        raise RpaError("未安装 Pillow，无法读取截图做 OCR。请先安装 OCR 依赖。")
+    import numpy as np
+
+    image = Image.open(image_path).convert("RGB")
+    img_w, img_h = image.size
+    scale = get_screen_scale(img_w)
+    # 窗口物理矩形换算到截图(逻辑像素)坐标系
+    ll = win_rect_img["left"] / scale
+    tt = win_rect_img["top"] / scale
+    ww = win_rect_img["width"] / scale
+    hh = win_rect_img["height"] / scale
+    x0 = int(max(0, min(ll + region_ratio[0] * ww, img_w)))
+    y0 = int(max(0, min(tt + region_ratio[1] * hh, img_h)))
+    x1 = int(max(0, min(ll + region_ratio[2] * ww, img_w)))
+    y1 = int(max(0, min(tt + region_ratio[3] * hh, img_h)))
+    if x1 <= x0 or y1 <= y0:
+        return []
+    crop = image.crop((x0, y0, x1, y1))
+    raw = get_ocr_engine().ocr(np.array(crop), cls=True)
+    lines = raw[0] if raw and raw[0] else []
+    min_score = float(config.get("ocr_min_score", 0.5))
+    items = []
+    for entry in lines:
+        try:
+            box, (text, score) = entry
+        except Exception:
+            continue
+        if float(score) < min_score:
+            continue
+        cx = x0 + sum(p[0] for p in box) / len(box)
+        cy = y0 + sum(p[1] for p in box) / len(box)
+        items.append({
+            "text": str(text).strip(),
+            "score": float(score),
+            "rx": (cx - ll) / ww,
+            "ry": (cy - tt) / hh,
+        })
+    return items
+
+
+def find_text_in_ocr(items: list[dict], target: str, config: dict) -> dict | None:
+    """在 OCR 结果里找目标会话名：精确包含优先，否则按相似度取最相似且达阈值的。"""
+    import difflib
+
+    target = (target or "").strip()
+    if not target:
+        return None
+    exact = [it for it in items if target in it["text"] and it["text"] not in CHAT_TEXT_BLACKLIST]
+    if exact:
+        return max(exact, key=lambda it: it["score"])
+    min_ratio = float(config.get("ocr_match_min_ratio", 0.6))
+    best = None
+    best_ratio = 0.0
+    for it in items:
+        if it["text"] in CHAT_TEXT_BLACKLIST:
+            continue
+        ratio = difflib.SequenceMatcher(None, target, it["text"]).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best = it
+    if best and best_ratio >= min_ratio:
+        return {**best, "match_ratio": best_ratio}
+    return None
+
+
+def ark_locate_in_region(image_path, target: str, config: dict, win_rect_img: dict, region_ratio) -> dict | None:
+    """ARK Vision 兜底：裁出窗口 region 区域图，让视觉模型给目标中心相对位置，换算回窗口比例。
+    use_ark_vision_fallback=false 或 ARK 未配置/调用失败 -> 返回 None（静默降级，不阻断主路径）。"""
+    if not config.get("use_ark_vision_fallback", True) or Image is None:
+        return None
+    try:
+        call_ark_vision_json = import_ark_vision()
+    except Exception as exc:
+        print(f"ark_unavailable detail={exc}")
+        return None
+    image = Image.open(image_path).convert("RGB")
+    img_w, img_h = image.size
+    scale = get_screen_scale(img_w)
+    ll = win_rect_img["left"] / scale
+    tt = win_rect_img["top"] / scale
+    ww = win_rect_img["width"] / scale
+    hh = win_rect_img["height"] / scale
+    x0 = int(max(0, min(ll + region_ratio[0] * ww, img_w)))
+    y0 = int(max(0, min(tt + region_ratio[1] * hh, img_h)))
+    x1 = int(max(0, min(ll + region_ratio[2] * ww, img_w)))
+    y1 = int(max(0, min(tt + region_ratio[3] * hh, img_h)))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    crop_path = ROOT / f"debug_ark_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    image.crop((x0, y0, x1, y1)).save(crop_path)
+    try:
+        data = call_ark_vision_json(
+            "你是企业微信界面定位助手。在给定截图里找到名为目标的会话或聊天标题，"
+            "只输出 JSON，不要 Markdown。字段：found(true/false), x_ratio, y_ratio。"
+            "x_ratio/y_ratio 是目标中心相对整张图的位置比例(0~1)。找不到则 found=false。",
+            str(crop_path),
+            f"目标名称：{target}",
+        )
+    except Exception as exc:
+        print(f"ark_call_failed detail={exc}")
+        return None
+    finally:
+        _cleanup_debug_image(crop_path, config)
+    if not data or not data.get("found"):
+        return None
+    try:
+        ax = float(data.get("x_ratio"))
+        ay = float(data.get("y_ratio"))
+    except Exception:
+        return None
+    rx = region_ratio[0] + ax * (region_ratio[2] - region_ratio[0])
+    ry = region_ratio[1] + ay * (region_ratio[3] - region_ratio[1])
+    return {"rx": rx, "ry": ry, "text": target, "score": 1.0, "via": "ark"}
+
+
+def locate_and_open_conversation(window, target: str, config: dict) -> bool:
+    """阶段1：截图会话列表区 -> 本地 OCR 定位目标会话 -> 点击打开；OCR 未命中走 ARK 兜底，
+    再不行且开启搜索兜底则 search_then_locate；否则报错中止（绝不盲点坐标）。"""
+    region = tuple(config.get("conv_list_region", [0.0, 0.10, 0.30, 1.0]))
+    img, rect = screenshot_wecom(window, config, f"locate_{target}")
+    try:
+        if config.get("use_local_ocr", True):
+            hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
+            if hit:
+                print(f"locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f} score={hit['score']:.2f}")
+                click_window_ratio(window, hit["rx"], hit["ry"], config)
+                time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+                return True
+        hit = ark_locate_in_region(img, target, config, rect, region)
+        if hit:
+            print(f"locate target={target} via=ark rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
+            click_window_ratio(window, hit["rx"], hit["ry"], config)
+            time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+            return True
+    finally:
+        _cleanup_debug_image(img, config)
+    if config.get("enable_search_fallback", False):
+        return search_then_locate(window, target, config)
+    raise RpaError(f"无法在会话列表定位「{target}」（OCR/ARK 均未命中），已中止，绝不盲点坐标。")
+
+
+def search_then_locate(window, target: str, config: dict) -> bool:
+    """阶段2：点击搜索框(不用 Ctrl+F) -> 输入会话名 -> 截图搜索结果区 -> OCR/ARK 定位 -> 点击。
+    覆盖目标会话不在当前可见列表的情况。"""
     activate(window)
     ensure_foreground_wecom(window, config)
-    hotkey(config.get("search_hotkey", ["ctrl", "f"]))
-    time.sleep(0.3)
+    box = tuple(config.get("search_box_region", [0.0, 0.0, 0.30, 0.07]))
+    click_window_ratio(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, config)
+    time.sleep(0.4)
     ensure_foreground_wecom(window, config)
     keyboard.send_keys("^a")
     time.sleep(0.1)
-    pyperclip.copy(conversation)
-    ensure_foreground_wecom(window, config)
+    pyperclip.copy(target)
     keyboard.send_keys("^v")
     time.sleep(float(config.get("search_wait_seconds", 1.5)))
-    ensure_foreground_wecom(window, config)
-    open_search_result(window, conversation, config)
+    region = tuple(config.get("search_result_region", [0.0, 0.07, 0.30, 1.0]))
+    img, rect = screenshot_wecom(window, config, f"search_{target}")
+    try:
+        if config.get("use_local_ocr", True):
+            hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
+            if hit:
+                print(f"search_locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
+                click_window_ratio(window, hit["rx"], hit["ry"], config)
+                time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+                return True
+        hit = ark_locate_in_region(img, target, config, rect, region)
+        if hit:
+            print(f"search_locate target={target} via=ark")
+            click_window_ratio(window, hit["rx"], hit["ry"], config)
+            time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+            return True
+    finally:
+        _cleanup_debug_image(img, config)
+    raise RpaError(f"搜索后仍无法定位「{target}」，已中止。")
+
+
+def verify_active_conversation(window, target: str, config: dict):
+    """发送前安全闸门：截图聊天区顶部标题 -> OCR 确认==target 才放行。防发错群。
+    verify_block_on_mismatch=true 时不匹配直接 raise；false 时仅告警。"""
+    if not config.get("verify_active_conversation_enabled", True):
+        return
+    import difflib
+
+    region = tuple(config.get("chat_title_region", [0.30, 0.0, 0.80, 0.13]))
+    img, rect = screenshot_wecom(window, config, f"verify_{target}")
+    try:
+        ok = False
+        if config.get("use_local_ocr", True):
+            min_ratio = float(config.get("title_match_min_ratio", 0.7))
+            for it in ocr_region(img, region, rect, config):
+                if target in it["text"] or difflib.SequenceMatcher(None, target, it["text"]).ratio() >= min_ratio:
+                    ok = True
+                    break
+        if not ok:
+            ok = ark_locate_in_region(img, target, config, rect, region) is not None
+    finally:
+        _cleanup_debug_image(img, config)
+    if not ok:
+        if config.get("verify_block_on_mismatch", True):
+            raise RpaError(f"发送前校验失败：当前聊天标题不是「{target}」，已阻止发送（防发错群）。")
+        print(f"WARN 未确认当前会话为「{target}」，但 verify_block_on_mismatch=false，继续。")
+
+
+# 聚焦/打开目标会话：新版企微改用截图+OCR 视觉定位（见 locate_and_open_conversation）。
+def search_conversation(window, conversation: str, config: dict):
+    locate_and_open_conversation(window, conversation, config)
 
 
 # 采集左侧会话列表中可见的控件，用于判断是否存在未读红点。
@@ -774,13 +1092,52 @@ def assert_conversation(window, conversation: str):
 
 
 # 计算消息输入区的位置并点击。
+# 把企微窗口设为/取消置顶（HWND_TOPMOST）。置顶后即使别的窗口占着前台焦点，
+# 企微也显示在最上层，鼠标坐标点击会落在企微身上并把输入焦点交给它——
+# 用来绕过 Windows 对后台进程 SetForegroundWindow 的限制。
+def set_window_topmost(window, on: bool):
+    try:
+        flag = win32con.HWND_TOPMOST if on else win32con.HWND_NOTOPMOST
+        win32gui.SetWindowPos(
+            int(window.handle), flag, 0, 0, 0, 0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
+        )
+    except Exception as exc:
+        print(f"set_window_topmost_failed on={on} detail={exc}")
+
+
 def focus_message_input(window, config: dict):
-    ensure_foreground_wecom(window, config)
+    # 定位/校验阶段把窗口最大化便于 OCR，但最大化状态下企微输入框会跑到可视区之外、
+    # input_click_ratio 点不到。发送前用 activate 强制企微前台并 restore 成非最大化。
+    if config.get("restore_before_input", True):
+        try:
+            activate(window)
+            time.sleep(float(config.get("restore_settle_seconds", 0.5)))
+        except Exception as exc:
+            print(f"restore_before_input_failed detail={exc}")
+    # 置顶企微，确保它显示在最上层、坐标点击落在它身上（绕过前台抢占限制）。
+    if config.get("topmost_during_send", True):
+        set_window_topmost(window, True)
+        time.sleep(0.2)
     rect = window.rectangle()
-    x = int(rect.left + rect.width() * float(config.get("input_click_ratio_x", 0.68)))
-    y = int(rect.top + rect.height() * float(config.get("input_click_ratio_y", 0.78)))
+    x = int(rect.left + rect.width() * float(config.get("input_click_ratio_x", 0.45)))
+    y = int(rect.top + rect.height() * float(config.get("input_click_ratio_y", 0.85)))
+    # 先点一次输入框：这一下既激活企微（点击会把焦点交给被点的窗口）、又把光标放进输入框。
     mouse.click(button="left", coords=(x, y))
     time.sleep(0.3)
+    ensure_foreground_wecom(window, config)
+    # 退出可能的消息多选模式：多选时底部是多选操作栏而非输入框，且 Ctrl+A 会“全选消息”。
+    # 退完多选后再点一次输入框（多选退出后输入框才重新出现）。
+    if config.get("esc_before_input", True):
+        for _ in range(int(config.get("esc_repeat", 2))):
+            keyboard.send_keys("{ESC}")
+            time.sleep(0.2)
+        mouse.click(button="left", coords=(x, y))
+        time.sleep(0.3)
+        ensure_foreground_wecom(window, config)
+
+
+
 
 
 # 过滤掉导航词、时间戳和过短文本，避免把 UI 文本当聊天内容。
@@ -968,8 +1325,7 @@ def sync_target_conversation(config: dict, target: str, family_id: str = "", fie
     check_api(config)
     window = find_wecom_window(config)
     search_conversation(window, target, config)
-    if config.get("strict_uia_conversation_validation", False):
-        assert_conversation(window, target)
+    verify_active_conversation(window, target, config)
     messages = extract_chat_messages(window, target, config)
     if not messages:
         raise RpaError(f"已进入「{target}」，但 UIA/剪贴板都没有读到聊天文本。请确认聊天区可见，或企微是否禁用了文本复制。")
@@ -1049,17 +1405,29 @@ def send_message(window, content: str, config: dict):
     signature = config.get("append_signature", "").strip()
     if signature:
         text = f"{text}\n{signature}"
-    focus_message_input(window, config)
-    ensure_foreground_wecom(window, config)
-    pyperclip.copy(text)
-    ensure_foreground_wecom(window, config)
-    keyboard.send_keys("^v")
-    time.sleep(0.4)
-    if config.get("dry_run", True):
-        return "dry_run", "DRY_RUN: 已定位会话并粘贴内容，未按发送键。"
-    ensure_foreground_wecom(window, config)
-    hotkey(config.get("send_hotkey", ["enter"]))
-    return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"
+    try:
+        focus_message_input(window, config)
+        ensure_foreground_wecom(window, config)
+        # 清空输入框：focus_message_input 已退出多选并点中输入框，此处 Ctrl+A 只全选输入框文本。
+        # 若担心焦点未落在输入框（会误触发消息多选），把 clear_input_before_paste 关掉即可。
+        if config.get("clear_input_before_paste", True):
+            keyboard.send_keys("^a")
+            time.sleep(0.1)
+            keyboard.send_keys("{DELETE}")
+            time.sleep(0.1)
+        pyperclip.copy(text)
+        ensure_foreground_wecom(window, config)
+        keyboard.send_keys("^v")
+        time.sleep(0.4)
+        if config.get("dry_run", True):
+            return "dry_run", "DRY_RUN: 已定位会话并粘贴内容，未按发送键。"
+        ensure_foreground_wecom(window, config)
+        hotkey(config.get("send_hotkey", ["enter"]))
+        return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"
+    finally:
+        # 无论成功/失败/异常，都取消置顶，避免企微一直压在所有窗口最上层。
+        if config.get("topmost_during_send", True):
+            set_window_topmost(window, False)
 
 
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
@@ -1070,8 +1438,7 @@ def process_task(task: dict, config: dict):
         return "skipped", f"目标「{target}」不在白名单，已跳过。"
     window = find_wecom_window(config)
     search_conversation(window, target, config)
-    if config.get("strict_uia_conversation_validation", False):
-        assert_conversation(window, target)
+    verify_active_conversation(window, target, config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
     return send_message(window, task.get("content") or "", config)
 
 
@@ -1082,7 +1449,9 @@ def send_task_and_record(task: dict, config: dict):
         status, detail = process_task(task, config)
     except Exception as exc:
         status, detail = "failed", str(exc)
-    request_json(config["api_base_url"], f"/api/send-tasks/{task_id}/result", method="POST", payload={"status": status, "detail": detail})
+    request_json(config["api_base_url"], f"/api/send-tasks/{task_id}/result", method="POST",
+                 payload={"status": status, "detail": detail, "device_id": config.get("device_id", "")},
+                 extra_headers=device_headers(config))
     print(f"task={task_id} target={task.get('target_name')} status={status} detail={detail}")
     return status, detail
 
@@ -1117,14 +1486,48 @@ def reply_unread_conversations(config: dict, config_path: Path):
         print("auto_send_ai_replies=false: AI回复已生成待发送任务，请在后台审核后发送。")
 
 
-# 发送队列中的待发送任务，属于“只处理后台已确认任务”的主循环。
+# 设备鉴权请求头：让后端识别是哪台被控机。没配 device_id 时返回空（走旧单机模式）。
+def device_headers(config: dict) -> dict:
+    device_id = config.get("device_id", "")
+    if not device_id:
+        return {}
+    return {"X-Device-Id": device_id, "X-Device-Token": config.get("device_token", "")}
+
+
+# 向后端上报心跳：在线状态、企微是否可用、本机负责的会话（供后端动态领取过滤）。
+def send_heartbeat(config: dict):
+    device_id = config.get("device_id", "")
+    if not device_id:
+        return
+    wecom_ok = "N"
+    try:
+        wins = find_wecom_windows(Desktop(backend="uia"), config)
+        wecom_ok = "Y" if wins else "N"
+    except Exception:
+        wecom_ok = "N"
+    payload = {"wecom_ok": wecom_ok, "detail": "", "conversations": watched_conversations(config)}
+    try:
+        request_json(config["api_base_url"], f"/api/devices/{device_id}/heartbeat",
+                     method="POST", payload=payload, extra_headers=device_headers(config))
+    except Exception as exc:
+        print(f"heartbeat_failed detail={exc}")
+
+
+# 发送队列中的待发送任务：配了 device_id 走多被控端领取，否则拉全部筛 pending（兼容旧单机）。
 def run_once(config: dict):
     base_url = config["api_base_url"]
-    tasks = request_json(base_url, "/api/send-tasks")
-    pending = [task for task in tasks if task.get("status") == "pending"]
     limit = int(config.get("max_tasks_per_run", 5))
-    selected = pending[:limit]
-    print(f"pending={len(pending)}, selected={len(selected)}, dry_run={config.get('dry_run', True)}")
+    device_id = config.get("device_id", "")
+    if device_id:
+        send_heartbeat(config)
+        selected = request_json(base_url, f"/api/devices/{device_id}/claim?limit={limit}",
+                                method="POST", extra_headers=device_headers(config))
+        print(f"device={device_id}, claimed={len(selected)}, dry_run={config.get('dry_run', True)}")
+    else:
+        tasks = request_json(base_url, "/api/send-tasks")
+        pending = [task for task in tasks if task.get("status") == "pending"]
+        selected = pending[:limit]
+        print(f"pending={len(pending)}, selected={len(selected)}, dry_run={config.get('dry_run', True)}")
     for task in selected:
         send_task_and_record(task, config)
         time.sleep(float(config.get("send_interval_seconds", 3)))
@@ -1215,6 +1618,25 @@ def create_test_task(config: dict, target: str, content: str):
     print(json.dumps(task, ensure_ascii=False, indent=2))
 
 
+# 阶段0 零风险探针：截图会话列表区做 OCR，打印识别到的文字+相对窗口位置，不点击、不发送。
+def ocr_probe(config: dict, target: str = ""):
+    window = find_wecom_window(config)
+    img, rect = screenshot_wecom(window, config, "ocr_probe")
+    print(f"== OCR PROBE == win_rect={rect}")
+    print(f"screenshot={img}")
+    for name, key, default in [
+        ("会话列表", "conv_list_region", [0.0, 0.10, 0.30, 1.0]),
+        ("聊天标题", "chat_title_region", [0.30, 0.0, 0.80, 0.13]),
+    ]:
+        region = tuple(config.get(key, default))
+        items = ocr_region(img, region, rect, config)
+        print(f"-- {name} region={region} items={len(items)} --")
+        for it in sorted(items, key=lambda x: x["ry"]):
+            print(f"  text={it['text']!r} score={it['score']:.2f} rx={it['rx']:.3f} ry={it['ry']:.3f}")
+        if target:
+            print(f"  match {target!r} -> {find_text_in_ocr(items, target, config)}")
+
+
 # 命令行入口：根据参数选择诊断、同步、监听或直接发送。
 def main():
     parser = argparse.ArgumentParser(description="企业微信 PC 端 RPA 发送器")
@@ -1230,6 +1652,7 @@ def main():
     parser.add_argument("--reply-unread", action="store_true", help="同步未读会话，调用AI回复Agent并创建/可选发送任务")
     parser.add_argument("--watch-unread", action="store_true", help="循环监听未读会话并同步")
     parser.add_argument("--watch-known", action="store_true", help="循环同步前端登记的企微会话")
+    parser.add_argument("--ocr-probe", action="store_true", help="阶段0探针：截图+OCR 打印会话列表识别结果，不点击不发送")
     parser.add_argument("--create-test-task", action="store_true", help="创建一条发送到白名单会话的测试任务")
     parser.add_argument("--target", default="艺博展讯", help="测试任务目标会话")
     parser.add_argument("--content", default="RPA真实发送测试：这是一条本地试点系统自动发送的测试消息。", help="测试任务内容")
@@ -1269,6 +1692,9 @@ def main():
         return
     if args.watch_known:
         watch_known(config)
+        return
+    if args.ocr_probe:
+        ocr_probe(config, args.target)
         return
     if args.create_test_task:
         create_test_task(config, args.target, args.content)

@@ -16,5 +16,9 @@ main/config/ark.json
 main/rpa/config.json
 main/rpa/debug_*.png
 
-# Local scratch notes
+# Build artifacts
+main/.docker_wheelhouse/
+
+# Local scratch notes / temp test configs
 main/xuexi.md
+main/.tmp_*

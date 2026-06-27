@@ -18,13 +18,13 @@ def request_json(path: str, method: str = "GET"):
     return json.loads(data)
 
 
-# 把待发送任务全部当作 mock send，便于验证后端回写和前端状态流转。
+# 把待发送任务全部发送到网页通讯，便于验证后端回写和前端状态流转。
 def main():
     tasks = request_json("/api/send-tasks")
     pending = [task for task in tasks if task["status"] == "pending"]
     for task in pending:
         print(f"[MOCK_RPA] send to {task['target_name']} ({task['family_id']}): {task['content'][:60]}")
-        request_json(f"/api/send-tasks/{task['id']}/mock-send", method="POST")
+        request_json(f"/api/send-tasks/{task['id']}/web-send", method="POST")
     print(f"done, sent {len(pending)} task(s)")
 
 

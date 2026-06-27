@@ -7,4 +7,7 @@ server.err.log
 .env
 config/ark.json
 rpa/debug_*.png
+rpa/config.json
 xuexi.md
+.docker_wheelhouse/
+.tmp_*

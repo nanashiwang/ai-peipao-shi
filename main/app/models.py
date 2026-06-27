@@ -141,6 +141,7 @@ class SendTask(Base):
     scene: Mapped[str] = mapped_column(String(80), default="")
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="pending")
+    device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -154,8 +155,26 @@ class SendLog(Base):
     family_id: Mapped[str] = mapped_column(String(64), index=True)
     target_name: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(30))
+    device_id: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[str] = mapped_column(Text, default="")
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# 被控端设备表：每台跑 RPA 的电脑一条，记录鉴权 token、负责的会话、心跳与健康状态。
+class Device(Base):
+    __tablename__ = "devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    token: Mapped[str] = mapped_column(String(80), default="")
+    conversations: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(20), default="offline")
+    wecom_ok: Mapped[str] = mapped_column(String(10), default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 # 导入去重表，防止同一来源文件被重复导入。

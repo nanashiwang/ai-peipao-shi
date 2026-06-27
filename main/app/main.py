@@ -3,14 +3,17 @@
 这个文件把数据导入、Agent 生成、发送任务和 RPA 同步等接口组装成完整的本地 MVP。
 """
 
+import io
 import json
-from datetime import datetime
+import secrets
+import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -19,6 +22,7 @@ from app.db import get_db, init_db
 from app.models import (
     AIOutput,
     CheckinRecord,
+    Device,
     Family,
     ParentProfile,
     RawMessage,
@@ -92,6 +96,22 @@ class FamilyIn(BaseModel):
 class SendResultIn(BaseModel):
     status: str
     detail: str = ""
+    device_id: str = ""
+
+
+# 设备注册/更新入参。
+class DeviceIn(BaseModel):
+    device_id: str
+    name: str = ""
+    note: str = ""
+    conversations: list[str] = []
+
+
+# 设备心跳上报：企微健康 + 本机负责的会话（后端据此刷新该设备 conversations，供动态领取过滤）。
+class HeartbeatIn(BaseModel):
+    wecom_ok: str = ""
+    detail: str = ""
+    conversations: list[str] = []
 
 
 # RPA 同步会话里的单条消息结构。
@@ -1066,10 +1086,15 @@ def create_tasks_from_scenes(db: Session = Depends(get_db)):
     return {"created": created}
 
 
-# 发送任务列表接口。
+# 发送任务列表接口（可选按 status / device_id 过滤，便于看板和调试）。
 @app.get("/api/send-tasks")
-def list_send_tasks(db: Session = Depends(get_db)):
-    return [as_dict(t) for t in db.query(SendTask).order_by(SendTask.id.desc()).all()]
+def list_send_tasks(status: str = "", device_id: str = "", db: Session = Depends(get_db)):
+    query = db.query(SendTask)
+    if status:
+        query = query.filter(SendTask.status == status)
+    if device_id:
+        query = query.filter(SendTask.device_id == device_id)
+    return [as_dict(t) for t in query.order_by(SendTask.id.desc()).all()]
 
 
 # 直接新增一条发送任务。
@@ -1087,7 +1112,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depend
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
-    if payload.status not in {"pending", "approved", "cancelled", "sent", "failed", "dry_run"}:
+    if payload.status not in {"pending", "approved", "assigned", "cancelled", "sent", "failed", "dry_run"}:
         raise HTTPException(400, "status 不合法")
     task.target_name = payload.target_name or task.target_name
     task.scene = payload.scene or task.scene
@@ -1121,6 +1146,7 @@ def record_send_result(task_id: int, payload: SendResultIn, db: Session = Depend
         target_name=task.target_name,
         status=payload.status,
         detail=payload.detail,
+        device_id=payload.device_id or task.device_id,
     )
     db.add(log)
     db.commit()
@@ -1182,3 +1208,192 @@ def web_send_all(db: Session = Depends(get_db)):
 @app.get("/api/send-logs")
 def list_send_logs(db: Session = Depends(get_db)):
     return [as_dict(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()]
+
+
+# ============ 设备（多被控端总控）============
+HEARTBEAT_ONLINE_SECONDS = 90      # 心跳在这个时间窗内算 online
+CLAIM_TIMEOUT_SECONDS = 300        # assigned 超过这个时间没回写就回收成 pending
+
+
+# 设备鉴权依赖：claim / heartbeat 等设备接口校验 X-Device-Id + X-Device-Token。
+def require_device(
+    x_device_id: str = Header(...),
+    x_device_token: str = Header(...),
+    db: Session = Depends(get_db),
+) -> Device:
+    dev = db.query(Device).filter(Device.device_id == x_device_id).first()
+    if not dev or dev.token != x_device_token:
+        raise HTTPException(401, "设备未注册或 token 不正确")
+    return dev
+
+
+# 把设备 ORM 转字典并补上 online 状态、负责会话数、任务统计，供看板展示。
+def device_view(dev: Device, db: Session) -> dict:
+    data = as_dict(dev)
+    online = bool(dev.last_heartbeat) and (datetime.utcnow() - dev.last_heartbeat) <= timedelta(seconds=HEARTBEAT_ONLINE_SECONDS)
+    data["online"] = online
+    try:
+        data["conversation_count"] = len(json.loads(dev.conversations or "[]"))
+    except Exception:
+        data["conversation_count"] = 0
+    counts = {}
+    for st in ("pending", "assigned", "sent", "failed"):
+        counts[st] = db.query(SendTask).filter(SendTask.device_id == dev.device_id, SendTask.status == st).count()
+    data["task_counts"] = counts
+    return data
+
+
+# 注册或更新设备：新建时自动生成 token 并返回（之后 RPA 用它鉴权）。
+@app.post("/api/devices")
+def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
+    dev = db.query(Device).filter(Device.device_id == payload.device_id).first()
+    convs = json.dumps(payload.conversations, ensure_ascii=False) if payload.conversations else None
+    if dev:
+        dev.name = payload.name or dev.name
+        dev.note = payload.note or dev.note
+        if convs is not None:
+            dev.conversations = convs
+    else:
+        dev = Device(
+            device_id=payload.device_id,
+            name=payload.name,
+            note=payload.note,
+            token=secrets.token_hex(16),
+            conversations=convs or "[]",
+        )
+        db.add(dev)
+    db.commit()
+    return as_dict(dev)
+
+
+# 生成某台设备的「接入包」zip：被控端脚本 + 注入 token 的配置 + 一键启动 bat，发给对方双击即用。
+@app.get("/api/devices/{device_id}/package")
+def download_device_package(device_id: str, server_url: str = "", db: Session = Depends(get_db)):
+    dev = db.query(Device).filter(Device.device_id == device_id).first()
+    if not dev:
+        raise HTTPException(404, "设备不存在")
+    try:
+        convs = json.loads(dev.conversations or "[]")
+    except Exception:
+        convs = []
+    base_url = server_url.strip() or "http://127.0.0.1:8000"
+
+    # 被控端 config.json：先取 config.example.json 的默认，再覆盖设备/服务器/云端定位相关字段。
+    try:
+        client_cfg = json.loads((ROOT / "rpa" / "config.example.json").read_text(encoding="utf-8"))
+    except Exception:
+        client_cfg = {}
+    client_cfg.update({
+        "api_base_url": base_url,
+        "device_id": dev.device_id,
+        "device_token": dev.token,
+        "watch_conversations": convs,
+        "allowed_conversations": convs,
+        "use_local_ocr": False,          # 被控端走 ARK 云端定位，不装 paddleocr
+        "use_ark_vision_fallback": True,
+        "enable_search_fallback": True,
+        "dry_run": True,                 # 默认安全：只粘贴不发，对方验证无误后改 false
+        "auto_launch_wecom": False,
+    })
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
+        zf.write(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
+        zf.write(ROOT / "app" / "services" / "ark_client.py", "app/services/ark_client.py")
+        zf.writestr("app/__init__.py", "")
+        zf.writestr("app/services/__init__.py", "")
+        ark_path = ROOT / "config" / "ark.json"
+        if ark_path.exists():
+            zf.write(ark_path, "config/ark.json")
+        # 注入的设备专属配置
+        zf.writestr("rpa/config.json", json.dumps(client_cfg, ensure_ascii=False, indent=2))
+        # 启动脚本 / 依赖 / 说明
+        for src, arc in [
+            (ROOT / "rpa" / "requirements-client.txt", "requirements-client.txt"),
+            (ROOT / "rpa" / "templates" / "启动.bat", "启动.bat"),
+            (ROOT / "rpa" / "templates" / "使用说明.txt", "使用说明.txt"),
+        ]:
+            if src.exists():
+                zf.write(src, arc)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=device_{device_id}.zip"},
+    )
+
+
+# 设备列表（含 online 状态和任务统计），看板用。
+@app.get("/api/devices")
+def list_devices(db: Session = Depends(get_db)):
+    return [device_view(dev, db) for dev in db.query(Device).order_by(Device.device_id).all()]
+
+
+# 修改设备显示名/备注。
+@app.put("/api/devices/{device_id}")
+def update_device(device_id: str, payload: DeviceIn, db: Session = Depends(get_db)):
+    dev = db.query(Device).filter(Device.device_id == device_id).first()
+    if not dev:
+        raise HTTPException(404, "设备不存在")
+    dev.name = payload.name or dev.name
+    dev.note = payload.note or dev.note
+    db.commit()
+    return device_view(dev, db)
+
+
+# 设备心跳：更新在线状态、企微健康，并用上报的 conversations 刷新该设备负责的会话。
+@app.post("/api/devices/{device_id}/heartbeat")
+def device_heartbeat(device_id: str, payload: HeartbeatIn, dev: Device = Depends(require_device), db: Session = Depends(get_db)):
+    if dev.device_id != device_id:
+        raise HTTPException(403, "device_id 与鉴权头不一致")
+    dev.last_heartbeat = datetime.utcnow()
+    dev.status = "online"
+    dev.wecom_ok = payload.wecom_ok or dev.wecom_ok
+    dev.last_error = payload.detail
+    if payload.conversations:
+        dev.conversations = json.dumps(payload.conversations, ensure_ascii=False)
+    db.commit()
+    return device_view(dev, db)
+
+
+# 动态领取：把该设备负责会话的 pending 任务原子分配给它，返回领到的任务。
+@app.post("/api/devices/{device_id}/claim")
+def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_device), db: Session = Depends(get_db)):
+    if dev.device_id != device_id:
+        raise HTTPException(403, "device_id 与鉴权头不一致")
+    # 先回收超时未回写的 assigned 任务（设备领了但崩溃），避免任务卡死。
+    stale_before = datetime.utcnow() - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
+    db.query(SendTask).filter(
+        SendTask.device_id == dev.device_id,
+        SendTask.status == "assigned",
+        SendTask.scheduled_at < stale_before,
+    ).update({"status": "pending"})
+    db.commit()
+
+    try:
+        convs = json.loads(dev.conversations or "[]")
+    except Exception:
+        convs = []
+    if not convs:
+        return []
+    candidates = (
+        db.query(SendTask)
+        .filter(SendTask.status == "pending", SendTask.target_name.in_(convs))
+        .order_by(SendTask.id)
+        .limit(limit)
+        .all()
+    )
+    claimed = []
+    for task in candidates:
+        # 原子领取：只有仍是 pending 才领得到，避免两台设备抢到同一条。
+        # 同时把 scheduled_at 刷成领取时刻，作为超时回收的判断依据。
+        updated = (
+            db.query(SendTask)
+            .filter(SendTask.id == task.id, SendTask.status == "pending")
+            .update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": datetime.utcnow()})
+        )
+        if updated == 1:
+            claimed.append(task)
+    db.commit()
+    return [as_dict(db.get(SendTask, t.id)) for t in claimed]

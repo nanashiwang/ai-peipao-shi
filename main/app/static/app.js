@@ -7,6 +7,7 @@ const state = {
   reports: [],
   tasks: [],
   logs: [],
+  devices: [],
   templates: [],
   outputs: [],
   accounts: [],
@@ -94,11 +95,21 @@ function table(headers, rows) {
 }
 
 // 切换侧边栏标签页，并同步页面标题。
+let devicePollTimer = null;
 function switchTab(tabId) {
   document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
   document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
   const active = document.querySelector(`.sidebar button[data-tab="${tabId}"]`);
   $("pageTitle").textContent = active ? active.textContent : "工作台";
+  // 设备页每 5 秒轮询刷新在线状态；离开则停止。
+  if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
+  if (tabId === "devices") {
+    const poll = async () => {
+      try { state.devices = await api("/api/devices"); renderDevices(); } catch (err) { /* 忽略轮询错误 */ }
+    };
+    poll();
+    devicePollTimer = setInterval(poll, 5000);
+  }
 }
 
 // 生成家庭下拉框选项。
@@ -516,6 +527,23 @@ function renderLogs() {
   ], state.logs);
 }
 
+// 渲染设备监控列表。
+function renderDevices() {
+  $("deviceTable").innerHTML = table([
+    { label: "设备ID", key: "device_id" },
+    { label: "名称", key: "name" },
+    { label: "在线", render: (r) => badge(r.online ? "在线" : "离线", r.online ? "ok" : "") },
+    { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
+    { label: "最后心跳", key: "last_heartbeat" },
+    { label: "负责会话", key: "conversation_count" },
+    { label: "待发", render: (r) => (r.task_counts?.pending ?? 0) + (r.task_counts?.assigned ?? 0) },
+    { label: "已发", render: (r) => r.task_counts?.sent ?? 0 },
+    { label: "失败", render: (r) => r.task_counts?.failed ?? 0 },
+    { label: "最近错误", key: "last_error" },
+    { label: "接入包", render: (r) => `<a class="dl-link" href="/api/devices/${encodeURIComponent(r.device_id)}/package?server_url=${encodeURIComponent(location.origin)}">下载接入包</a>` },
+  ], state.devices);
+}
+
 // 渲染模板列表。
 function renderTemplates() {
   $("templateTable").innerHTML = table([
@@ -542,13 +570,14 @@ function renderAll() {
   renderCheckins();
   renderTasks();
   renderLogs();
+  renderDevices();
   renderTemplates();
 }
 
 // 刷新所有内容。
 async function refreshAll() {
   return withAction("刷新数据", async () => {
-    const [families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -558,8 +587,9 @@ async function refreshAll() {
       api("/api/ai-outputs"),
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
+      api("/api/devices"),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
@@ -856,6 +886,19 @@ $("templateForm").onsubmit = async (event) => {
     await api("/api/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...data, enabled: "Y" }) });
     event.target.reset();
     toast("模板已新增");
+    await refreshAll();
+  });
+};
+
+// 添加设备：注册并生成 token，之后可在列表点「下载接入包」。
+$("deviceForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await withAction("添加设备", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    const conversations = (data.conversations || "").split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    const dev = await api("/api/devices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: data.device_id, name: data.name || "", conversations }) });
+    event.target.reset();
+    toast(`设备已添加：${dev.device_id}，可在列表点「下载接入包」发给对方`);
     await refreshAll();
   });
 };

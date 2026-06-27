@@ -4,7 +4,7 @@
 """
 
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 
@@ -32,3 +32,24 @@ def init_db():
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    ensure_columns()
+
+
+# create_all 只建新表，不会给已存在的旧表补列。这里为旧库平滑补 device_id 列，避免删库重建。
+def ensure_columns():
+    wanted = {
+        "send_tasks": [("device_id", "VARCHAR(64)")],
+        "send_logs": [("device_id", "VARCHAR(64)")],
+    }
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table, cols in wanted.items():
+            if table not in tables:
+                continue
+            have = {c["name"] for c in inspector.get_columns(table)}
+            for col_name, col_type in cols:
+                if col_name in have:
+                    continue
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT ''"))
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))

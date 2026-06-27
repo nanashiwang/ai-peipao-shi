@@ -18,6 +18,7 @@
       <button data-tab="webChat">陪跑会话</button>
       <button data-tab="familyDetailPanel">家庭档案</button>
       <button data-tab="tasks">审核发送</button>
+      <button data-tab="devices">设备监控</button>
       <button data-tab="templates">系统设置</button>
     </nav>
   </aside>
@@ -245,6 +246,21 @@
         <span class="muted">记录最终发送状态、失败原因和回写结果</span>
       </div>
       <div id="logTable"></div>
+    </section>
+
+    <!-- 设备监控：多被控端在线状态、心跳、任务统计。 -->
+    <section id="devices" class="panel">
+      <div class="section-head">
+        <h2>设备监控</h2>
+        <span class="muted">每台被控机的在线状态、企微健康、负责会话数与任务统计（每5秒刷新）</span>
+      </div>
+      <form id="deviceForm" class="template-form">
+        <input name="device_id" placeholder="设备ID，如 rpa-01" required />
+        <input name="name" placeholder="设备名称，如 重庆01" />
+        <input name="conversations" placeholder="负责会话，逗号分隔，如 一合学社,周爸爸" />
+        <button>添加设备</button>
+      </form>
+      <div id="deviceTable"></div>
     </section>
 
     <!-- 话术模板：维护 Agent 和发送任务复用的固定话术。 -->
