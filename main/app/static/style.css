@@ -341,7 +341,8 @@ h3 {
 .messages,
 .timeline,
 .chat-messages,
-.empty {
+.empty,
+.state-card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -581,6 +582,77 @@ tr:last-child td {
   padding: 18px;
   border-style: dashed;
   background: rgba(255, 255, 255, .56);
+}
+
+.state-card {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 20px;
+  border-style: dashed;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, .82), rgba(255, 255, 255, .58)),
+    var(--panel);
+}
+
+.state-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.state-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.state-kicker {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, .14);
+  color: #3a3a3c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.state-loading .state-kicker {
+  background: rgba(255, 149, 0, .16);
+  color: var(--warn);
+}
+
+.state-loading .state-kicker::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+.state-error {
+  border-color: rgba(255, 59, 48, .28);
+  background: rgba(255, 59, 48, .06);
+}
+
+.state-error .state-kicker {
+  background: rgba(255, 59, 48, .12);
+  color: var(--danger);
+}
+
+.state-risk {
+  border-color: rgba(255, 149, 0, .34);
+  background: rgba(255, 149, 0, .08);
+}
+
+.state-risk .state-kicker {
+  background: rgba(255, 149, 0, .16);
+  color: var(--warn);
 }
 
 .danger-text {

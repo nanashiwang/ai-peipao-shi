@@ -99,6 +99,7 @@ async function withAction(label, fn) {
   } catch (err) {
     const message = err?.message || String(err);
     setActionStatus(`${label}失败：${message}`, "error");
+    if (label === "刷新数据" && isInitialDataEmpty()) renderGlobalError(message);
     toast(`${label}失败：${message}`);
     console.error(`[action:error] ${label}`, err);
     return null;
@@ -110,6 +111,34 @@ async function withAction(label, fn) {
 // 渲染一个小标签，统一状态样式。
 function badge(text, kind = "") {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
+}
+
+function statePanel(kind, title, detail = "", actionHtml = "") {
+  const labels = { empty: "空状态", loading: "加载中", error: "错误", risk: "风险" };
+  return `
+    <div class="state-card state-${kind}">
+      <span class="state-kicker">${esc(labels[kind] || "状态")}</span>
+      <strong>${esc(title)}</strong>
+      ${detail ? `<p>${esc(detail)}</p>` : ""}
+      ${actionHtml ? `<div class="actions left">${actionHtml}</div>` : ""}
+    </div>
+  `;
+}
+
+function emptyState(title = "暂无数据", detail = "当前没有可展示内容。", actionHtml = "") {
+  return statePanel("empty", title, detail, actionHtml);
+}
+
+function loadingState(title = "正在加载", detail = "正在连接控制端并同步最新数据。") {
+  return statePanel("loading", title, detail);
+}
+
+function errorState(title = "加载失败", detail = "请检查服务状态后重试。", actionHtml = '<button onclick="refreshAll()">重试</button>') {
+  return statePanel("error", title, detail, actionHtml);
+}
+
+function riskState(title, detail, actionHtml = "") {
+  return statePanel("risk", title, detail, actionHtml);
 }
 
 function sendModeBadge(mode) {
@@ -188,10 +217,63 @@ function deviceSelect(task) {
 
 // 渲染通用表格，减少重复 HTML 拼接。
 function table(headers, rows) {
-  if (!rows.length) return '<p class="empty">暂无数据</p>';
+  if (!rows.length) return emptyState("暂无表格数据", "当前筛选条件下没有记录。");
   return `<div class="table-wrap"><table><thead><tr>${headers.map((h) => `<th>${h.label}</th>`).join("")}</tr></thead><tbody>${
     rows.map((row) => `<tr>${headers.map((h) => `<td>${h.render ? h.render(row) : esc(row[h.key])}</td>`).join("")}</tr>`).join("")
   }</tbody></table></div>`;
+}
+
+const GLOBAL_STATE_TARGETS = [
+  "kpis",
+  "serviceFunnel",
+  "todoBoard",
+  "priorityList",
+  "recentOutputs",
+  "serviceQualitySummary",
+  "serviceQualityTable",
+  "chatConversations",
+  "chatMessages",
+  "chatAiOutputs",
+  "wecomFamilies",
+  "wecomPreview",
+  "familySummary",
+  "familyTable",
+  "familyDetail",
+  "profileTable",
+  "reportList",
+  "replyFamilies",
+  "replyContext",
+  "replyOutputs",
+  "checkinBoard",
+  "taskTable",
+  "logTable",
+  "auditTable",
+  "opsHealthBoard",
+  "backupBoard",
+  "deviceTable",
+  "importTemplateTable",
+  "agentEvalBoard",
+  "templateTable",
+];
+
+function isInitialDataEmpty() {
+  return !state.families.length && !state.tasks.length && !state.outputs.length && !state.logs.length;
+}
+
+function fillStateTargets(html, onlyEmpty = true) {
+  GLOBAL_STATE_TARGETS.forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    if (!onlyEmpty || !el.innerHTML.trim()) el.innerHTML = html;
+  });
+}
+
+function renderGlobalLoading() {
+  fillStateTargets(loadingState("正在加载控制端数据", "首次加载会同步家庭、任务、日志、设备和 Agent 评测。"), false);
+}
+
+function renderGlobalError(detail) {
+  fillStateTargets(errorState("控制端数据加载失败", detail || "请确认后端服务、数据库和管理端鉴权配置正常。"), false);
 }
 
 // 切换侧边栏标签页，并同步页面标题。
@@ -285,7 +367,7 @@ function evidenceView(output) {
   const evidence = outputEvidence(output);
   const summaries = evidence.evidence_summary || [];
   const messages = evidence.source_messages || [];
-  if (!summaries.length && !messages.length) return '<p class="empty">暂无可追溯证据。</p>';
+  if (!summaries.length && !messages.length) return emptyState("暂无可追溯证据", "该输出还没有绑定来源消息或依据摘要。");
   return `
     <div class="evidence-box">
       ${summaries.length ? `<p><strong>依据摘要：</strong>${summaries.map(esc).join("；")}</p>` : ""}
@@ -306,6 +388,21 @@ function renderKpis() {
   const reviewOutputs = state.outputs.filter((item) => item.status === "needs_review").length;
   const highRisk = state.profiles.filter((item) => (item.service_risks || "").includes("退费") || (item.service_risks || "").includes("投诉")).length;
   const approvedReports = state.reports.filter((item) => item.status === "approved").length;
+  if (highRisk > 0) {
+    $("kpis").innerHTML = riskState("存在高风险家庭", `当前有 ${highRisk} 个家庭出现退费/投诉等风险信号，请优先处理。`, '<button onclick="switchTab(\'adminDashboard\')">查看管理看板</button>');
+    $("kpis").innerHTML += [
+      ["待审核内容", reviewOutputs, "Agent 生成后待确认"],
+      ["待发送任务", pendingTasks, "审核后可发送"],
+      ["已确认周报", approvedReports, "可加入发送任务"],
+    ].map(([label, value, hint]) => `
+      <article class="kpi">
+        <span>${esc(label)}</span>
+        <strong>${esc(value)}</strong>
+        <small>${esc(hint)}</small>
+      </article>
+    `).join("");
+    return;
+  }
   $("kpis").innerHTML = [
     ["高风险家庭", highRisk, "需主管关注"],
     ["待审核内容", reviewOutputs, "Agent 生成后待确认"],
@@ -358,7 +455,7 @@ function renderServiceFunnel() {
         `).join("") || '<span class="muted">暂无</span>'}
       </div>
     </article>
-  `).join("") : '<p class="empty">暂无服务状态数据。</p>';
+  `).join("") : emptyState("暂无服务状态数据", "导入家庭或同步企微会话后，这里会按正常、需跟进、风险、续报、已结课聚合。");
 }
 
 function renderTodoBoard() {
@@ -376,10 +473,10 @@ function renderTodoBoard() {
             <span>${esc(item.reason)}</span>
             <small>${esc((item.evidence || "").slice(0, 80))}</small>
           </button>
-        `).join("") || '<p class="empty">暂无</p>'}
+        `).join("") || emptyState("暂无待办", "这个分类当前没有需要处理的家庭。")}
       </div>
     </article>
-  `).join("") : '<p class="empty">暂无聚合待办。</p>';
+  `).join("") : emptyState("暂无聚合待办", "导入数据并生成 Agent 输出后，待办会自动汇总到这里。");
 }
 
 function renderWorkbenchOverview() {
@@ -500,7 +597,7 @@ function renderPriorityList() {
         ${item.review_output_count || item.review_report_count ? `<button onclick="switchTab('reports')">审核内容</button>` : ""}
       </div>
     </article>
-  `).join("") : '<p class="empty">今日暂无高优先级事项。可继续同步企微或生成 Agent 内容。</p>';
+  `).join("") : emptyState("今日暂无高优先级事项", "可继续同步企微或生成 Agent 内容，系统会自动把风险和待办推到这里。");
 }
 
 // 输出卡片，展示 AI 生成的内容。
@@ -537,7 +634,7 @@ function outputCard(output, compact = false) {
 
 // 渲染最近的输出结果。
 function renderRecentOutputs() {
-  $("recentOutputs").innerHTML = state.outputs.length ? state.outputs.slice(0, 6).map((item) => outputCard(item, true)).join("") : '<p class="empty">暂无 Agent 输出。</p>';
+  $("recentOutputs").innerHTML = state.outputs.length ? state.outputs.slice(0, 6).map((item) => outputCard(item, true)).join("") : emptyState("暂无 Agent 输出", "导入聊天记录后，可先批量分析或在家庭详情中生成画像、周报和回复。");
 }
 
 // 渲染家庭摘要信息。
@@ -578,7 +675,7 @@ function renderFamilies() {
 function renderWebChat() {
   $("loginStatus").innerHTML = state.currentUser
     ? `${userRoleBadge(state.currentUser)}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}</p>`
-    : '<p class="empty">请先登录测试账号。</p>';
+    : emptyState("请先登录测试账号", "登录陪跑师或家长账号后，可以在网页会话里测试 AI 回复闭环。");
   const rows = state.conversations.length ? state.conversations : state.families;
   $("chatConversations").innerHTML = rows.length ? rows.map((item) => `
     <button class="list-item ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}" onclick="selectChat('${esc(item.family_id)}')">
@@ -586,7 +683,7 @@ function renderWebChat() {
       <span>${esc(item.child_grade || "未知年级")} · ${esc(item.message_count || 0)} 条 · ${esc(item.last_speaker || "")}</span>
       <small>${esc(item.last_message || "")}</small>
     </button>
-  `).join("") : '<p class="empty">暂无会话。点击“生成模拟账号与对话”。</p>';
+  `).join("") : emptyState("暂无会话", "点击“生成模拟账号与对话”，或先导入家庭聊天记录。");
   renderChatMessages();
   renderChatOutputs();
 }
@@ -597,7 +694,7 @@ function renderChatMessages() {
   $("chatTitle").textContent = family ? family.parent_nickname : "请选择会话";
   $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.coach_name || "未分配"}` : "";
   if (!state.selectedChatFamilyId) {
-    $("chatMessages").innerHTML = '<p class="empty">从左侧选择一个家庭会话。</p>';
+    $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧选择一个家庭后，这里会展示聊天上下文。");
     return;
   }
   $("chatMessages").innerHTML = state.chatMessages.length ? state.chatMessages.map((msg) => {
@@ -609,12 +706,12 @@ function renderChatMessages() {
         <span>${esc(msg.message_time || "")}</span>
       </div>
     `;
-  }).join("") : '<p class="empty">暂无消息。</p>';
+  }).join("") : emptyState("暂无消息", "当前会话还没有聊天记录，可以发送一条测试消息或同步企微。");
 }
 
 function renderChatOutputs() {
   if (!state.selectedChatFamilyId) {
-    $("chatAiOutputs").innerHTML = '<p class="empty">选择会话后，可以快速生成回复、审核并发送。</p>';
+    $("chatAiOutputs").innerHTML = emptyState("请选择会话", "选择会话后，可以快速生成回复、审核并发送。");
     return;
   }
   const family = state.families.find((item) => item.family_id === state.selectedChatFamilyId);
@@ -636,7 +733,7 @@ function renderChatOutputs() {
           <dt>关注点</dt><dd>${esc(profile.pain_points || "暂无")}</dd>
           <dt>建议动作</dt><dd>${esc(profile.suggested_actions || "暂无")}</dd>
         </dl>
-      ` : '<p class="empty">暂无画像。点击“完整分析”会生成家庭画像。</p>'}
+      ` : emptyState("暂无画像", "点击“完整分析”会生成家庭画像。")}
     </article>
     <section class="assist-section">
       <div class="section-head compact-head">
@@ -656,12 +753,12 @@ function renderChatOutputs() {
               ${taskAllowedOperations(task).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
             </div>
           </article>
-        `).join("") : '<p class="empty">暂无待发送回复。点击“快速生成回复”。</p>'}
+        `).join("") : emptyState("暂无待发送回复", "点击“快速生成回复”后，AI 回复会先进入审核发送队列。")}
       </div>
     </section>
     <section class="assist-section">
       <div class="section-head compact-head"><h3>最近 AI 结果</h3></div>
-      <div class="stack">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : '<p class="empty">暂无 AI 结果。</p>'}</div>
+      <div class="stack">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : emptyState("暂无 AI 结果", "同步或生成后，这里会展示最近的画像、回复和周报。")}</div>
     </section>
   `;
 }
@@ -689,9 +786,9 @@ function renderWecomPage() {
         <button onclick="prepareReply('${esc(family.family_id)}')">看回复</button>
       </div>
     </article>
-  `).join("") : '<p class="empty">还没有登记企微会话。先填写上方表单，例如：艺博展讯。</p>';
+  `).join("") : emptyState("还没有登记企微会话", "先填写上方表单，例如：艺博展讯。登记后 RPA 才能按名称搜索同步。");
   if (!state.selectedFamilyId) {
-    $("wecomPreview").innerHTML = '<p class="empty">请选择一个会话。</p>';
+    $("wecomPreview").innerHTML = emptyState("请选择一个会话", "选择左侧已登记会话后，这里会汇总聊天记录和 AI 输出。");
   }
 }
 
@@ -699,7 +796,7 @@ function renderWecomPage() {
 async function previewWecomFamily(familyId, remember = true) {
   return withAction("检查会话", async () => {
     if (!familyId) {
-      $("wecomPreview").innerHTML = '<p class="empty">请选择一个会话。</p>';
+      $("wecomPreview").innerHTML = emptyState("请选择一个会话", "选择左侧已登记会话后再检查同步结果。");
       return;
     }
     if (remember) state.selectedFamilyId = familyId;
@@ -716,8 +813,8 @@ async function previewWecomFamily(familyId, remember = true) {
           <p>${esc(m.content)}</p>
           <span class="muted">${esc(m.source)} ${esc(m.checkin_status || "")}</span>
         </div>
-      `).join("") || '<p class="empty">暂无已同步聊天记录。运行 RPA 后会出现在这里。</p>'}</div>
-      <div class="stack output-preview">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : '<p class="empty">暂无 AI 输出。同步到新消息后会自动生成回复、画像、周报和打卡/PBL结果。</p>'}</div>
+      `).join("") || emptyState("暂无已同步聊天记录", "运行 RPA 同步后，最新聊天会出现在这里。")}</div>
+      <div class="stack output-preview">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : emptyState("暂无 AI 输出", "同步到新消息后会自动生成回复、画像、周报和打卡/PBL 结果。")}</div>
     `;
   });
 }
@@ -726,7 +823,7 @@ async function previewWecomFamily(familyId, remember = true) {
 async function refreshFamilyDetail() {
   if (!state.families.length) {
     $("familySelect").innerHTML = "";
-    $("familyDetail").innerHTML = '<p class="empty">请先导入家庭数据。</p>';
+    $("familyDetail").innerHTML = emptyState("请先导入家庭数据", "导入 CSV/XLSX 或载入样例后，家庭档案会在这里展示。");
     return;
   }
   state.selectedFamilyId = state.selectedFamilyId || state.families[0].family_id;
@@ -745,11 +842,11 @@ async function refreshFamilyDetail() {
           <dt>风险信号</dt><dd>${esc(data.profile.service_risks)}</dd>
           <dt>建议动作</dt><dd>${esc(data.profile.suggested_actions)}</dd>
         </dl>
-      ` : '<p class="empty">暂无画像，点击右侧“生成画像”。</p>'}
+      ` : emptyState("暂无画像", "点击右侧“生成画像”，系统会基于聊天记录提炼沟通风格、风险和建议动作。")}
     </section>
     <section>
       <h3>家庭时间线</h3>
-      <div class="timeline">${timeline.map(timelineCard).join("") || '<p class="empty">暂无时间线事件。</p>'}</div>
+      <div class="timeline">${timeline.map(timelineCard).join("") || emptyState("暂无时间线事件", "聊天、打卡、周报和发送日志会统一沉淀到这里。")}</div>
     </section>
     <section class="ai-pane">
       <h3>AI操作区</h3>
@@ -759,7 +856,7 @@ async function refreshFamilyDetail() {
         <button onclick="prepareReply('${esc(data.family.family_id)}')">生成回复</button>
         <button onclick="runAgentForFamily('checkin','${esc(data.family.family_id)}')">识别打卡/PBL</button>
       </div>
-      <div class="stack">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : '<p class="empty">暂无本家庭 AI 结果。</p>'}</div>
+      <div class="stack">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : emptyState("暂无本家庭 AI 结果", "使用上方按钮生成画像、周报、回复或打卡/PBL 识别。")}</div>
     </section>
   `;
 }
@@ -800,7 +897,7 @@ function renderReports() {
       <textarea id="report-${r.id}">${esc(r.final_text || "")}</textarea>
       <div class="actions left"><button onclick="approveReport(${r.id})">确认通过</button></div>
     </article>
-  `).join("") : '<p class="empty">暂无周报。</p>';
+  `).join("") : emptyState("暂无周报", "批量生成周报或在家庭详情中生成单个家庭周报。");
 }
 
 // 渲染回复页面。
@@ -811,26 +908,27 @@ function renderReplyPage() {
       <strong>${esc(family.parent_nickname || family.family_id)}</strong>
       <span>${esc(family.message_count)} 条消息</span>
     </button>
-  `).join("") : '<p class="empty">暂无家庭。</p>';
+  `).join("") : emptyState("暂无家庭", "请先导入家庭数据或登记企微会话。");
   renderReplyContext();
-  $("replyOutputs").innerHTML = state.outputs.filter((item) => item.agent_type === "ai_reply").slice(0, 8).map((item) => outputCard(item)).join("") || '<p class="empty">暂无回复建议。</p>';
+  $("replyOutputs").innerHTML = state.outputs.filter((item) => item.agent_type === "ai_reply").slice(0, 8).map((item) => outputCard(item)).join("") || emptyState("暂无回复建议", "选择家庭并点击生成回复后，建议会进入这里等待审核。");
 }
 
 // 渲染回复上下文。
 async function renderReplyContext() {
-  if (!state.selectedFamilyId) return;
+  if (!state.selectedFamilyId) {
+    $("replyContext").innerHTML = emptyState("请选择家庭", "选择家庭后会展示最近 10 条聊天上下文。");
+    return;
+  }
   const data = await api(`/api/families/${encodeURIComponent(state.selectedFamilyId)}`);
   $("replyContext").innerHTML = data.messages.slice(-10).map((m) => `
     <div class="msg"><strong>${esc(m.speaker)}</strong><p>${esc(m.content)}</p><span class="muted">${esc(m.message_time)}</span></div>
-  `).join("") || '<p class="empty">暂无聊天上下文。</p>';
+  `).join("") || emptyState("暂无聊天上下文", "导入聊天记录或同步企微后，AI 回复会更准确。");
 }
 
 // 渲染打卡记录。
 function renderCheckins() {
   const outputs = state.outputs.filter((item) => item.agent_type === "checkin_pbl");
-  $("checkinBoard").innerHTML = outputs.length ? outputs.map((item) => outputCard(item)).join("") : `
-    <p class="empty">暂无打卡/PBL识别结果。可从家庭列表或本页批量识别生成。</p>
-  `;
+  $("checkinBoard").innerHTML = outputs.length ? outputs.map((item) => outputCard(item)).join("") : emptyState("暂无打卡/PBL 识别结果", "可从家庭列表或本页批量识别生成。");
 }
 
 // 渲染任务列表。
@@ -992,6 +1090,7 @@ function renderAll() {
 // 刷新所有内容。
 async function refreshAll() {
   return withAction("刷新数据", async () => {
+    if (isInitialDataEmpty()) renderGlobalLoading();
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
     const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
