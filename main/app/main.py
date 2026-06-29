@@ -50,6 +50,7 @@ from app.services.ai_mock import generate_parent_profile, generate_weekly_report
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.scenario import detect_checkin, detect_scene
+from app.services.send_log_classifier import classify_send_log
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
@@ -233,6 +234,12 @@ def as_dict(obj):
     for col in obj.__table__.columns:
         value = getattr(obj, col.name)
         data[col.name] = value.isoformat(sep=" ", timespec="seconds") if hasattr(value, "isoformat") else value
+    return data
+
+
+def send_log_view(log: SendLog) -> dict:
+    data = as_dict(log)
+    data.update(classify_send_log(log.status, log.detail))
     return data
 
 
@@ -2177,7 +2184,7 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     audit_send_task_change(db, task, "result", actor, f"回写发送结果：{payload.status}", before)
     sync_weekly_report_send_status(db, task, payload.status, finished_at)
     db.commit()
-    return as_dict(log)
+    return send_log_view(log)
 
 
 def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端", action: str = "web_send") -> tuple[RawMessage, SendLog]:
@@ -2223,7 +2230,7 @@ def web_send(task_id: int, request: Request = None, db: Session = Depends(get_db
         raise HTTPException(404, "任务不存在")
     message, log = send_task_to_web_chat(db, task, actor_from_request(request), "web_send")
     db.commit()
-    return {"task": as_dict(task), "message": as_dict(message), "log": as_dict(log)}
+    return {"task": as_dict(task), "message": as_dict(message), "log": send_log_view(log)}
 
 
 @app.post("/api/send-tasks/web-send-all")
@@ -2242,7 +2249,7 @@ def web_send_all(request: Request = None, db: Session = Depends(get_db)):
 
 @app.get("/api/send-logs")
 def list_send_logs(db: Session = Depends(get_db)):
-    return [as_dict(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()]
+    return [send_log_view(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()]
 
 
 @app.get("/api/audit-logs")

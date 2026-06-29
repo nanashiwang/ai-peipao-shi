@@ -24,8 +24,10 @@ from urllib.request import Request, build_opener, ProxyHandler
 try:
     from rpa.send_guard import (
         SendGuardError,
+        add_send_trace,
         config_for_send_mode,
         conversation_title_mismatch_detail,
+        detail_with_send_trace,
         dry_run_result_detail,
         real_send_block_detail,
         real_send_enabled,
@@ -36,13 +38,16 @@ try:
         target_not_allowed_detail,
         validate_active_conversation_title,
         validate_foreground_wecom,
+        text_matches_target,
         validate_visual_hit,
     )
 except ModuleNotFoundError:
     from send_guard import (
         SendGuardError,
+        add_send_trace,
         config_for_send_mode,
         conversation_title_mismatch_detail,
+        detail_with_send_trace,
         dry_run_result_detail,
         real_send_block_detail,
         real_send_enabled,
@@ -53,6 +58,7 @@ except ModuleNotFoundError:
         target_not_allowed_detail,
         validate_active_conversation_title,
         validate_foreground_wecom,
+        text_matches_target,
         validate_visual_hit,
     )
 
@@ -981,6 +987,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
             try:
                 hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
                 if hit:
+                    add_send_trace(config, "会话列表OCR命中")
                     print(f"locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f} score={hit['score']:.2f}")
                     click_conversation_hit(window, hit, rect, config, target)
                     time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
@@ -989,6 +996,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
                 print(f"local_ocr_unavailable detail={exc}")
         hit = ark_locate_in_region(img, target, config, rect, region)
         if hit:
+            add_send_trace(config, "会话列表ARK命中")
             print(f"locate target={target} via=ark rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
             click_conversation_hit(window, hit, rect, config, target)
             time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
@@ -996,7 +1004,9 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
     finally:
         _cleanup_debug_image(img, config)
     if config.get("enable_search_fallback", False):
+        add_send_trace(config, "进入搜索兜底")
         return search_then_locate(window, target, config)
+    add_send_trace(config, "会话列表未命中")
     raise RpaError(f"无法在会话列表定位「{target}」（OCR/ARK 均未命中），已中止，绝不盲点坐标。")
 
 
@@ -1021,6 +1031,7 @@ def search_then_locate(window, target: str, config: dict) -> bool:
             try:
                 hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
                 if hit:
+                    add_send_trace(config, "搜索结果OCR命中")
                     print(f"search_locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
                     click_search_result_hit(window, hit, rect, config, target)
                     time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
@@ -1029,12 +1040,14 @@ def search_then_locate(window, target: str, config: dict) -> bool:
                 print(f"local_ocr_unavailable detail={exc}")
         hit = ark_locate_in_region(img, target, config, rect, region)
         if hit:
+            add_send_trace(config, "搜索结果ARK命中")
             print(f"search_locate target={target} via=ark")
             click_search_result_hit(window, hit, rect, config, target)
             time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
         _cleanup_debug_image(img, config)
+    add_send_trace(config, "搜索结果未命中")
     raise RpaError(search_result_not_found_detail(target, "搜索结果"))
 
 
@@ -1055,6 +1068,11 @@ def verify_active_conversation(window, target: str, config: dict):
             except RpaError as exc:
                 print(f"local_ocr_unavailable detail={exc}")
         min_ratio = float(config.get("title_match_min_ratio", 0.7))
+        clean_target = (target or "").strip()
+        if clean_target and (clean_target in (text or "") or clean_target in (title or "")):
+            add_send_trace(config, "标题窗口文本命中")
+        elif any(text_matches_target(clean_target, str(item.get("text", "")), min_ratio) for item in ocr_items):
+            add_send_trace(config, "标题OCR命中")
         try:
             validate_active_conversation_title(
                 target,
@@ -1067,6 +1085,8 @@ def verify_active_conversation(window, target: str, config: dict):
             ok = True
         except SendGuardError:
             ark_hit = ark_locate_in_region(img, target, config, rect, region) is not None
+            if ark_hit:
+                add_send_trace(config, "标题ARK命中")
             try:
                 validate_active_conversation_title(
                     target,
@@ -1082,6 +1102,7 @@ def verify_active_conversation(window, target: str, config: dict):
     finally:
         _cleanup_debug_image(img, config)
     if not ok:
+        add_send_trace(config, "标题校验未命中")
         if config.get("verify_block_on_mismatch", True):
             raise RpaError(conversation_title_mismatch_detail(target))
         print(f"WARN 未确认当前会话为「{target}」，但 verify_block_on_mismatch=false，继续。")
@@ -1689,7 +1710,12 @@ def send_message(window, content: str, config: dict):
     if not config.get("dry_run", True) and not real_send_enabled(config):
         return "skipped", real_send_block_detail()
     try:
-        focus_message_input(window, config)
+        try:
+            focus_message_input(window, config)
+            add_send_trace(config, "输入框已聚焦")
+        except Exception as exc:
+            add_send_trace(config, "输入框定位失败")
+            raise RpaError(f"INPUT_FOCUS: 输入框定位失败：{exc}") from exc
         ensure_foreground_wecom(window, config)
         # 清空输入框：focus_message_input 已退出多选并点中输入框，此处 Ctrl+A 只全选输入框文本。
         # 若担心焦点未落在输入框（会误触发消息多选），把 clear_input_before_paste 关掉即可。
@@ -1702,9 +1728,11 @@ def send_message(window, content: str, config: dict):
         if not should_press_send_hotkey(config):
             ensure_foreground_wecom(window, config)
             clear_message_input()
+            add_send_trace(config, "dry-run已清空输入框")
             return "dry_run", dry_run_result_detail()
         ensure_foreground_wecom(window, config)
         hotkey(config.get("send_hotkey", ["enter"]))
+        add_send_trace(config, "真实发送热键已触发")
         return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"
     finally:
         # 无论成功/失败/异常，都取消置顶，避免企微一直压在所有窗口最上层。
@@ -1745,10 +1773,14 @@ def process_task(task: dict, config: dict):
         return "skipped", real_send_block_detail()
     content = validate_task_content(task.get("content") or "")
     task_config = config_for_task_send_mode(config, mode)
-    window = find_wecom_window(task_config)
-    search_conversation(window, target, task_config)
-    verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
-    return send_message(window, content, task_config)
+    try:
+        window = find_wecom_window(task_config)
+        search_conversation(window, target, task_config)
+        verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
+        status, detail = send_message(window, content, task_config)
+        return status, detail_with_send_trace(detail, task_config)
+    except Exception as exc:
+        raise RpaError(detail_with_send_trace(str(exc), task_config)) from exc
 
 
 # 发送单条任务并把结果回写到后端日志接口。

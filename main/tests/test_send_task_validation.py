@@ -554,6 +554,8 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["device_id"], "rpa-01")
         self.assertEqual(log["send_mode"], "real_send")
+        self.assertEqual(log["send_reason"], "failed_unknown")
+        self.assertEqual(log["send_reason_level"], "danger")
         self.assertTrue(log["screenshot_path"].startswith("/api/send-artifacts/task_"))
         filename = log["screenshot_path"].rsplit("/", 1)[1]
         self.assertEqual(resolve_send_screenshot(filename).read_bytes(), self.PNG_BYTES)
@@ -567,6 +569,7 @@ class SendResultEvidenceTest(unittest.TestCase):
 
         self.assertEqual(log["status"], "dry_run")
         self.assertEqual(log["send_mode"], "dry_run")
+        self.assertEqual(log["send_reason"], "dry_run_done")
 
     def test_rejects_non_image_screenshot_payload(self):
         task = self.add_task()

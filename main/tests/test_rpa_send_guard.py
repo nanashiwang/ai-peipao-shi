@@ -2,9 +2,11 @@ import unittest
 
 from rpa.send_guard import (
     SendGuardError,
+    add_send_trace,
     active_conversation_verified,
     config_for_send_mode,
     conversation_title_mismatch_detail,
+    detail_with_send_trace,
     dry_run_result_detail,
     real_send_block_detail,
     real_send_enabled,
@@ -46,6 +48,17 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertFalse(should_press_send_hotkey(config))
         self.assertIn("未按发送键", dry_run_result_detail())
         self.assertIn("已清空输入框", dry_run_result_detail())
+
+    def test_send_trace_is_appended_once(self):
+        config = {}
+        add_send_trace(config, "会话列表OCR命中")
+        add_send_trace(config, "会话列表OCR命中")
+        add_send_trace(config, "标题OCR命中")
+
+        detail = detail_with_send_trace("DRY_RUN: 已完成", config)
+
+        self.assertIn("RPA_TRACE: 会话列表OCR命中；标题OCR命中", detail)
+        self.assertEqual(detail_with_send_trace(detail, config), detail)
 
     def test_real_send_enabled_requires_boolean_true(self):
         self.assertTrue(real_send_enabled({"allow_real_send": True}))

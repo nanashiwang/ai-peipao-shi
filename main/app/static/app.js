@@ -126,6 +126,14 @@ function reportSendStatusBadge(status) {
   return badge(labels[status || "not_created"] || status || "未建任务", kind);
 }
 
+function sendReasonCell(log) {
+  const level = log.send_reason_level || (log.status === "failed" ? "danger" : "");
+  const trace = Array.isArray(log.send_trace) && log.send_trace.length
+    ? `<p class="muted">${esc(log.send_trace.join(" / "))}</p>`
+    : "";
+  return `${badge(log.send_stage || "发送结果", level)}<strong>${esc(log.send_reason_label || "未分类")}</strong>${trace}`;
+}
+
 function sendModeSelect(task) {
   const mode = task.send_mode || "dry_run";
   return `
@@ -810,6 +818,7 @@ function renderLogs() {
     { label: "对象", key: "target_name" },
     { label: "状态", key: "status" },
     { label: "模式", render: (r) => sendModeBadge(r.send_mode || "dry_run") },
+    { label: "阶段/原因", render: sendReasonCell },
     { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
     { label: "详情", key: "detail" },
   ], state.logs);
