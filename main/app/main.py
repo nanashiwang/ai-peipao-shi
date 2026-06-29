@@ -45,6 +45,7 @@ from app.services.agent_service import (
     run_reply_agent_service,
     run_weekly_report_agent as run_weekly_report_agent_service,
 )
+from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.scenario import detect_checkin, detect_scene
@@ -1539,6 +1540,16 @@ def today_priorities(limit: int = 12, db: Session = Depends(get_db)):
 @app.get("/api/workbench/overview")
 def workbench_overview(coach_name: str = "", limit: int = 8, db: Session = Depends(get_db)):
     return build_workbench_overview(db, coach_name, limit)
+
+
+@app.get("/api/agent/evaluations")
+def agent_evaluation_cases():
+    return list_agent_eval_cases()
+
+
+@app.post("/api/agent/evaluations/run")
+def run_agent_evaluations():
+    return run_agent_evaluation()
 
 
 # 如果家庭没有有效消息，就不生成周报和画像，避免写入空数据。

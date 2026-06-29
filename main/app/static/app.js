@@ -13,6 +13,7 @@ const state = {
   devices: [],
   arkConfig: {},
   importTemplates: [],
+  agentEval: {},
   templates: [],
   outputs: [],
   accounts: [],
@@ -767,6 +768,31 @@ function renderImportTemplates() {
   ], state.importTemplates || []);
 }
 
+function renderAgentEval() {
+  const el = $("agentEvalBoard");
+  if (!el) return;
+  const evalResult = state.agentEval || {};
+  const results = evalResult.results || [];
+  const summary = evalResult.total
+    ? `<div class="summary-grid mini-summary">
+        <article class="summary"><span>评测用例</span><strong>${esc(evalResult.total)}</strong></article>
+        <article class="summary"><span>通过</span><strong>${esc(evalResult.passed)}</strong></article>
+        <article class="summary"><span>失败</span><strong>${esc(evalResult.failed)}</strong></article>
+        <article class="summary"><span>通过率</span><strong>${esc(Math.round((evalResult.pass_rate || 0) * 100))}%</strong></article>
+      </div>`
+    : "";
+  el.innerHTML = `
+    ${summary}
+    ${table([
+      { label: "用例", render: (r) => `<strong>${esc(r.id)}</strong><p class="muted">${esc(r.input)}</p>` },
+      { label: "Agent", key: "agent_type" },
+      { label: "场景", render: (r) => `${badge(r.actual_scene, r.checks?.scene_match ? "ok" : "danger")}<span class="muted">期望：${esc(r.expected_scene)}</span>` },
+      { label: "风险", render: (r) => `${badge(r.actual_risk_level, r.actual_risk_level === "高" ? "warn" : "ok")}<span class="muted">期望：${esc(r.expected_risk_level)}</span>` },
+      { label: "结果", render: (r) => badge(r.passed ? "通过" : "失败", r.passed ? "ok" : "danger") },
+    ], results)}
+  `;
+}
+
 // 渲染模板列表。
 function renderTemplates() {
   $("templateTable").innerHTML = table([
@@ -798,6 +824,7 @@ function renderAll() {
   renderDevices();
   renderArkConfig();
   renderImportTemplates();
+  renderAgentEval();
   renderTemplates();
 }
 
@@ -805,7 +832,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -821,8 +848,9 @@ async function refreshAll() {
       api("/api/devices"),
       api("/api/ark-config").catch(() => ({})),
       api("/api/import/templates"),
+      api("/api/agent/evaluations/run", { method: "POST" }),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
