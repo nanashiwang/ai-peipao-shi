@@ -17,7 +17,7 @@ from time import perf_counter
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import or_
@@ -48,6 +48,16 @@ from app.services.agent_service import (
 )
 from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
+from app.services.admin_auth import (
+    ADMIN_ROLES,
+    admin_auth_required,
+    admin_auth_secret,
+    bearer_token,
+    path_requires_admin_auth,
+    role_allowed_for_request,
+    sign_admin_token,
+    verify_admin_token,
+)
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.retention_service import prune_retention, retention_policy_from_env, retention_report
@@ -75,6 +85,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def admin_auth_middleware(request: Request, call_next):
+    if not admin_auth_required() or not path_requires_admin_auth(request.url.path):
+        return await call_next(request)
+    try:
+        identity = verify_admin_token(bearer_token(request.headers.get("authorization", "")), admin_auth_secret())
+    except (RuntimeError, ValueError) as exc:
+        return JSONResponse({"detail": str(exc) or "请先登录管理端"}, status_code=401)
+    if not role_allowed_for_request(identity.role, request.method, request.url.path):
+        return JSONResponse({"detail": "当前角色无权执行该操作"}, status_code=403)
+    request.state.admin_identity = identity
+    return await call_next(request)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -261,6 +285,21 @@ def current_runtime_config_report() -> dict:
 
 def current_retention_policy() -> dict:
     return retention_policy_from_env(os.environ)
+
+
+def admin_auth_component() -> dict:
+    required = admin_auth_required()
+    has_secret = bool(os.getenv("ADMIN_AUTH_SECRET", "").strip())
+    if required and not has_secret:
+        status = "critical"
+        detail = "管理端鉴权已启用，但 ADMIN_AUTH_SECRET 未配置"
+    elif required:
+        status = "ok"
+        detail = "管理端鉴权已启用"
+    else:
+        status = "ok"
+        detail = "管理端鉴权未强制启用，仅适合本地/试点内网"
+    return component_status(status, "管理端鉴权", detail, {"required": required, "secret_configured": has_secret})
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
@@ -777,6 +816,13 @@ def account_payload(account: UserAccount) -> dict:
     return {key: value for key, value in as_dict(account).items() if key != "password"}
 
 
+def admin_account_payload(account: UserAccount) -> dict:
+    data = account_payload(account)
+    if account.role in ADMIN_ROLES:
+        data["admin_token"] = sign_admin_token(account.username, account.role, account.display_name, admin_auth_secret())
+    return data
+
+
 def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: str = "", coach_name: str = "") -> Family:
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     if family:
@@ -813,6 +859,17 @@ def ensure_account(db: Session, username: str, password: str, display_name: str,
     return account
 
 
+def seed_bootstrap_admin(db: Session) -> None:
+    username = os.getenv("ADMIN_USERNAME", "").strip()
+    password = os.getenv("ADMIN_PASSWORD", "").strip()
+    if admin_auth_required():
+        admin_auth_secret()
+    if username and password:
+        ensure_account(db, username, password, os.getenv("ADMIN_DISPLAY_NAME", "系统管理员"), "admin")
+    if admin_auth_required() and not db.query(UserAccount).filter(UserAccount.role == "admin").first():
+        raise RuntimeError("管理端鉴权已启用，但没有 admin 账号；请设置 ADMIN_USERNAME/ADMIN_PASSWORD 完成首次引导。")
+
+
 def add_chat_message(db: Session, family_id: str, speaker: str, content: str, minutes_offset: int = 0) -> RawMessage:
     msg = RawMessage(
         family_id=family_id,
@@ -844,7 +901,9 @@ def on_startup():
     init_db()
     db = next(get_db())
     try:
+        seed_bootstrap_admin(db)
         seed_templates(db)
+        db.commit()
     finally:
         db.close()
 
@@ -897,7 +956,29 @@ def login_account(payload: LoginIn, db: Session = Depends(get_db)):
     account = db.query(UserAccount).filter(UserAccount.username == payload.username.strip()).one_or_none()
     if not account or account.password != payload.password:
         raise HTTPException(401, "账号或密码错误")
-    return account_payload(account)
+    return admin_account_payload(account)
+
+
+@app.post("/api/admin/auth/login")
+def admin_login(payload: LoginIn, db: Session = Depends(get_db)):
+    account = db.query(UserAccount).filter(UserAccount.username == payload.username.strip()).one_or_none()
+    if not account or account.password != payload.password or account.role not in ADMIN_ROLES:
+        raise HTTPException(401, "管理端账号或密码错误")
+    return admin_account_payload(account)
+
+
+@app.get("/api/admin/auth/me")
+def admin_me(authorization: str = Header("")):
+    try:
+        identity = verify_admin_token(bearer_token(authorization), admin_auth_secret())
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(401, str(exc)) from exc
+    return {
+        "username": identity.username,
+        "role": identity.role,
+        "display_name": identity.display_name,
+        "expires_at": datetime.utcfromtimestamp(identity.exp).isoformat(sep=" ", timespec="seconds"),
+    }
 
 
 @app.get("/api/test-chat/accounts")
@@ -2589,6 +2670,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
 
     components = [
         runtime_config,
+        admin_auth_component(),
         component_status("ok", "后端服务", "FastAPI 正常响应", {"mode": runtime_config["metrics"]["app_env"]}),
         component_status(
             "ok" if devices and len(online_devices) == len(devices) else ("warn" if devices else "warn"),

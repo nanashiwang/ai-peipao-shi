@@ -1,0 +1,51 @@
+import unittest
+
+from app.services.admin_auth import (
+    admin_auth_required,
+    admin_auth_secret,
+    path_requires_admin_auth,
+    role_allowed_for_request,
+    sign_admin_token,
+    verify_admin_token,
+)
+
+
+class AdminAuthTest(unittest.TestCase):
+    def test_auth_required_only_when_explicit_or_production(self):
+        self.assertFalse(admin_auth_required({"APP_ENV": "local"}))
+        self.assertTrue(admin_auth_required({"APP_ENV": "production"}))
+        self.assertTrue(admin_auth_required({"ADMIN_AUTH_REQUIRED": "true", "APP_ENV": "local"}))
+        self.assertFalse(admin_auth_required({"ADMIN_AUTH_REQUIRED": "false", "APP_ENV": "production"}))
+
+    def test_production_requires_explicit_secret(self):
+        with self.assertRaises(RuntimeError):
+            admin_auth_secret({"APP_ENV": "production"})
+
+        self.assertEqual(admin_auth_secret({"APP_ENV": "production", "ADMIN_AUTH_SECRET": "s"}), "s")
+
+    def test_token_sign_verify_and_expiry(self):
+        token = sign_admin_token("admin", "admin", "系统管理员", "secret", ttl_seconds=60, now=100)
+        identity = verify_admin_token(token, "secret", now=120)
+
+        self.assertEqual(identity.username, "admin")
+        self.assertEqual(identity.role, "admin")
+        with self.assertRaises(ValueError):
+            verify_admin_token(token, "wrong", now=120)
+        with self.assertRaises(ValueError):
+            verify_admin_token(token, "secret", now=200)
+
+    def test_protected_paths_and_role_permissions(self):
+        self.assertFalse(path_requires_admin_auth("/health"))
+        self.assertFalse(path_requires_admin_auth("/api/admin/auth/login"))
+        self.assertFalse(path_requires_admin_auth("/api/devices/rpa-01/heartbeat"))
+        self.assertTrue(path_requires_admin_auth("/api/send-tasks"))
+
+        self.assertTrue(role_allowed_for_request("readonly", "GET", "/api/send-tasks"))
+        self.assertFalse(role_allowed_for_request("readonly", "POST", "/api/send-tasks"))
+        self.assertTrue(role_allowed_for_request("coach", "POST", "/api/send-tasks"))
+        self.assertFalse(role_allowed_for_request("coach", "GET", "/api/ops/health"))
+        self.assertTrue(role_allowed_for_request("admin", "GET", "/api/ops/health"))
+
+
+if __name__ == "__main__":
+    unittest.main()

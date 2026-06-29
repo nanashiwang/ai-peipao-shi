@@ -42,6 +42,7 @@ const AGENTS = {
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (!headers.has("X-Actor")) headers.set("X-Actor", currentActor());
+  if (state.currentUser?.admin_token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${state.currentUser.admin_token}`);
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -50,6 +51,12 @@ async function api(path, options = {}) {
 function currentActor() {
   if (!state.currentUser) return "控制端";
   return `${state.currentUser.role}:${state.currentUser.display_name || state.currentUser.username}`;
+}
+
+function userRoleBadge(user) {
+  const labels = { admin: "管理员", coach: "陪跑师", readonly: "只读", parent: "家长" };
+  const kind = user.role === "admin" ? "danger" : user.role === "coach" ? "ok" : user.role === "readonly" ? "warn" : "";
+  return badge(labels[user.role] || user.role, kind);
 }
 
 // 把普通文本转成安全的 HTML 字符串，防止页面插入未转义内容。
@@ -548,7 +555,7 @@ function renderFamilies() {
 // 渲染网页通讯测试页。
 function renderWebChat() {
   $("loginStatus").innerHTML = state.currentUser
-    ? `${badge(state.currentUser.role === "coach" ? "陪跑师" : "家长", state.currentUser.role === "coach" ? "ok" : "")}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}</p>`
+    ? `${userRoleBadge(state.currentUser)}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}</p>`
     : '<p class="empty">请先登录测试账号。</p>';
   const rows = state.conversations.length ? state.conversations : state.families;
   $("chatConversations").innerHTML = rows.length ? rows.map((item) => `
