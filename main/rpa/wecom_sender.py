@@ -7,7 +7,9 @@
 """
 
 import argparse
+import base64
 import ctypes
+import io
 import json
 import os
 import re
@@ -154,6 +156,46 @@ def request_json(base_url: str, path: str, method: str = "GET", payload: dict | 
     except URLError as exc:
         raise RpaError(f"API 连接失败：{exc}") from exc
     return json.loads(body) if body else {}
+
+
+def should_upload_send_screenshot(config: dict, status: str) -> bool:
+    if not config.get("upload_send_screenshot", True):
+        return False
+    statuses = config.get("upload_send_screenshot_statuses", ["sent", "failed", "skipped", "dry_run"])
+    return status in set(statuses)
+
+
+def screenshot_upload_payload(path: Path, config: dict) -> str:
+    max_bytes = int(config.get("send_screenshot_max_upload_bytes", 5 * 1024 * 1024))
+    data = path.read_bytes()
+    if len(data) <= max_bytes:
+        return base64.b64encode(data).decode("ascii")
+    if Image is None:
+        print(f"screenshot_upload_skipped detail=file_too_large size={len(data)}")
+        return ""
+    with Image.open(path) as img:
+        max_side = int(config.get("send_screenshot_max_side", 1600))
+        img.thumbnail((max_side, max_side))
+        if img.mode not in {"RGB", "L"}:
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=int(config.get("send_screenshot_jpeg_quality", 70)), optimize=True)
+    data = buf.getvalue()
+    if len(data) > max_bytes:
+        print(f"screenshot_upload_skipped detail=resized_file_too_large size={len(data)}")
+        return ""
+    return base64.b64encode(data).decode("ascii")
+
+
+def capture_send_screenshot(config: dict, task_id: int, status: str) -> str:
+    if not should_upload_send_screenshot(config, status):
+        return ""
+    try:
+        path = capture_fullscreen_image(f"result_{status}_{task_id}", config)
+        return screenshot_upload_payload(path, config)
+    except Exception as exc:
+        print(f"screenshot_upload_failed detail={exc}")
+        return ""
 
 
 # 健康检查后端服务是否可访问。
@@ -1663,8 +1705,14 @@ def send_task_and_record(task: dict, config: dict):
         status, detail = process_task(task, config)
     except Exception as exc:
         status, detail = "failed", str(exc)
+    screenshot_base64 = capture_send_screenshot(config, task_id, status)
     request_json(config["api_base_url"], f"/api/send-tasks/{task_id}/result", method="POST",
-                 payload={"status": status, "detail": detail, "device_id": config.get("device_id", "")},
+                 payload={
+                     "status": status,
+                     "detail": detail,
+                     "device_id": config.get("device_id", ""),
+                     "screenshot_base64": screenshot_base64,
+                 },
                  extra_headers=device_headers(config))
     print(f"task={task_id} target={task.get('target_name')} mode={task.get('send_mode') or 'config_default'} status={status} detail={detail}")
     return status, detail

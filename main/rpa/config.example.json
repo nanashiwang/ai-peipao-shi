@@ -94,5 +94,10 @@
   "allow_enter_search_fallback": true,
   "recover_foreground_wecom": true,
   "visual_click_use_screenshot_coords": true,
-  "clear_after_dry_run": true
+  "clear_after_dry_run": true,
+  "upload_send_screenshot": true,
+  "upload_send_screenshot_statuses": ["sent", "failed", "skipped", "dry_run"],
+  "send_screenshot_max_upload_bytes": 5242880,
+  "send_screenshot_max_side": 1600,
+  "send_screenshot_jpeg_quality": 70
 }

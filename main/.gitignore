@@ -6,6 +6,7 @@ server.log
 server.err.log
 .env
 config/ark.json
+data/send_screenshots/
 rpa/debug_*.png
 rpa/config.json
 xuexi.md

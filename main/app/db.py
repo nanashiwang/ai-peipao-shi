@@ -39,7 +39,7 @@ def init_db():
 def ensure_columns():
     wanted = {
         "send_tasks": [("device_id", "VARCHAR(64)"), ("send_mode", "VARCHAR(20)")],
-        "send_logs": [("device_id", "VARCHAR(64)")],
+        "send_logs": [("device_id", "VARCHAR(64)"), ("screenshot_path", "TEXT")],
     }
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())

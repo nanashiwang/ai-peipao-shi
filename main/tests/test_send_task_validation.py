@@ -1,14 +1,21 @@
+import base64
+import tempfile
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.main as main_module
 from app.db import Base
 from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
+    SendResultIn,
+    record_send_result,
+    resolve_send_screenshot,
     validate_device_conversation_scope,
     validate_real_send_risk,
     validate_send_mode,
@@ -159,6 +166,68 @@ class RealSendRiskValidationTest(unittest.TestCase):
 
     def test_allows_real_send_when_no_duplicate_or_recent_send(self):
         self.assertIsNone(validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u65b0\u5185\u5bb9", now=self.now))
+
+
+class SendResultEvidenceTest(unittest.TestCase):
+    PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        self.db = sessionmaker(bind=engine, future=True)()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_screenshot_dir = main_module.SEND_SCREENSHOT_DIR
+        main_module.SEND_SCREENSHOT_DIR = Path(self.tmp.name)
+
+    def tearDown(self):
+        main_module.SEND_SCREENSHOT_DIR = self.old_screenshot_dir
+        self.db.close()
+        self.tmp.cleanup()
+
+    def add_task(self):
+        task = SendTask(
+            family_id="f1",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="test",
+            content="\u6d4b\u8bd5\u5185\u5bb9",
+            send_mode="real_send",
+            status="assigned",
+            device_id="rpa-01",
+        )
+        self.db.add(task)
+        self.db.commit()
+        return task
+
+    def test_record_send_result_stores_server_screenshot(self):
+        task = self.add_task()
+        payload = SendResultIn(
+            status="failed",
+            detail="\u7a97\u53e3\u4e22\u5931",
+            device_id="rpa-01",
+            screenshot_base64=base64.b64encode(self.PNG_BYTES).decode("ascii"),
+        )
+
+        log = record_send_result(task.id, payload, self.db)
+
+        self.assertEqual(log["status"], "failed")
+        self.assertEqual(log["device_id"], "rpa-01")
+        self.assertTrue(log["screenshot_path"].startswith("/api/send-artifacts/task_"))
+        filename = log["screenshot_path"].rsplit("/", 1)[1]
+        self.assertEqual(resolve_send_screenshot(filename).read_bytes(), self.PNG_BYTES)
+
+    def test_rejects_non_image_screenshot_payload(self):
+        task = self.add_task()
+        payload = SendResultIn(
+            status="sent",
+            screenshot_base64=base64.b64encode(b"not-image").decode("ascii"),
+        )
+
+        with self.assertRaises(HTTPException):
+            record_send_result(task.id, payload, self.db)
+
+    def test_rejects_artifact_path_traversal(self):
+        with self.assertRaises(HTTPException):
+            resolve_send_screenshot("../coach_mvp.db")
 
 
 if __name__ == "__main__":

@@ -157,6 +157,7 @@ class SendLog(Base):
     target_name: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(30))
     device_id: Mapped[str] = mapped_column(String(64), default="")
+    screenshot_path: Mapped[str] = mapped_column(Text, default="")
     detail: Mapped[str] = mapped_column(Text, default="")
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

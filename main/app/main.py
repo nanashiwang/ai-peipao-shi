@@ -3,6 +3,8 @@
 这个文件把数据导入、Agent 生成、发送任务和 RPA 同步等接口组装成完整的本地 MVP。
 """
 
+import base64
+import binascii
 import io
 import json
 import re
@@ -49,6 +51,8 @@ from app.services.scenario import detect_checkin, detect_scene
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
 STATIC = Path(__file__).resolve().parent / "static"
+SEND_SCREENSHOT_DIR = ROOT / "data" / "send_screenshots"
+MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
 
@@ -104,6 +108,7 @@ class SendResultIn(BaseModel):
     status: str
     detail: str = ""
     device_id: str = ""
+    screenshot_base64: str = ""
 
 
 # 设备注册/更新入参。
@@ -257,6 +262,53 @@ def validate_send_mode_submit(send_mode: str, confirm_real_send: bool, current_m
 
 def normalize_send_content(content: str) -> str:
     return re.sub(r"\s+", " ", (content or "").strip())
+
+
+def detect_image_extension(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    raise HTTPException(400, "截图只支持 PNG 或 JPG")
+
+
+def store_send_screenshot(task_id: int, screenshot_base64: str) -> str:
+    raw = (screenshot_base64 or "").strip()
+    if not raw:
+        return ""
+    if "," in raw and raw.lower().startswith("data:image/"):
+        raw = raw.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(400, "截图 base64 无法解析") from exc
+    if not data:
+        return ""
+    if len(data) > MAX_SEND_SCREENSHOT_BYTES:
+        raise HTTPException(400, f"截图不能超过 {MAX_SEND_SCREENSHOT_BYTES // 1024 // 1024}MB")
+    ext = detect_image_extension(data)
+    SEND_SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"task_{task_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.{ext}"
+    path = (SEND_SCREENSHOT_DIR / filename).resolve()
+    try:
+        path.relative_to(SEND_SCREENSHOT_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(400, "截图路径非法") from exc
+    path.write_bytes(data)
+    return f"/api/send-artifacts/{filename}"
+
+
+def resolve_send_screenshot(filename: str) -> Path:
+    if not re.fullmatch(r"task_\d+_\d{8}_\d{6}_\d{6}\.(png|jpg)", filename or ""):
+        raise HTTPException(404, "截图不存在")
+    path = (SEND_SCREENSHOT_DIR / filename).resolve()
+    try:
+        path.relative_to(SEND_SCREENSHOT_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(404, "截图不存在") from exc
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "截图不存在")
+    return path
 
 
 def validate_real_send_risk(
@@ -1298,6 +1350,7 @@ def record_send_result(task_id: int, payload: SendResultIn, db: Session = Depend
         raise HTTPException(404, "任务不存在")
     if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
         raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
+    screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
     task.status = payload.status
     log = SendLog(
         task_id=task.id,
@@ -1306,6 +1359,7 @@ def record_send_result(task_id: int, payload: SendResultIn, db: Session = Depend
         status=payload.status,
         detail=payload.detail,
         device_id=payload.device_id or task.device_id,
+        screenshot_path=screenshot_path,
     )
     db.add(log)
     db.commit()
@@ -1368,6 +1422,12 @@ def web_send_all(db: Session = Depends(get_db)):
 @app.get("/api/send-logs")
 def list_send_logs(db: Session = Depends(get_db)):
     return [as_dict(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()]
+
+
+@app.get("/api/send-artifacts/{filename}")
+def get_send_artifact(filename: str):
+    path = resolve_send_screenshot(filename)
+    return FileResponse(path)
 
 
 # ============ 设备（多被控端总控）============

@@ -548,6 +548,7 @@ function renderLogs() {
     { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
     { label: "对象", key: "target_name" },
     { label: "状态", key: "status" },
+    { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
     { label: "详情", key: "detail" },
   ], state.logs);
 }
