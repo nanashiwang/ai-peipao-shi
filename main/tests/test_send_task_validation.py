@@ -1,8 +1,9 @@
 import unittest
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from app.main import validate_send_mode, validate_send_mode_submit, validate_send_task_content
+from app.main import validate_device_conversation_scope, validate_send_mode, validate_send_mode_submit, validate_send_task_content
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -53,6 +54,29 @@ class SendModeValidationTest(unittest.TestCase):
 
     def test_existing_real_send_can_be_saved_without_reconfirm(self):
         self.assertEqual(validate_send_mode_submit("real_send", False, "real_send"), "real_send")
+
+
+class DeviceBindingValidationTest(unittest.TestCase):
+    def test_rejects_missing_device(self):
+        with self.assertRaises(HTTPException):
+            validate_device_conversation_scope(None, "\u4e00\u5408\u5b66\u793e")
+
+    def test_rejects_device_without_conversations(self):
+        dev = SimpleNamespace(device_id="rpa-01", conversations="[]")
+
+        with self.assertRaises(HTTPException):
+            validate_device_conversation_scope(dev, "\u4e00\u5408\u5b66\u793e")
+
+    def test_rejects_target_outside_device_scope(self):
+        dev = SimpleNamespace(device_id="rpa-01", conversations='["\u4e00\u5408\u5b66\u793e"]')
+
+        with self.assertRaises(HTTPException):
+            validate_device_conversation_scope(dev, "\u6d4b\u8bd52\u7fa4")
+
+    def test_accepts_target_inside_device_scope(self):
+        dev = SimpleNamespace(device_id="rpa-01", conversations='["\u4e00\u5408\u5b66\u793e"]')
+
+        self.assertIsNone(validate_device_conversation_scope(dev, "\u4e00\u5408\u5b66\u793e"))
 
 
 if __name__ == "__main__":

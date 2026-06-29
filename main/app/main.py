@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import get_db, init_db
@@ -82,6 +83,7 @@ class SendTaskIn(BaseModel):
     target_name: str
     scene: str = "手动测试"
     content: str
+    device_id: str = ""
     send_mode: str = "dry_run"
     confirm_real_send: bool = False
 
@@ -151,6 +153,7 @@ class SendTaskUpdate(BaseModel):
     target_name: str = ""
     scene: str = ""
     content: str = ""
+    device_id: str | None = None
     send_mode: str = ""
     confirm_real_send: bool = False
     status: str = "pending"
@@ -175,6 +178,7 @@ class AIOutputTaskIn(BaseModel):
     content: str = ""
     scene: str = ""
     target_name: str = ""
+    device_id: str = ""
     send_mode: str = "dry_run"
     confirm_real_send: bool = False
 
@@ -247,6 +251,33 @@ def validate_send_mode_submit(send_mode: str, confirm_real_send: bool, current_m
     if mode == "real_send" and current_mode != "real_send" and not confirm_real_send:
         raise HTTPException(400, "真实发送需要显式确认")
     return mode
+
+
+def device_conversations(dev: Device) -> list[str]:
+    try:
+        raw = json.loads(dev.conversations or "[]")
+    except Exception:
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def validate_device_conversation_scope(dev: Device | None, target_name: str) -> None:
+    if not dev:
+        raise HTTPException(400, "指定设备不存在")
+    convs = device_conversations(dev)
+    if not convs:
+        raise HTTPException(400, "指定设备未配置负责会话")
+    if target_name not in convs:
+        raise HTTPException(400, f"目标「{target_name}」不在设备「{dev.device_id}」负责会话内")
+
+
+def validate_task_device_binding(db: Session, device_id: str, target_name: str) -> str:
+    clean_device_id = (device_id or "").strip()
+    if not clean_device_id:
+        return ""
+    dev = db.query(Device).filter(Device.device_id == clean_device_id).first()
+    validate_device_conversation_scope(dev, target_name)
+    return clean_device_id
 
 
 # 兼容多种日期字符串格式，供 RPA 同步时使用。
@@ -821,11 +852,13 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     content = validate_send_task_content(content)
     target_name = data.target_name.strip() or (family.parent_nickname if family else output.family_id)
     scene = data.scene.strip() or output.source or output.agent_type
+    device_id = validate_task_device_binding(db, data.device_id, target_name)
     task = SendTask(
         family_id=output.family_id,
         target_name=target_name,
         scene=scene,
         content=content,
+        device_id=device_id,
         send_mode=validate_send_mode_submit(data.send_mode, data.confirm_real_send),
         status="pending",
     )
@@ -1156,6 +1189,7 @@ def create_send_task(payload: SendTaskIn, db: Session = Depends(get_db)):
     data = payload.model_dump()
     data["content"] = validate_send_task_content(data.get("content", ""))
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
+    data["device_id"] = validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
     task = SendTask(**data)
     db.add(task)
     db.commit()
@@ -1170,12 +1204,15 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depend
         raise HTTPException(404, "任务不存在")
     if payload.status not in {"pending", "approved", "assigned", "cancelled", "sent", "failed", "dry_run"}:
         raise HTTPException(400, "status 不合法")
-    task.target_name = payload.target_name or task.target_name
+    target_name = payload.target_name or task.target_name
+    device_id = task.device_id if payload.device_id is None else payload.device_id
+    task.target_name = target_name
     task.scene = payload.scene or task.scene
     if payload.content:
         task.content = validate_send_task_content(payload.content)
     if payload.send_mode:
         task.send_mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send, task.send_mode)
+    task.device_id = validate_task_device_binding(db, device_id or "", target_name)
     task.status = payload.status
     db.commit()
     return as_dict(task)
@@ -1440,6 +1477,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     candidates = (
         db.query(SendTask)
         .filter(SendTask.status == "pending", SendTask.target_name.in_(convs))
+        .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
         .order_by(SendTask.id)
         .limit(limit)
         .all()

@@ -98,6 +98,17 @@ function sendModeSelect(task) {
   `;
 }
 
+function deviceSelect(task) {
+  const current = task.device_id || "";
+  const options = ['<option value="">自动领取</option>'].concat(
+    state.devices.map((device) => {
+      const label = `${device.device_id}${device.name ? ` · ${device.name}` : ""}`;
+      return `<option value="${esc(device.device_id)}" ${current === device.device_id ? "selected" : ""}>${esc(label)}</option>`;
+    })
+  );
+  return `<select id="task-device-${task.id}">${options.join("")}</select>`;
+}
+
 // 渲染通用表格，减少重复 HTML 拼接。
 function table(headers, rows) {
   if (!rows.length) return '<p class="empty">暂无数据</p>';
@@ -517,6 +528,7 @@ function renderTasks() {
     { label: "对象", key: "target_name" },
     { label: "来源/场景", key: "scene" },
     { label: "状态", render: (r) => badge(r.status, r.status === "sent" ? "ok" : r.status === "cancelled" ? "" : "warn") },
+    { label: "发送设备", render: (r) => deviceSelect(r) },
     { label: "企微模式", render: (r) => sendModeSelect(r) },
     { label: "最终内容", render: (r) => `<textarea id="task-${r.id}">${esc(r.content)}</textarea>` },
     { label: "操作", render: (r) => `
@@ -743,6 +755,7 @@ async function createReportTask(id) {
         target_name: family?.parent_nickname || report.family_id,
         scene: "周报发送",
         content: $(`report-${id}`).value,
+        device_id: "",
         send_mode: "dry_run",
       }),
     });
@@ -765,7 +778,13 @@ async function saveTask(id) {
     await api(`/api/send-tasks/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...task, content: $(`task-${id}`).value, send_mode: sendMode, confirm_real_send: confirmRealSend }),
+      body: JSON.stringify({
+        ...task,
+        content: $(`task-${id}`).value,
+        device_id: $(`task-device-${id}`)?.value || "",
+        send_mode: sendMode,
+        confirm_real_send: confirmRealSend,
+      }),
     });
     toast("任务已保存");
     await refreshAll();
