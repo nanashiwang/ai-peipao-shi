@@ -280,6 +280,7 @@ function outputCard(output, compact = false) {
           ${badge(agent.name)}
           ${badge(output.risk_level || "低", output.risk_level === "高" ? "danger" : output.risk_level === "中" ? "warn" : "ok")}
           ${badge(output.status)}
+          ${output.need_human_review === "Y" ? badge("需人工", "warn") : ""}
           <strong>${esc(familyName(output.family_id))}</strong>
         </div>
         <small>${esc(output.created_at || "")}</small>

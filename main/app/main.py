@@ -320,6 +320,30 @@ def validate_send_task_content(content: str) -> str:
     return text
 
 
+AI_SENSITIVE_TERMS = ("退费", "退款", "投诉", "赔偿", "合同", "维权", "法律", "承诺效果", "保证效果", "价格争议")
+AI_UNCERTAIN_TERMS = ("不确定", "无法判断", "需要确认", "转人工", "人工介入", "主管确认", "先确认")
+
+
+def ai_safety_findings(*texts: str) -> dict:
+    blob = "\n".join(str(text or "") for text in texts)
+    sensitive = sorted({term for term in AI_SENSITIVE_TERMS if term in blob})
+    uncertain = sorted({term for term in AI_UNCERTAIN_TERMS if term in blob})
+    return {
+        "sensitive_terms": sensitive,
+        "uncertain_terms": uncertain,
+        "requires_manual": bool(sensitive or uncertain),
+    }
+
+
+def validate_ai_output_send_boundary(output: AIOutput, content: str, send_mode: str) -> dict:
+    findings = ai_safety_findings(output.raw_json, output.display_text, output.edited_output, content)
+    if findings["requires_manual"] and output.status != "approved":
+        raise HTTPException(400, "AI输出包含敏感或不确定内容，必须先人工审核后再加入发送任务")
+    if send_mode == "real_send" and findings["requires_manual"]:
+        raise HTTPException(400, "AI敏感/不确定内容禁止直接真实发送，请改为试运行或人工发送")
+    return findings
+
+
 def validate_send_mode(send_mode: str) -> str:
     mode = (send_mode or "dry_run").strip()
     if mode not in {"dry_run", "real_send"}:
@@ -520,6 +544,7 @@ def seed_templates(db: Session):
 
 # 把 Agent 结果写入 ai_outputs 表，作为后续人工审核入口。
 def save_ai_output(db: Session, family_id: str, agent_type: str, source: str, result: dict) -> AIOutput:
+    safety = ai_safety_findings(json.dumps(result.get("raw", {}), ensure_ascii=False), result.get("display_text", ""))
     output = AIOutput(
         family_id=family_id,
         agent_type=agent_type,
@@ -530,7 +555,7 @@ def save_ai_output(db: Session, family_id: str, agent_type: str, source: str, re
         edited_output=result["display_text"],
         status="needs_review",
         risk_level=result["risk_level"],
-        need_human_review="Y" if result["need_human_review"] else "N",
+        need_human_review="Y" if result["need_human_review"] or safety["requires_manual"] else "N",
         suggested_actions="、".join(result["suggested_actions"]),
     )
     db.add(output)
@@ -1273,6 +1298,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     scene = data.scene.strip() or output.source or output.agent_type
     device_id = validate_task_device_binding(db, data.device_id, target_name)
     send_mode = validate_send_mode_submit(data.send_mode, data.confirm_real_send)
+    validate_ai_output_send_boundary(output, content, send_mode)
     if send_mode == "real_send":
         validate_real_send_risk(db, target_name, content)
     task = SendTask(
