@@ -16,6 +16,7 @@ from app.main import (
     SendResultIn,
     SendTaskIn,
     SendTaskUpdate,
+    actor_from_request,
     cancel_send_task,
     claim_tasks,
     create_send_task,
@@ -67,6 +68,11 @@ class SendTaskValidationTest(unittest.TestCase):
         content = "\u8bf7\u95ee\u4eca\u5929\u9700\u8981\u6253\u5361\u5417?"
 
         self.assertEqual(validate_send_task_content(content), content)
+
+    def test_actor_header_accepts_url_encoded_chinese(self):
+        request = SimpleNamespace(headers={"x-actor": "%E6%8E%A7%E5%88%B6%E7%AB%AF"}, state=SimpleNamespace())
+
+        self.assertEqual(actor_from_request(request), "\u63a7\u5236\u7aef")
 
 class SendModeValidationTest(unittest.TestCase):
     def test_defaults_to_dry_run(self):

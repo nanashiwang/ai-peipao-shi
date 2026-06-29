@@ -14,6 +14,7 @@ import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
+from urllib.parse import unquote
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -367,7 +368,7 @@ def actor_from_request(request: Request | None, fallback: str = "控制端") -> 
     device_id = (request.headers.get("x-device-id") or "").strip()
     if device_id:
         return f"设备:{device_id}"[:120]
-    actor = (request.headers.get("x-actor") or request.headers.get("x-user") or "").strip()
+    actor = unquote((request.headers.get("x-actor") or request.headers.get("x-user") or "").strip())
     return (actor or fallback)[:120]
 
 

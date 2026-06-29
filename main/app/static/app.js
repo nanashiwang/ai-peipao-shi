@@ -41,7 +41,7 @@ const AGENTS = {
 // 统一封装 fetch，减少重复的错误处理代码。
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  if (!headers.has("X-Actor")) headers.set("X-Actor", currentActor());
+  if (!headers.has("X-Actor")) headers.set("X-Actor", encodeURIComponent(currentActor()));
   if (state.currentUser?.admin_token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${state.currentUser.admin_token}`);
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) throw new Error(await res.text());
