@@ -2089,20 +2089,26 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     before = send_task_snapshot(task)
     previous_mode = task.send_mode
     target_name = payload.target_name or task.target_name
+    scene = payload.scene or task.scene
+    content = task.content
     device_id = task.device_id if payload.device_id is None else payload.device_id
-    task.target_name = target_name
-    task.scene = payload.scene or task.scene
     if payload.content:
-        task.content = validate_send_task_content(payload.content)
+        content = validate_send_task_content(payload.content)
+    send_mode = task.send_mode
     if payload.send_mode:
-        task.send_mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send, task.send_mode)
-    task.device_id = validate_task_device_binding(db, device_id or "", target_name)
-    if task.send_mode == "real_send":
-        validate_real_send_risk(db, target_name, task.content, exclude_task_id=task.id)
+        send_mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send, task.send_mode)
+    clean_device_id = validate_task_device_binding(db, device_id or "", target_name)
+    if send_mode == "real_send":
+        validate_real_send_risk(db, target_name, content, exclude_task_id=task.id)
+    task.target_name = target_name
+    task.scene = scene
+    task.content = content
+    task.send_mode = send_mode
+    task.device_id = clean_device_id
     task.status = payload.status
     if task.status == "pending":
         task.scheduled_at = datetime.utcnow()
-    action = "confirm_real_send" if previous_mode != "real_send" and task.send_mode == "real_send" else "update"
+    action = "confirm_real_send" if previous_mode != "real_send" and send_mode == "real_send" else "update"
     summary = "确认真实发送" if action == "confirm_real_send" else "更新发送任务"
     audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
     sync_weekly_report_send_status(db, task)

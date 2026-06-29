@@ -262,6 +262,112 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.assertEqual(saved.status, "pending")
         self.assertEqual(self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).count(), 1)
 
+    def test_create_real_send_rejects_duplicate_active_task(self):
+        create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u91cd\u590d\u5185\u5bb9",
+                send_mode="real_send",
+                confirm_real_send=True,
+            ),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException):
+            create_send_task(
+                SendTaskIn(
+                    family_id="f2",
+                    target_name="\u4e00\u5408\u5b66\u793e",
+                    scene="test",
+                    content="\u91cd\u590d\u5185\u5bb9",
+                    send_mode="real_send",
+                    confirm_real_send=True,
+                ),
+                db=self.db,
+            )
+
+        self.assertEqual(self.db.query(SendTask).count(), 1)
+        self.assertEqual(self.db.query(AuditLog).count(), 1)
+
+    def test_create_real_send_rejects_recent_sent_same_content(self):
+        sent_task = SendTask(
+            family_id="f1",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="sent",
+            content="\u8fd1\u671f\u5df2\u53d1\u5185\u5bb9",
+            send_mode="real_send",
+            status="sent",
+        )
+        self.db.add(sent_task)
+        self.db.flush()
+        self.db.add(
+            SendLog(
+                task_id=sent_task.id,
+                family_id=sent_task.family_id,
+                target_name=sent_task.target_name,
+                status="sent",
+                sent_at=datetime.utcnow() - timedelta(minutes=10),
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException):
+            create_send_task(
+                SendTaskIn(
+                    family_id="f2",
+                    target_name="\u4e00\u5408\u5b66\u793e",
+                    scene="test",
+                    content="\u8fd1\u671f\u5df2\u53d1\u5185\u5bb9",
+                    send_mode="real_send",
+                    confirm_real_send=True,
+                ),
+                db=self.db,
+            )
+
+        self.assertEqual(self.db.query(SendTask).count(), 1)
+
+    def test_update_real_send_rejects_duplicate_without_mutating_task(self):
+        create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u5df2\u6392\u961f\u5185\u5bb9",
+                send_mode="real_send",
+                confirm_real_send=True,
+            ),
+            db=self.db,
+        )
+        candidate = create_send_task(
+            SendTaskIn(
+                family_id="f2",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u5019\u9009\u5185\u5bb9",
+            ),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException):
+            update_send_task(
+                candidate["id"],
+                SendTaskUpdate(
+                    content="\u5df2\u6392\u961f\u5185\u5bb9",
+                    send_mode="real_send",
+                    confirm_real_send=True,
+                    status="pending",
+                ),
+                db=self.db,
+            )
+
+        saved = self.db.get(SendTask, candidate["id"])
+        self.assertEqual(saved.content, "\u5019\u9009\u5185\u5bb9")
+        self.assertEqual(saved.send_mode, "dry_run")
+        self.assertEqual(saved.status, "pending")
+        self.assertEqual(self.db.query(AuditLog).filter(AuditLog.entity_id == candidate["id"]).count(), 1)
+
     def test_confirm_real_send_is_audited(self):
         task = create_send_task(
             SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u6d4b\u8bd5\u5185\u5bb9"),
