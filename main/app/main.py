@@ -46,7 +46,7 @@ from app.services.agent_service import (
     run_weekly_report_agent as run_weekly_report_agent_service,
 )
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
-from app.services.importer import import_rows, rows_from_upload
+from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.scenario import detect_checkin, detect_scene
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1052,6 +1052,24 @@ async def import_file(file: UploadFile = File(...), db: Session = Depends(get_db
     data = await file.read()
     rows = rows_from_upload(file.filename or "upload.csv", data)
     return import_rows(db, rows)
+
+
+@app.get("/api/import/templates")
+def import_templates():
+    return list_import_templates()
+
+
+@app.get("/api/import/templates/{template_key}/csv")
+def download_import_template(template_key: str):
+    try:
+        data = import_template_csv_bytes(template_key)
+    except KeyError as exc:
+        raise HTTPException(404, "导入模板不存在") from exc
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={template_key}.csv"},
+    )
 
 
 # 载入内置样例数据，方便演示和联调。

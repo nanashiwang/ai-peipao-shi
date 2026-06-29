@@ -29,8 +29,148 @@ FIELD_ALIASES = {
     "parent_phone": ["parent_phone", "手机号", "手机", "家长手机号"],
 }
 
+IMPORT_TEMPLATES = {
+    "student_info_v1": {
+        "key": "student_info_v1",
+        "template_family": "student_info",
+        "version": "1.0",
+        "name": "学员信息模板",
+        "business_type": "学员信息",
+        "description": "用于初始化家庭、学员、陪跑师、课程阶段等基础档案。",
+        "required_fields": ["family_id", "parent_nickname", "child_grade", "coach_name"],
+        "optional_fields": ["parent_phone", "child_name", "course_stage", "service_status"],
+        "headers": ["family_id", "parent_nickname", "parent_phone", "child_name", "child_grade", "coach_name", "course_stage", "service_status"],
+        "sample_rows": [
+            {
+                "family_id": "FAM001",
+                "parent_nickname": "林妈妈",
+                "parent_phone": "13800138000",
+                "child_name": "林同学",
+                "child_grade": "初一",
+                "coach_name": "怡彤老师",
+                "course_stage": "S级陪跑第1阶段",
+                "service_status": "服务中",
+            }
+        ],
+    },
+    "chat_messages_v1": {
+        "key": "chat_messages_v1",
+        "template_family": "chat_messages",
+        "version": "1.0",
+        "name": "聊天记录模板",
+        "business_type": "聊天记录",
+        "description": "用于导入企业微信群聊/单聊消息，是画像、周报、回复和待办判断的主数据源。",
+        "required_fields": ["family_id", "message_time", "speaker", "content"],
+        "optional_fields": ["parent_nickname", "child_grade", "coach_name", "source", "checkin_status"],
+        "headers": ["family_id", "parent_nickname", "child_grade", "coach_name", "message_time", "speaker", "content", "source", "checkin_status"],
+        "sample_rows": [
+            {
+                "family_id": "FAM001",
+                "parent_nickname": "林妈妈",
+                "child_grade": "初一",
+                "coach_name": "怡彤老师",
+                "message_time": "2026-06-30 19:30",
+                "speaker": "林妈妈",
+                "content": "老师，孩子今天已完成数学订正。",
+                "source": "企业微信群",
+                "checkin_status": "完成打卡",
+            }
+        ],
+    },
+    "checkin_records_v1": {
+        "key": "checkin_records_v1",
+        "template_family": "checkin_records",
+        "version": "1.0",
+        "name": "打卡记录模板",
+        "business_type": "打卡记录",
+        "description": "用于单独导入打卡、PBL提交或任务完成证据。",
+        "required_fields": ["family_id", "message_time", "checkin_status", "content"],
+        "optional_fields": ["parent_nickname", "source", "coach_name"],
+        "headers": ["family_id", "parent_nickname", "message_time", "checkin_status", "content", "source", "coach_name"],
+        "sample_rows": [
+            {
+                "family_id": "FAM001",
+                "parent_nickname": "林妈妈",
+                "message_time": "2026-06-30 20:10",
+                "checkin_status": "完成打卡",
+                "content": "数学订正已完成，英语阅读未完成。",
+                "source": "打卡表",
+                "coach_name": "怡彤老师",
+            }
+        ],
+    },
+    "leave_makeup_v1": {
+        "key": "leave_makeup_v1",
+        "template_family": "leave_makeup",
+        "version": "1.0",
+        "name": "请假补课模板",
+        "business_type": "请假缺课记录",
+        "description": "用于登记请假、缺课、补课计划和跟进责任人。",
+        "required_fields": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan"],
+        "optional_fields": ["owner", "status", "coach_name"],
+        "headers": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan", "owner", "status", "coach_name"],
+        "sample_rows": [
+            {
+                "family_id": "FAM001",
+                "parent_nickname": "林妈妈",
+                "leave_time": "2026-07-01 19:00",
+                "leave_reason": "孩子校内活动请假",
+                "makeup_plan": "7月3日补课并同步资料",
+                "owner": "怡彤老师",
+                "status": "待补课",
+                "coach_name": "怡彤老师",
+            }
+        ],
+    },
+    "course_stage_v1": {
+        "key": "course_stage_v1",
+        "template_family": "course_stage",
+        "version": "1.0",
+        "name": "课程阶段模板",
+        "business_type": "课程阶段数据",
+        "description": "用于导入课程阶段、Unit进度、PBL次数、打卡率和下一里程碑。",
+        "required_fields": ["family_id", "parent_nickname", "course_stage", "unit_progress"],
+        "optional_fields": ["child_grade", "pbl_count", "checkin_rate", "next_milestone", "coach_name"],
+        "headers": ["family_id", "parent_nickname", "child_grade", "course_stage", "unit_progress", "pbl_count", "checkin_rate", "next_milestone", "coach_name"],
+        "sample_rows": [
+            {
+                "family_id": "FAM001",
+                "parent_nickname": "林妈妈",
+                "child_grade": "初一",
+                "course_stage": "S级陪跑第1阶段",
+                "unit_progress": "Unit 3",
+                "pbl_count": "2",
+                "checkin_rate": "86%",
+                "next_milestone": "完成第3次PBL展示",
+                "coach_name": "怡彤老师",
+            }
+        ],
+    },
+}
+
 MAX_IMPORT_ISSUES = 100
 VALID_MOBILE_RE = re.compile(r"^1[3-9]\d{9}$")
+
+
+def list_import_templates() -> list[dict]:
+    return [IMPORT_TEMPLATES[key] for key in sorted(IMPORT_TEMPLATES)]
+
+
+def get_import_template(template_key: str) -> dict:
+    template = IMPORT_TEMPLATES.get((template_key or "").strip())
+    if not template:
+        raise KeyError(template_key)
+    return template
+
+
+def import_template_csv_bytes(template_key: str) -> bytes:
+    template = get_import_template(template_key)
+    buf = StringIO()
+    writer = csv.DictWriter(buf, fieldnames=template["headers"], lineterminator="\n")
+    writer.writeheader()
+    for row in template["sample_rows"]:
+        writer.writerow(row)
+    return buf.getvalue().encode("utf-8-sig")
 
 
 # 按字段别名读取值，统一处理中文表头和英文表头。

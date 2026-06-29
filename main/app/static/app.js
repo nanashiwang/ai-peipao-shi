@@ -12,6 +12,7 @@ const state = {
   workbenchOverview: {},
   devices: [],
   arkConfig: {},
+  importTemplates: [],
   templates: [],
   outputs: [],
   accounts: [],
@@ -754,6 +755,18 @@ function renderArkConfig() {
     : "未配置 —— 被控端云端定位需要它，请填入阿里百炼 API-KEY";
 }
 
+function renderImportTemplates() {
+  const el = $("importTemplateTable");
+  if (!el) return;
+  el.innerHTML = table([
+    { label: "模板", render: (r) => `<strong>${esc(r.name)}</strong><p class="muted">${esc(r.description)}</p>` },
+    { label: "业务类型", key: "business_type" },
+    { label: "版本", render: (r) => `v${esc(r.version)}` },
+    { label: "必填字段", render: (r) => (r.required_fields || []).map((field) => badge(field, "ok")).join("") },
+    { label: "下载", render: (r) => `<a class="dl-link" href="/api/import/templates/${encodeURIComponent(r.key)}/csv">CSV模板</a>` },
+  ], state.importTemplates || []);
+}
+
 // 渲染模板列表。
 function renderTemplates() {
   $("templateTable").innerHTML = table([
@@ -784,6 +797,7 @@ function renderAll() {
   renderAuditLogs();
   renderDevices();
   renderArkConfig();
+  renderImportTemplates();
   renderTemplates();
 }
 
@@ -791,7 +805,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -806,8 +820,9 @@ async function refreshAll() {
       api("/api/test-chat/conversations"),
       api("/api/devices"),
       api("/api/ark-config").catch(() => ({})),
+      api("/api/import/templates"),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
