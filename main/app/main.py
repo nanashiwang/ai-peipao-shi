@@ -5,6 +5,7 @@
 
 import io
 import json
+import re
 import secrets
 import zipfile
 from datetime import datetime, timedelta
@@ -210,6 +211,22 @@ def as_dict(obj):
         value = getattr(obj, col.name)
         data[col.name] = value.isoformat(sep=" ", timespec="seconds") if hasattr(value, "isoformat") else value
     return data
+
+
+def validate_send_task_content(content: str) -> str:
+    """发送任务会触达真实家长/群，入队前先拦截空内容和明显编码损坏。"""
+    text = (content or "").strip()
+    if not text:
+        raise HTTPException(400, "发送内容不能为空")
+    if "\ufffd" in text:
+        raise HTTPException(400, "发送内容包含替换字符，疑似编码损坏")
+    question_count = text.count("?")
+    if re.search(r"\?{4,}", text) or (question_count >= 6 and question_count / max(len(text), 1) >= 0.2):
+        raise HTTPException(400, "发送内容包含大量问号，疑似中文编码损坏")
+    mojibake_hits = sum(1 for token in ("锛", "涓", "浠", "寰", "绯", "璇", "鎴", "鐨", "瀹") if token in text)
+    if mojibake_hits >= 3:
+        raise HTTPException(400, "发送内容疑似乱码，请重新编辑后再提交")
+    return text
 
 
 # 兼容多种日期字符串格式，供 RPA 同步时使用。
@@ -781,6 +798,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     family = db.query(Family).filter(Family.family_id == output.family_id).one_or_none()
     data = payload or AIOutputTaskIn()
     content = data.content.strip() or output.edited_output or output.display_text
+    content = validate_send_task_content(content)
     target_name = data.target_name.strip() or (family.parent_nickname if family else output.family_id)
     scene = data.scene.strip() or output.source or output.agent_type
     task = SendTask(family_id=output.family_id, target_name=target_name, scene=scene, content=content, status="pending")
@@ -1066,7 +1084,7 @@ def create_tasks_from_reports(db: Session = Depends(get_db)):
                 family_id=report.family_id,
                 target_name=family.parent_nickname if family else report.family_id,
                 scene="周报发送",
-                content=report.final_text,
+                content=validate_send_task_content(report.final_text),
             )
         )
         created += 1
@@ -1087,7 +1105,7 @@ def create_tasks_from_scenes(db: Session = Depends(get_db)):
         if exists:
             continue
         family = db.query(Family).filter(Family.family_id == msg.family_id).first()
-        db.add(SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=templates[scene]))
+        db.add(SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=validate_send_task_content(templates[scene])))
         created += 1
     db.commit()
     return {"created": created}
@@ -1107,7 +1125,9 @@ def list_send_tasks(status: str = "", device_id: str = "", db: Session = Depends
 # 直接新增一条发送任务。
 @app.post("/api/send-tasks")
 def create_send_task(payload: SendTaskIn, db: Session = Depends(get_db)):
-    task = SendTask(**payload.model_dump())
+    data = payload.model_dump()
+    data["content"] = validate_send_task_content(data.get("content", ""))
+    task = SendTask(**data)
     db.add(task)
     db.commit()
     return as_dict(task)
@@ -1123,7 +1143,8 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depend
         raise HTTPException(400, "status 不合法")
     task.target_name = payload.target_name or task.target_name
     task.scene = payload.scene or task.scene
-    task.content = payload.content or task.content
+    if payload.content:
+        task.content = validate_send_task_content(payload.content)
     task.status = payload.status
     db.commit()
     return as_dict(task)
@@ -1166,6 +1187,7 @@ def send_task_to_web_chat(db: Session, task: SendTask) -> tuple[RawMessage, Send
         raise HTTPException(404, "任务对应家庭不存在，无法发送到网页通讯")
     if task.status != "pending":
         raise HTTPException(400, "只有 pending 状态的任务可以发送")
+    task.content = validate_send_task_content(task.content)
 
     message = RawMessage(
         family_id=task.family_id,
@@ -1393,6 +1415,21 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     )
     claimed = []
     for task in candidates:
+        try:
+            task.content = validate_send_task_content(task.content)
+        except HTTPException as exc:
+            task.status = "failed"
+            db.add(
+                SendLog(
+                    task_id=task.id,
+                    family_id=task.family_id,
+                    target_name=task.target_name,
+                    status="failed",
+                    detail=f"CONTENT_VALIDATION: {exc.detail}",
+                    device_id=dev.device_id,
+                )
+            )
+            continue
         # 原子领取：只有仍是 pending 才领得到，避免两台设备抢到同一条。
         # 同时把 scheduled_at 刷成领取时刻，作为超时回收的判断依据。
         updated = (

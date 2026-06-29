@@ -57,10 +57,15 @@
   "self_names": ["我", "本人", "陪跑师", "老师"],
   "search_result_click_ratio_x": 0.20,
   "search_result_click_ratio_y": 0.22,
+  "conversation_open_click_ratio_x": 0.18,
+  "conversation_open_click_offset_ratio_y": 0.0,
+  "search_result_open_click_ratio_x": 0.20,
+  "search_result_open_click_offset_ratio_y": 0.0,
   "input_click_ratio_x": 0.45,
   "input_click_ratio_y": 0.85,
   "window_title_keywords": ["企业微信", "WeCom", "WXWork"],
-  "wecom_process_names": ["WXWork.exe", "WXWorkWeb.exe"],
+  "wecom_process_names": ["WXWork.exe", "WXWorkWeb.exe", "FlutterPlugins.exe"],
+  "wecom_min_window_area": 120000,
   "search_hotkey": ["ctrl", "f"],
   "send_hotkey": ["enter"],
   "append_signature": "",
@@ -85,5 +90,9 @@
   "esc_before_input": true,
   "esc_repeat": 2,
   "clear_input_before_paste": true,
-  "topmost_during_send": true
+  "topmost_during_send": true,
+  "allow_enter_search_fallback": true,
+  "recover_foreground_wecom": true,
+  "visual_click_use_screenshot_coords": true,
+  "clear_after_dry_run": true
 }

@@ -57,6 +57,10 @@ PROJECT_ROOT = ROOT.parent
 DEFAULT_CONFIG = ROOT / "config.json"
 FALLBACK_CONFIG = ROOT / "config.example.json"
 
+# 企业微信 5.x 的聊天区可能由 FlutterPlugins.exe 承载，前台句柄经常不是 WXWork.exe。
+# 这里默认允许该子进程通过安全检查，但不放开 WeMail.exe 等文档/邮件子程序。
+DEFAULT_WECOM_PROCESS_NAMES = ["WXWork.exe", "WXWorkWeb.exe", "FlutterPlugins.exe"]
+
 
 # 统一的 RPA 异常类型，便于上层捕获并打印友好提示。
 class RpaError(RuntimeError):
@@ -219,7 +223,7 @@ def screenshot_wecom(window, config: dict, reason: str = "scan"):
     """把企微提到最前并最大化再整屏截图。返回 (截图路径, 截图时窗口物理矩形 dict)。
     这是所有 OCR 定位的统一入口：activate 把企微带到最前 + maximize 占满屏，
     避免被其它窗口（如终端）遮挡导致 OCR 截到无关文字，且让会话列表布局稳定。"""
-    activate(window)
+    activate(window, config)
     ensure_foreground_wecom(window, config)
     if config.get("maximize_before_shot", True):
         try:
@@ -291,15 +295,69 @@ def find_wecom_windows(desktop, config: dict):
     windows = []
     for keyword in config["window_title_keywords"]:
         windows.extend(desktop.windows(title_re=f".*{keyword}.*", visible_only=True))
+    # 企业微信 5.x 可能把真正可操作的主窗口暴露成“无标题但可见”的 WXWork.exe 顶层窗口。
+    # 仅按标题找会漏掉它，所以再补扫一次所有可见顶层窗口，按进程和窗口面积过滤。
+    try:
+        windows.extend(desktop.windows(visible_only=True))
+    except Exception:
+        pass
     unique = []
     seen = set()
     for win in windows:
         handle = win.handle
         if handle not in seen:
             if is_wecom_process(handle, config):
-                unique.append(win)
+                try:
+                    rect = win.rectangle()
+                    area = rect.width() * rect.height()
+                except Exception:
+                    area = 0
+                title = control_text(win)
+                min_area = int(config.get("wecom_min_window_area", 120000))
+                if title or area >= min_area:
+                    unique.append(win)
             seen.add(handle)
-    return unique
+    if not unique:
+        min_area = int(config.get("wecom_min_window_area", 120000))
+        candidates = []
+        def collect(hwnd, _):
+            if hwnd in seen or not is_wecom_process(hwnd, config):
+                return
+            title = win32gui.GetWindowText(hwnd).strip()
+            try:
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                area = max(0, right - left) * max(0, bottom - top)
+            except Exception:
+                area = 0
+            title_matched = any(keyword in title for keyword in config.get("window_title_keywords", []))
+            if title_matched and area >= min_area:
+                candidates.append((area, hwnd))
+                seen.add(hwnd)
+        try:
+            win32gui.EnumWindows(collect, None)
+        except Exception:
+            candidates = []
+        for _, hwnd in sorted(candidates, reverse=True):
+            try:
+                unique.append(desktop.window(handle=hwnd))
+            except Exception:
+                pass
+    def score_window(win):
+        path = window_process_path(win.handle)
+        process_name = Path(path).name.lower()
+        try:
+            rect = win.rectangle()
+            area = rect.width() * rect.height()
+        except Exception:
+            area = 0
+        title = control_text(win)
+        # 优先选 WXWork.exe 的最大主窗口，避免选到 Flutter/文档等子窗口。
+        return (
+            1 if process_name == "wxwork.exe" else 0,
+            1 if title == "企业微信" else 0,
+            area,
+        )
+    return sorted(unique, key=score_window, reverse=True)
 
 
 def window_process_path(handle: int) -> str:
@@ -315,7 +373,7 @@ def window_process_path(handle: int) -> str:
 
 
 def is_wecom_process(handle: int, config: dict) -> bool:
-    allowed = {name.lower() for name in config.get("wecom_process_names", ["WXWork.exe", "WXWorkWeb.exe"])}
+    allowed = {name.lower() for name in config.get("wecom_process_names", DEFAULT_WECOM_PROCESS_NAMES)}
     path = window_process_path(handle)
     if not path:
         return False
@@ -388,7 +446,7 @@ def add_ignored_conversation(config: dict, config_path: Path, name: str):
 
 
 # 激活窗口并给前台切换留一点时间。
-def activate(window):
+def activate(window, config: dict | None = None):
     try:
         console = ctypes.windll.kernel32.GetConsoleWindow()
         if console and int(console) != int(window.handle):
@@ -445,10 +503,10 @@ def activate(window):
             mouse.click(button="left", coords=(int(rect.left + min(120, rect.width() / 2)), int(rect.top + 16)))
         except Exception:
             pass
-    if foreground_handle() != int(window.handle) and not is_wecom_process(foreground_handle(), {"wecom_process_names": ["WXWork.exe", "WXWorkWeb.exe"]}):
+    if foreground_handle() != int(window.handle) and not is_wecom_process(foreground_handle(), config or {}):
         focus_wecom_from_taskbar()
     time.sleep(0.8)
-    ensure_foreground_wecom(window, config=None)
+    ensure_foreground_wecom(window, config)
 
 
 def focus_wecom_from_taskbar():
@@ -470,6 +528,26 @@ def focus_wecom_from_taskbar():
         return
 
 
+def bring_wecom_to_front(window):
+    """把已确认的企微窗口重新提到前台，但不 restore/maximize，避免破坏 OCR 截图后的窗口尺寸。"""
+    try:
+        ctypes.windll.user32.AllowSetForegroundWindow(-1)
+    except Exception:
+        pass
+    try:
+        hwnd = int(window.handle)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    try:
+        window.set_focus()
+    except Exception:
+        pass
+    time.sleep(0.4)
+
+
 def foreground_handle() -> int:
     try:
         return int(win32gui.GetForegroundWindow())
@@ -481,8 +559,14 @@ def ensure_foreground_wecom(window, config: dict | None = None):
     handle = foreground_handle()
     if not handle:
         raise RpaError("无法确认当前前台窗口，已停止 RPA 操作，避免误操作其他页面。")
-    if config and is_wecom_process(handle, config):
+    effective_config = config or {}
+    if is_wecom_process(handle, effective_config):
         return
+    if config and config.get("recover_foreground_wecom", True):
+        bring_wecom_to_front(window)
+        handle = foreground_handle()
+        if handle and (handle == int(window.handle) or is_wecom_process(handle, effective_config)):
+            return
     if handle != int(window.handle):
         title = win32gui.GetWindowText(handle)
         raise RpaError(f"当前前台窗口不是企业微信，已停止 RPA 操作。foreground={title or handle}")
@@ -610,6 +694,72 @@ def click_window_ratio(window, rx: float, ry: float, config: dict):
     return x, y
 
 
+def click_visual_region_hit(
+    window,
+    hit: dict,
+    win_rect_img: dict,
+    config: dict,
+    *,
+    x_ratio_key: str,
+    fallback_x_ratio_key: str,
+    default_x_ratio: float,
+    y_offset_key: str,
+):
+    """点击 OCR/视觉命中的列表行。
+
+    OCR 坐标来自整屏截图；在高 DPI 缩放下，pywinauto 鼠标坐标与截图坐标一致，
+    直接用 window.rectangle() 的物理尺寸会把点击点下移，容易点到下一行。
+    """
+    raw_rx = float(config.get(x_ratio_key, config.get(fallback_x_ratio_key, default_x_ratio)))
+    raw_ry = float(hit["ry"]) + float(config.get(y_offset_key, 0.0))
+    rx = max(0.0, min(1.0, raw_rx))
+    ry = max(0.0, min(1.0, raw_ry))
+    if config.get("visual_click_use_screenshot_coords", True) and hit.get("image_width"):
+        scale = get_screen_scale(int(hit["image_width"]))
+        left = win_rect_img["left"] / scale
+        top = win_rect_img["top"] / scale
+        width = win_rect_img["width"] / scale
+        height = win_rect_img["height"] / scale
+        x = int(left + rx * width)
+        y = int(top + ry * height)
+        ensure_foreground_wecom(window, config)
+        mouse.click(button="left", coords=(x, y))
+        print(
+            f"visual_click rx={rx:.3f} ry={ry:.3f} x={x} y={y} "
+            f"scale={scale:.3f} coordinate=screenshot"
+        )
+        return x, y
+    x, y = click_window_ratio(window, rx, ry, config)
+    print(f"visual_click rx={rx:.3f} ry={ry:.3f} x={x} y={y} coordinate=window")
+    return x, y
+
+
+def click_conversation_hit(window, hit: dict, win_rect_img: dict, config: dict):
+    return click_visual_region_hit(
+        window,
+        hit,
+        win_rect_img,
+        config,
+        x_ratio_key="conversation_open_click_ratio_x",
+        fallback_x_ratio_key="conversation_row_click_ratio_x",
+        default_x_ratio=0.18,
+        y_offset_key="conversation_open_click_offset_ratio_y",
+    )
+
+
+def click_search_result_hit(window, hit: dict, win_rect_img: dict, config: dict):
+    return click_visual_region_hit(
+        window,
+        hit,
+        win_rect_img,
+        config,
+        x_ratio_key="search_result_open_click_ratio_x",
+        fallback_x_ratio_key="search_result_click_ratio_x",
+        default_x_ratio=0.20,
+        y_offset_key="search_result_open_click_offset_ratio_y",
+    )
+
+
 def ocr_region(image_path, region_ratio, win_rect_img: dict, config: dict) -> list[dict]:
     """对整屏截图中“企微窗口的某个比例区域”做 OCR。
     region_ratio=[x0,y0,x1,y1] 相对窗口；win_rect_img 是截图时窗口的物理矩形。
@@ -651,6 +801,8 @@ def ocr_region(image_path, region_ratio, win_rect_img: dict, config: dict) -> li
             "score": float(score),
             "rx": (cx - ll) / ww,
             "ry": (cy - tt) / hh,
+            "image_width": img_w,
+            "image_height": img_h,
         })
     return items
 
@@ -727,7 +879,7 @@ def ark_locate_in_region(image_path, target: str, config: dict, win_rect_img: di
         return None
     rx = region_ratio[0] + ax * (region_ratio[2] - region_ratio[0])
     ry = region_ratio[1] + ay * (region_ratio[3] - region_ratio[1])
-    return {"rx": rx, "ry": ry, "text": target, "score": 1.0, "via": "ark"}
+    return {"rx": rx, "ry": ry, "text": target, "score": 1.0, "via": "ark", "image_width": img_w, "image_height": img_h}
 
 
 def locate_and_open_conversation(window, target: str, config: dict) -> bool:
@@ -737,16 +889,19 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
     img, rect = screenshot_wecom(window, config, f"locate_{target}")
     try:
         if config.get("use_local_ocr", True):
-            hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
-            if hit:
-                print(f"locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f} score={hit['score']:.2f}")
-                click_window_ratio(window, hit["rx"], hit["ry"], config)
-                time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
-                return True
+            try:
+                hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
+                if hit:
+                    print(f"locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f} score={hit['score']:.2f}")
+                    click_conversation_hit(window, hit, rect, config)
+                    time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+                    return True
+            except RpaError as exc:
+                print(f"local_ocr_unavailable detail={exc}")
         hit = ark_locate_in_region(img, target, config, rect, region)
         if hit:
             print(f"locate target={target} via=ark rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
-            click_window_ratio(window, hit["rx"], hit["ry"], config)
+            click_conversation_hit(window, hit, rect, config)
             time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
@@ -759,7 +914,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
 def search_then_locate(window, target: str, config: dict) -> bool:
     """阶段2：点击搜索框(不用 Ctrl+F) -> 输入会话名 -> 截图搜索结果区 -> OCR/ARK 定位 -> 点击。
     覆盖目标会话不在当前可见列表的情况。"""
-    activate(window)
+    activate(window, config)
     ensure_foreground_wecom(window, config)
     box = tuple(config.get("search_box_region", [0.0, 0.0, 0.30, 0.07]))
     click_window_ratio(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, config)
@@ -774,20 +929,32 @@ def search_then_locate(window, target: str, config: dict) -> bool:
     img, rect = screenshot_wecom(window, config, f"search_{target}")
     try:
         if config.get("use_local_ocr", True):
-            hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
-            if hit:
-                print(f"search_locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
-                click_window_ratio(window, hit["rx"], hit["ry"], config)
-                time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
-                return True
+            try:
+                hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
+                if hit:
+                    print(f"search_locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
+                    click_search_result_hit(window, hit, rect, config)
+                    time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+                    return True
+            except RpaError as exc:
+                print(f"local_ocr_unavailable detail={exc}")
         hit = ark_locate_in_region(img, target, config, rect, region)
         if hit:
             print(f"search_locate target={target} via=ark")
-            click_window_ratio(window, hit["rx"], hit["ry"], config)
+            click_search_result_hit(window, hit, rect, config)
             time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
         _cleanup_debug_image(img, config)
+    if config.get("allow_enter_search_fallback", True):
+        ensure_foreground_wecom(window, config)
+        keyboard.send_keys("{ENTER}")
+        time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+        ensure_foreground_wecom(window, config)
+        keyboard.send_keys("{ESC}")
+        time.sleep(0.2)
+        print(f"search_locate target={target} via=enter_fallback")
+        return True
     raise RpaError(f"搜索后仍无法定位「{target}」，已中止。")
 
 
@@ -802,12 +969,18 @@ def verify_active_conversation(window, target: str, config: dict):
     img, rect = screenshot_wecom(window, config, f"verify_{target}")
     try:
         ok = False
+        text = visible_text(window)
+        if target in text or target in window.window_text():
+            ok = True
         if config.get("use_local_ocr", True):
-            min_ratio = float(config.get("title_match_min_ratio", 0.7))
-            for it in ocr_region(img, region, rect, config):
-                if target in it["text"] or difflib.SequenceMatcher(None, target, it["text"]).ratio() >= min_ratio:
-                    ok = True
-                    break
+            try:
+                min_ratio = float(config.get("title_match_min_ratio", 0.7))
+                for it in ocr_region(img, region, rect, config):
+                    if target in it["text"] or difflib.SequenceMatcher(None, target, it["text"]).ratio() >= min_ratio:
+                        ok = True
+                        break
+            except RpaError as exc:
+                print(f"local_ocr_unavailable detail={exc}")
         if not ok:
             ok = ark_locate_in_region(img, target, config, rect, region) is not None
     finally:
@@ -982,7 +1155,7 @@ def recognize_conversation_row(row: dict, config: dict) -> str:
 
 # 收集当前未读会话；如果 UIA 读不到红点，再按 watch 列表兜底。
 def collect_unread_conversations(window, config: dict) -> list[dict]:
-    activate(window)
+    activate(window, config)
     rows = find_conversation_rows(window, config)
     unread = [row for row in rows if row["unread"]]
     if unread:
@@ -995,7 +1168,7 @@ def collect_unread_conversations(window, config: dict) -> list[dict]:
 
 # 打开指定会话行；有控件就点击，没有就走搜索。
 def open_conversation_row(window, row: dict, config: dict):
-    activate(window)
+    activate(window, config)
     ensure_foreground_wecom(window, config)
     if row.get("click_x") is not None and row.get("click_y") is not None:
         mouse.click(button="left", coords=(int(row["click_x"]), int(row["click_y"])))
@@ -1116,7 +1289,7 @@ def focus_message_input(window, config: dict):
     # input_click_ratio 点不到。发送前用 activate 强制企微前台并 restore 成非最大化。
     if config.get("restore_before_input", True):
         try:
-            activate(window)
+            activate(window, config)
             time.sleep(float(config.get("restore_settle_seconds", 0.5)))
         except Exception as exc:
             print(f"restore_before_input_failed detail={exc}")
@@ -1425,6 +1598,12 @@ def send_message(window, content: str, config: dict):
         keyboard.send_keys("^v")
         time.sleep(0.4)
         if config.get("dry_run", True):
+            if config.get("clear_after_dry_run", True):
+                keyboard.send_keys("^a")
+                time.sleep(0.1)
+                keyboard.send_keys("{DELETE}")
+                time.sleep(0.1)
+                return "dry_run", "DRY_RUN: 已定位会话并粘贴内容，未按发送键，已清空输入框。"
             return "dry_run", "DRY_RUN: 已定位会话并粘贴内容，未按发送键。"
         ensure_foreground_wecom(window, config)
         hotkey(config.get("send_hotkey", ["enter"]))
@@ -1435,16 +1614,33 @@ def send_message(window, content: str, config: dict):
             set_window_topmost(window, False)
 
 
+def validate_task_content(content: str) -> str:
+    """RPA 发送前的最后一道内容闸门，防止历史乱码任务绕过后端校验。"""
+    text = (content or "").strip()
+    if not text:
+        raise RpaError("发送内容为空，已阻止发送。")
+    if "\ufffd" in text:
+        raise RpaError("发送内容包含替换字符，疑似编码损坏，已阻止发送。")
+    question_count = text.count("?")
+    if re.search(r"\?{4,}", text) or (question_count >= 6 and question_count / max(len(text), 1) >= 0.2):
+        raise RpaError("发送内容包含大量问号，疑似中文编码损坏，已阻止发送。")
+    mojibake_hits = sum(1 for token in ("锛", "涓", "浠", "寰", "绯", "璇", "鎴", "鐨", "瀹") if token in text)
+    if mojibake_hits >= 3:
+        raise RpaError("发送内容疑似乱码，请重新编辑后再发送。")
+    return text
+
+
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
 def process_task(task: dict, config: dict):
     allowed = set(config.get("allowed_conversations", []))
     target = task.get("target_name") or ""
     if target not in allowed:
         return "skipped", f"目标「{target}」不在白名单，已跳过。"
+    content = validate_task_content(task.get("content") or "")
     window = find_wecom_window(config)
     search_conversation(window, target, config)
     verify_active_conversation(window, target, config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
-    return send_message(window, task.get("content") or "", config)
+    return send_message(window, content, config)
 
 
 # 发送单条任务并把结果回写到后端日志接口。
@@ -1541,7 +1737,7 @@ def run_once(config: dict):
     # 只检查窗口是否存在，方便排查企微是否已启动。
 def check_window(config: dict):
     window = find_wecom_window(config)
-    activate(window)
+    activate(window, config)
     print(f"window_title={window.window_text()}")
     print("wecom_window_found=true")
 
@@ -1558,7 +1754,7 @@ def diagnose(config: dict):
 
     try:
         window = find_wecom_window(config)
-        activate(window)
+        activate(window, config)
         print(f"wecom_window_found=true title={window.window_text()} handle={window.handle}")
         rows = find_conversation_rows(window, config)
         unread = [row for row in rows if row["unread"]]
