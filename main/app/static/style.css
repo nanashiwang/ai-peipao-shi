@@ -327,6 +327,7 @@ h3 {
 .wecom-form,
 .secondary-box,
 .messages,
+.timeline,
 .chat-messages,
 .empty {
   background: var(--panel);
@@ -504,6 +505,56 @@ dd {
   max-height: 520px;
   overflow: auto;
   background: rgba(255, 255, 255, .72);
+}
+
+.timeline {
+  max-height: 580px;
+  overflow: auto;
+  padding: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .76), rgba(255, 255, 255, .58));
+}
+
+.timeline-item {
+  position: relative;
+  padding: 14px 14px 14px 18px;
+  border-left: 3px solid var(--line);
+  border-bottom: 1px solid var(--soft-line);
+}
+
+.timeline-item:last-child {
+  border-bottom: 0;
+}
+
+.timeline-send_log {
+  border-left-color: var(--green);
+}
+
+.timeline-ai_output,
+.timeline-weekly_report {
+  border-left-color: var(--blue);
+}
+
+.timeline-checkin {
+  border-left-color: var(--orange);
+}
+
+.timeline-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.timeline-head time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline-item p {
+  margin: 8px 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
 }
 
 .msg {

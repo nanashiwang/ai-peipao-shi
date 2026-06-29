@@ -170,6 +170,37 @@ function familyName(familyId) {
   return family?.parent_nickname || familyId;
 }
 
+function timelineKind(kind) {
+  return ({
+    message: "聊天",
+    checkin: "打卡",
+    ai_output: "AI",
+    weekly_report: "周报",
+    send_log: "发送",
+  })[kind] || kind;
+}
+
+function timelineCard(item) {
+  const modeText = item.send_mode === "real_send" ? "真实发送" : item.send_mode === "dry_run" ? "试运行" : item.send_mode;
+  const mode = item.send_mode ? ` · ${esc(modeText)}` : "";
+  const risk = item.risk_level ? ` · 风险：${esc(item.risk_level)}` : "";
+  const device = item.device_id ? ` · 设备：${esc(item.device_id)}` : "";
+  const source = item.source ? ` · ${esc(item.source)}` : "";
+  const status = item.status ? ` · ${esc(item.status)}` : "";
+  const shot = item.screenshot_path ? ` · <a class="dl-link" href="${esc(item.screenshot_path)}" target="_blank" rel="noopener">截图</a>` : "";
+  return `
+    <article class="timeline-item timeline-${esc(item.kind)}">
+      <div class="timeline-head">
+        ${badge(timelineKind(item.kind), item.kind === "send_log" || item.kind === "checkin" ? "ok" : "")}
+        <strong>${esc(item.title)}</strong>
+        <time>${esc(item.occurred_at)}</time>
+      </div>
+      <p>${esc(item.content)}</p>
+      <span class="muted">${esc(item.target_name || "")}${source}${status}${mode}${risk}${device}${shot}</span>
+    </article>
+  `;
+}
+
 // 顶部 KPI 卡片反映整体待办和风险状态。
 function renderKpis() {
   const pendingTasks = state.tasks.filter((task) => task.status === "pending").length;
@@ -434,6 +465,7 @@ async function refreshFamilyDetail() {
   $("familySelect").innerHTML = optionList();
   const data = await api(`/api/families/${encodeURIComponent(state.selectedFamilyId)}`);
   const outputs = state.outputs.filter((item) => item.family_id === state.selectedFamilyId).slice(0, 4);
+  const timeline = data.timeline || [];
   $("familyDetail").innerHTML = `
     <section class="profile-pane">
       <h3>${esc(data.family.parent_nickname || data.family.family_id)}</h3>
@@ -448,14 +480,8 @@ async function refreshFamilyDetail() {
       ` : '<p class="empty">暂无画像，点击右侧“生成画像”。</p>'}
     </section>
     <section>
-      <h3>时间线</h3>
-      <div class="messages">${data.messages.map((m) => `
-        <div class="msg">
-          <strong>${esc(m.message_time)} ${esc(m.speaker)}</strong>
-          <p>${esc(m.content)}</p>
-          <span class="muted">${esc(m.source)} ${esc(m.checkin_status || "")}</span>
-        </div>
-      `).join("") || '<p class="empty">暂无消息。</p>'}</div>
+      <h3>家庭时间线</h3>
+      <div class="timeline">${timeline.map(timelineCard).join("") || '<p class="empty">暂无时间线事件。</p>'}</div>
     </section>
     <section class="ai-pane">
       <h3>AI操作区</h3>

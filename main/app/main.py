@@ -958,9 +958,93 @@ def upsert_family(payload: FamilyIn, db: Session = Depends(get_db)):
     return {**as_dict(family), "message_count": db.query(RawMessage).filter(RawMessage.family_id == family.family_id).count()}
 
 
+def timeline_time(value) -> str:
+    return value.isoformat(sep=" ", timespec="seconds") if hasattr(value, "isoformat") else ""
+
+
+def add_timeline_item(items: list[dict], kind: str, occurred_at, title: str, content: str, **meta) -> None:
+    items.append({
+        "kind": kind,
+        "occurred_at": timeline_time(occurred_at),
+        "title": title,
+        "content": content or "",
+        **meta,
+    })
+
+
+def build_family_timeline(db: Session, family_id: str, limit: int = 80) -> list[dict]:
+    safe_limit = min(max(limit, 1), 200)
+    items: list[dict] = []
+
+    for msg in db.query(RawMessage).filter(RawMessage.family_id == family_id).all():
+        add_timeline_item(
+            items,
+            "message",
+            msg.message_time,
+            msg.speaker or "聊天消息",
+            msg.content,
+            source=msg.source,
+            status=msg.checkin_status or "",
+            related_id=msg.id,
+        )
+
+    for record in db.query(CheckinRecord).filter(CheckinRecord.family_id == family_id).all():
+        add_timeline_item(
+            items,
+            "checkin",
+            record.created_at,
+            f"打卡识别：{record.checkin_type}",
+            record.evidence,
+            status=record.checkin_type,
+            related_id=record.message_id,
+        )
+
+    for output in db.query(AIOutput).filter(AIOutput.family_id == family_id).all():
+        add_timeline_item(
+            items,
+            "ai_output",
+            output.updated_at or output.created_at,
+            f"AI输出：{output.agent_type}",
+            output.edited_output or output.display_text,
+            source=output.source,
+            status=output.status,
+            risk_level=output.risk_level,
+            related_id=output.id,
+        )
+
+    for report in db.query(WeeklyReport).filter(WeeklyReport.family_id == family_id).all():
+        add_timeline_item(
+            items,
+            "weekly_report",
+            report.updated_at,
+            f"周报：{report.week_label or report.id}",
+            report.final_text or report.overall_state,
+            status=report.status,
+            related_id=report.id,
+        )
+
+    for log in db.query(SendLog).filter(SendLog.family_id == family_id).all():
+        add_timeline_item(
+            items,
+            "send_log",
+            log.sent_at,
+            f"发送结果：{log.status}",
+            log.detail,
+            status=log.status,
+            send_mode=log.send_mode,
+            device_id=log.device_id,
+            target_name=log.target_name,
+            screenshot_path=log.screenshot_path,
+            related_id=log.task_id,
+        )
+
+    items.sort(key=lambda item: item.get("occurred_at") or "", reverse=True)
+    return items[:safe_limit]
+
+
 # 单个家庭详情页要的消息、画像和周报都在这里聚合返回。
 @app.get("/api/families/{family_id}")
-def family_detail(family_id: str, db: Session = Depends(get_db)):
+def family_detail(family_id: str, timeline_limit: int = 80, db: Session = Depends(get_db)):
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     if not family:
         raise HTTPException(404, "家庭不存在")
@@ -972,7 +1056,14 @@ def family_detail(family_id: str, db: Session = Depends(get_db)):
         "messages": [as_dict(m) for m in messages],
         "profile": as_dict(profile) if profile else None,
         "reports": [as_dict(r) for r in reports],
+        "timeline": build_family_timeline(db, family_id, timeline_limit),
     }
+
+
+@app.get("/api/families/{family_id}/timeline")
+def family_timeline(family_id: str, limit: int = 80, db: Session = Depends(get_db)):
+    require_family(db, family_id)
+    return build_family_timeline(db, family_id, limit)
 
 
 # 如果家庭没有有效消息，就不生成周报和画像，避免写入空数据。
