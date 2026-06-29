@@ -95,6 +95,12 @@ function badge(text, kind = "") {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
 }
 
+function sendModeBadge(mode) {
+  if (mode === "real_send") return badge("真实发送", "warn");
+  if (mode === "dry_run" || !mode) return badge("试运行", "ok");
+  return badge(`未知模式：${mode}`);
+}
+
 function sendModeSelect(task) {
   const mode = task.send_mode || "dry_run";
   return `
@@ -102,7 +108,7 @@ function sendModeSelect(task) {
       <option value="dry_run" ${mode === "dry_run" ? "selected" : ""}>试运行</option>
       <option value="real_send" ${mode === "real_send" ? "selected" : ""}>真实发送</option>
     </select>
-    ${mode === "real_send" ? badge("高风险", "warn") : badge("安全", "ok")}
+    ${sendModeBadge(mode)}
   `;
 }
 
@@ -556,6 +562,7 @@ function renderLogs() {
     { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
     { label: "对象", key: "target_name" },
     { label: "状态", key: "status" },
+    { label: "模式", render: (r) => sendModeBadge(r.send_mode || "dry_run") },
     { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
     { label: "详情", key: "detail" },
   ], state.logs);

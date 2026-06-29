@@ -39,7 +39,7 @@ def init_db():
 def ensure_columns():
     wanted = {
         "send_tasks": [("device_id", "VARCHAR(64)"), ("send_mode", "VARCHAR(20)")],
-        "send_logs": [("device_id", "VARCHAR(64)"), ("screenshot_path", "TEXT")],
+        "send_logs": [("device_id", "VARCHAR(64)"), ("screenshot_path", "TEXT"), ("send_mode", "VARCHAR(20)")],
     }
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -51,6 +51,6 @@ def ensure_columns():
             for col_name, col_type in cols:
                 if col_name in have:
                     continue
-                default = "'dry_run'" if table == "send_tasks" and col_name == "send_mode" else "''"
+                default = "'dry_run'" if col_name == "send_mode" else "''"
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))

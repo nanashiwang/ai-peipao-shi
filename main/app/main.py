@@ -326,6 +326,11 @@ def validate_send_mode(send_mode: str) -> str:
     return mode
 
 
+def send_log_mode(task: SendTask) -> str:
+    mode = (task.send_mode or "dry_run").strip()
+    return mode if mode in {"dry_run", "real_send"} else "invalid"
+
+
 def validate_send_mode_submit(send_mode: str, confirm_real_send: bool, current_mode: str = "") -> str:
     mode = validate_send_mode(send_mode)
     if mode == "real_send" and current_mode != "real_send" and not confirm_real_send:
@@ -1448,6 +1453,7 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         family_id=task.family_id,
         target_name=task.target_name,
         status=payload.status,
+        send_mode=send_log_mode(task),
         detail=payload.detail,
         device_id=payload.device_id or task.device_id,
         screenshot_path=screenshot_path,
@@ -1482,6 +1488,7 @@ def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端",
         family_id=task.family_id,
         target_name=task.target_name,
         status="sent",
+        send_mode=send_log_mode(task),
         detail="WEB_CHAT: 已发送到网页通讯会话。",
     )
     db.add(message)
@@ -1727,6 +1734,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
                     family_id=task.family_id,
                     target_name=task.target_name,
                     status="failed",
+                    send_mode=send_log_mode(task),
                     detail=f"SEND_GUARD: {exc.detail}",
                     device_id=dev.device_id,
                 )

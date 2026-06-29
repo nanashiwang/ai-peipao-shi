@@ -170,6 +170,7 @@ class SendLog(Base):
     family_id: Mapped[str] = mapped_column(String(64), index=True)
     target_name: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(30))
+    send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     device_id: Mapped[str] = mapped_column(String(64), default="")
     screenshot_path: Mapped[str] = mapped_column(Text, default="")
     detail: Mapped[str] = mapped_column(Text, default="")

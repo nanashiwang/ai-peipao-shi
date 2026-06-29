@@ -271,9 +271,20 @@ class SendResultEvidenceTest(unittest.TestCase):
 
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["device_id"], "rpa-01")
+        self.assertEqual(log["send_mode"], "real_send")
         self.assertTrue(log["screenshot_path"].startswith("/api/send-artifacts/task_"))
         filename = log["screenshot_path"].rsplit("/", 1)[1]
         self.assertEqual(resolve_send_screenshot(filename).read_bytes(), self.PNG_BYTES)
+
+    def test_record_send_result_keeps_dry_run_mode(self):
+        task = self.add_task()
+        task.send_mode = "dry_run"
+        self.db.commit()
+
+        log = record_send_result(task.id, SendResultIn(status="dry_run"), db=self.db)
+
+        self.assertEqual(log["status"], "dry_run")
+        self.assertEqual(log["send_mode"], "dry_run")
 
     def test_rejects_non_image_screenshot_payload(self):
         task = self.add_task()
