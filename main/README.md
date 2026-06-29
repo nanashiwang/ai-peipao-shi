@@ -217,7 +217,8 @@ rpa/config.json
 | `unknown_conversation_policy` | 未知会话处理策略：`prompt` / `ignore` / `skip` |
 | `auto_launch_wecom` | 未找到企微窗口时是否尝试启动企业微信 |
 | `wecom_executable_paths` | 企业微信可执行文件路径列表 |
-| `dry_run` | `true` 只粘贴不发送；`false` 会真实按回车发送 |
+| `dry_run` | `true` 只粘贴不发送；任务没有显式 `send_mode` 时仍作为默认试运行开关 |
+| `allow_real_send` | 被控端本机真实发送硬开关；默认 `false`，不打开时即使任务是 `real_send` 也不会按发送键 |
 | `auto_generate_ai_reply` | 同步未读消息后是否调用 AI回复 Agent |
 | `auto_create_reply_task` | AI回复是否自动生成待发送任务 |
 | `auto_generate_all_agents` | 同步后是否生成画像、周报、打卡/PBL 等全部 Agent 输出 |
@@ -231,6 +232,7 @@ rpa/config.json
 ```json
 {
   "dry_run": true,
+  "allow_real_send": false,
   "auto_generate_ai_reply": true,
   "auto_create_reply_task": true,
   "auto_generate_all_agents": true,
@@ -307,7 +309,7 @@ http://127.0.0.1:8000
 
 打开「待发送任务」，检查并编辑最终内容。点击页面里的 `发送` 后，任务内容会作为陪跑师消息写入网页通讯会话，并同步生成发送日志。
 
-如果要用企微真实发送后台已有 pending 任务：
+如果要用企微真实发送后台已有 pending 任务，需要任务已在控制端确认为 `real_send`，且被控端 `allow_real_send=true`：
 
 ```powershell
 .\.venv\Scripts\python.exe rpa\wecom_sender.py
@@ -319,7 +321,7 @@ http://127.0.0.1:8000
 
 ```json
 {
-  "dry_run": false,
+  "allow_real_send": true,
   "auto_send_ai_replies": true
 }
 ```

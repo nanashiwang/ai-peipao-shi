@@ -19,6 +19,7 @@
     "C:\\Program Files (x86)\\WXWork\\WXWork.exe"
   ],
   "dry_run": true,
+  "allow_real_send": false,
   "auto_generate_ai_reply": true,
   "auto_create_reply_task": true,
   "auto_generate_all_agents": true,

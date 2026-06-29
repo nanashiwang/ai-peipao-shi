@@ -2317,7 +2317,8 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
         "use_local_ocr": False,          # 被控端走 ARK 云端定位，不装 paddleocr
         "use_ark_vision_fallback": True,
         "enable_search_fallback": True,
-        "dry_run": True,                 # 默认安全：只粘贴不发，对方验证无误后改 false
+        "dry_run": True,                 # 默认安全：只粘贴不发；真实发送走任务 real_send + allow_real_send 双确认
+        "allow_real_send": False,         # 被控端二次硬开关：不显式打开就算任务 real_send 也不按发送键
         "auto_launch_wecom": False,
     })
 
@@ -2325,6 +2326,7 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
         zf.write(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
+        zf.write(ROOT / "rpa" / "send_guard.py", "rpa/send_guard.py")
         zf.write(ROOT / "app" / "services" / "ark_client.py", "app/services/ark_client.py")
         zf.writestr("app/__init__.py", "")
         zf.writestr("app/services/__init__.py", "")

@@ -22,6 +22,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
 
 try:
+    from rpa.send_guard import SendGuardError, config_for_send_mode, real_send_block_detail, real_send_enabled, real_send_requested
+except ModuleNotFoundError:
+    from send_guard import SendGuardError, config_for_send_mode, real_send_block_detail, real_send_enabled, real_send_requested
+
+try:
     import pyperclip
     import win32api
     import win32con
@@ -211,6 +216,8 @@ def validate_config(config: dict):
         raise RpaError(f"配置缺失：{', '.join(missing)}")
     if config.get("auto_send_ai_replies", False) and config.get("dry_run", True):
         print("WARN: auto_send_ai_replies=true 但 dry_run=true，本轮只会粘贴不真实发送。")
+    if not config.get("dry_run", True) and not real_send_enabled(config):
+        print("WARN: dry_run=false 但 allow_real_send=false，本机真实发送硬开关未开启，本轮会阻止真实发送。")
 
 
 def launch_wecom(config: dict):
@@ -1625,6 +1632,8 @@ def send_message(window, content: str, config: dict):
     signature = config.get("append_signature", "").strip()
     if signature:
         text = f"{text}\n{signature}"
+    if not config.get("dry_run", True) and not real_send_enabled(config):
+        return "skipped", real_send_block_detail()
     try:
         focus_message_input(window, config)
         ensure_foreground_wecom(window, config)
@@ -1673,15 +1682,10 @@ def validate_task_content(content: str) -> str:
 
 
 def config_for_task_send_mode(config: dict, send_mode: str) -> dict:
-    task_config = {**config}
-    mode = (send_mode or "").strip()
-    if mode == "dry_run":
-        task_config["dry_run"] = True
-    elif mode == "real_send":
-        task_config["dry_run"] = False
-    elif mode:
-        raise RpaError(f"未知发送模式：{mode}")
-    return task_config
+    try:
+        return config_for_send_mode(config, send_mode)
+    except SendGuardError as exc:
+        raise RpaError(str(exc)) from exc
 
 
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
@@ -1690,8 +1694,11 @@ def process_task(task: dict, config: dict):
     target = task.get("target_name") or ""
     if target not in allowed:
         return "skipped", f"目标「{target}」不在白名单，已跳过。"
+    mode = (task.get("send_mode") or "").strip()
+    if real_send_requested(config, mode) and not real_send_enabled(config):
+        return "skipped", real_send_block_detail()
     content = validate_task_content(task.get("content") or "")
-    task_config = config_for_task_send_mode(config, task.get("send_mode") or "")
+    task_config = config_for_task_send_mode(config, mode)
     window = find_wecom_window(task_config)
     search_conversation(window, target, task_config)
     verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
