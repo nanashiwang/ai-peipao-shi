@@ -7,6 +7,7 @@ const state = {
   reports: [],
   tasks: [],
   logs: [],
+  auditLogs: [],
   devices: [],
   arkConfig: {},
   templates: [],
@@ -29,9 +30,16 @@ const AGENTS = {
 
 // 统一封装 fetch，减少重复的错误处理代码。
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const headers = new Headers(options.headers || {});
+  if (!headers.has("X-Actor")) headers.set("X-Actor", currentActor());
+  const res = await fetch(path, { ...options, headers });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+function currentActor() {
+  if (!state.currentUser) return "控制端";
+  return `${state.currentUser.role}:${state.currentUser.display_name || state.currentUser.username}`;
 }
 
 // 把普通文本转成安全的 HTML 字符串，防止页面插入未转义内容。
@@ -553,6 +561,16 @@ function renderLogs() {
   ], state.logs);
 }
 
+function renderAuditLogs() {
+  $("auditTable").innerHTML = table([
+    { label: "时间", key: "created_at" },
+    { label: "对象", render: (r) => `${esc(r.entity_type)}#${esc(r.entity_id)}` },
+    { label: "动作", key: "action" },
+    { label: "操作人/设备", key: "actor" },
+    { label: "摘要", key: "summary" },
+  ], state.auditLogs);
+}
+
 // 渲染设备监控列表。
 function renderDevices() {
   $("deviceTable").innerHTML = table([
@@ -606,6 +624,7 @@ function renderAll() {
   renderCheckins();
   renderTasks();
   renderLogs();
+  renderAuditLogs();
   renderDevices();
   renderArkConfig();
   renderTemplates();
@@ -614,20 +633,21 @@ function renderAll() {
 // 刷新所有内容。
 async function refreshAll() {
   return withAction("刷新数据", async () => {
-    const [families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
       api("/api/templates"),
       api("/api/send-tasks"),
       api("/api/send-logs"),
+      api("/api/audit-logs?entity_type=send_task&limit=200"),
       api("/api/ai-outputs"),
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
       api("/api/devices"),
       api("/api/ark-config").catch(() => ({})),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, outputs, accounts, conversations, devices, arkConfig });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, outputs, accounts, conversations, devices, arkConfig });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {

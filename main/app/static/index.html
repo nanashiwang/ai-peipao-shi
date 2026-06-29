@@ -18,6 +18,8 @@
       <button data-tab="webChat">陪跑会话</button>
       <button data-tab="familyDetailPanel">家庭档案</button>
       <button data-tab="tasks">审核发送</button>
+      <button data-tab="logs">发送日志</button>
+      <button data-tab="audit">审计日志</button>
       <button data-tab="devices">设备监控</button>
       <button data-tab="templates">系统设置</button>
     </nav>
@@ -247,6 +249,14 @@
         <span class="muted">记录最终发送状态、失败原因、设备和截图证据</span>
       </div>
       <div id="logTable"></div>
+    </section>
+
+    <section id="audit" class="panel">
+      <div class="section-head">
+        <h2>审计日志</h2>
+        <span class="muted">记录发送任务的创建、确认、修改、领取、取消和结果回写</span>
+      </div>
+      <div id="auditTable"></div>
     </section>
 
     <!-- 设备监控：多被控端在线状态、心跳、任务统计。 -->

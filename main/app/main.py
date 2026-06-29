@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db, init_db
 from app.models import (
     AIOutput,
+    AuditLog,
     CheckinRecord,
     Device,
     Family,
@@ -228,6 +229,78 @@ def as_dict(obj):
         value = getattr(obj, col.name)
         data[col.name] = value.isoformat(sep=" ", timespec="seconds") if hasattr(value, "isoformat") else value
     return data
+
+
+def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
+    if request is None:
+        return fallback
+    device_id = (request.headers.get("x-device-id") or "").strip()
+    if device_id:
+        return f"设备:{device_id}"[:120]
+    actor = (request.headers.get("x-actor") or request.headers.get("x-user") or "").strip()
+    return (actor or fallback)[:120]
+
+
+def audit_json(data: dict | None) -> str:
+    return json.dumps(data or {}, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def send_task_snapshot(task: SendTask | None) -> dict:
+    if not task:
+        return {}
+    return {
+        "id": task.id,
+        "family_id": task.family_id,
+        "target_name": task.target_name,
+        "scene": task.scene,
+        "content": task.content,
+        "send_mode": task.send_mode,
+        "status": task.status,
+        "device_id": task.device_id,
+        "scheduled_at": task.scheduled_at.isoformat(sep=" ", timespec="seconds") if task.scheduled_at else "",
+    }
+
+
+def changed_fields(before: dict, after: dict) -> list[str]:
+    keys = sorted(set(before) | set(after))
+    return [key for key in keys if before.get(key) != after.get(key)]
+
+
+def log_audit_event(
+    db: Session,
+    entity_type: str,
+    entity_id: int,
+    action: str,
+    actor: str,
+    summary: str = "",
+    before: dict | None = None,
+    after: dict | None = None,
+) -> AuditLog:
+    log = AuditLog(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        actor=(actor or "系统")[:120],
+        summary=summary,
+        before_json=audit_json(before),
+        after_json=audit_json(after),
+    )
+    db.add(log)
+    return log
+
+
+def add_send_task_with_audit(db: Session, task: SendTask, action: str, actor: str, summary: str) -> SendTask:
+    db.add(task)
+    db.flush()
+    log_audit_event(db, "send_task", task.id, action, actor, summary, after=send_task_snapshot(task))
+    return task
+
+
+def audit_send_task_change(db: Session, task: SendTask, action: str, actor: str, summary: str, before: dict) -> None:
+    after = send_task_snapshot(task)
+    fields = changed_fields(before, after)
+    detail = summary if not fields else f"{summary}；变更字段：{', '.join(fields)}"
+    log_audit_event(db, "send_task", task.id, action, actor, detail, before=before, after=after)
 
 
 def validate_send_task_content(content: str) -> str:
@@ -748,7 +821,7 @@ def seed_test_chat(db: Session = Depends(get_db)):
 
 
 @app.post("/api/test-chat/ai")
-def generate_test_chat_ai(payload: ChatAiIn, db: Session = Depends(get_db)):
+def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Session = Depends(get_db)):
     started = perf_counter()
     family = require_family(db, payload.family_id)
     context = build_agent_context(db, family.family_id)
@@ -772,7 +845,7 @@ def generate_test_chat_ai(payload: ChatAiIn, db: Session = Depends(get_db)):
             status="pending",
         )
         reply_output.status = "task_created"
-        db.add(task)
+        add_send_task_with_audit(db, task, "create", actor_from_request(request), "网页通讯 AI 生成回复任务")
 
     db.commit()
     return {
@@ -785,7 +858,7 @@ def generate_test_chat_ai(payload: ChatAiIn, db: Session = Depends(get_db)):
 
 
 @app.post("/api/test-chat/reply")
-def generate_test_chat_reply(payload: ChatReplyIn, db: Session = Depends(get_db)):
+def generate_test_chat_reply(payload: ChatReplyIn, request: Request = None, db: Session = Depends(get_db)):
     started = perf_counter()
     family = require_family(db, payload.family_id)
     context = build_agent_context(db, family.family_id)
@@ -805,7 +878,7 @@ def generate_test_chat_reply(payload: ChatReplyIn, db: Session = Depends(get_db)
             status="pending",
         )
         reply_output.status = "task_created"
-        db.add(task)
+        add_send_task_with_audit(db, task, "create", actor_from_request(request), "网页通讯快速回复生成任务")
 
     db.commit()
     return {
@@ -950,7 +1023,7 @@ def update_ai_output(output_id: int, payload: AIOutputUpdate, db: Session = Depe
 
 # 从 AI 输出直接生成待发送任务。
 @app.post("/api/ai-outputs/{output_id}/send-task")
-def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = None, db: Session = Depends(get_db)):
+def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = None, request: Request = None, db: Session = Depends(get_db)):
     output = db.get(AIOutput, output_id)
     if not output:
         raise HTTPException(404, "AI输出不存在")
@@ -976,7 +1049,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     output.status = "task_created"
     output.edited_output = content
     output.updated_at = datetime.utcnow()
-    db.add(task)
+    add_send_task_with_audit(db, task, "create", actor_from_request(request), f"AI 输出 {output_id} 创建发送任务")
     db.commit()
     return as_dict(task)
 
@@ -1036,7 +1109,7 @@ def run_checkin_pbl_agent(payload: AgentRequest, db: Session = Depends(get_db)):
 
 # RPA 同步企业微信会话消息，并可选自动生成回复任务。
 @app.post("/api/rpa/conversations/sync")
-def sync_rpa_conversation(payload: RpaConversationIn, db: Session = Depends(get_db)):
+def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, db: Session = Depends(get_db)):
     family_id = payload.family_id.strip()
     family = None
     if family_id:
@@ -1106,7 +1179,7 @@ def sync_rpa_conversation(payload: RpaConversationIn, db: Session = Depends(get_
                 status="pending",
             )
             ai_output.status = "task_created"
-            db.add(task)
+            add_send_task_with_audit(db, task, "create", actor_from_request(request, "企微RPA"), f"企微会话「{payload.target_name}」自动生成回复任务")
 
     if payload.auto_generate_all_agents:
         db.flush()
@@ -1242,7 +1315,7 @@ def scan_checkins(db: Session = Depends(get_db)):
 
 # 从已审核周报创建发送任务。
 @app.post("/api/send-tasks/from-approved-reports")
-def create_tasks_from_reports(db: Session = Depends(get_db)):
+def create_tasks_from_reports(request: Request = None, db: Session = Depends(get_db)):
     created = 0
     reports = db.query(WeeklyReport).filter(WeeklyReport.status == "approved").all()
     for report in reports:
@@ -1250,14 +1323,18 @@ def create_tasks_from_reports(db: Session = Depends(get_db)):
         if exists:
             continue
         family = db.query(Family).filter(Family.family_id == report.family_id).first()
-        db.add(
+        add_send_task_with_audit(
+            db,
             SendTask(
                 family_id=report.family_id,
                 target_name=family.parent_nickname if family else report.family_id,
                 scene="周报发送",
                 content=validate_send_task_content(report.final_text),
                 send_mode="dry_run",
-            )
+            ),
+            "create",
+            actor_from_request(request),
+            f"已审核周报 {report.id} 创建发送任务",
         )
         created += 1
     db.commit()
@@ -1266,7 +1343,7 @@ def create_tasks_from_reports(db: Session = Depends(get_db)):
 
 # 按场景规则和话术模板创建发送任务。
 @app.post("/api/send-tasks/from-scenes")
-def create_tasks_from_scenes(db: Session = Depends(get_db)):
+def create_tasks_from_scenes(request: Request = None, db: Session = Depends(get_db)):
     created = 0
     templates = {t.scene: t.content for t in db.query(Template).filter(Template.enabled == "Y").all()}
     for msg in db.query(RawMessage).order_by(RawMessage.message_time.desc()).limit(200):
@@ -1277,7 +1354,13 @@ def create_tasks_from_scenes(db: Session = Depends(get_db)):
         if exists:
             continue
         family = db.query(Family).filter(Family.family_id == msg.family_id).first()
-        db.add(SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=validate_send_task_content(templates[scene]), send_mode="dry_run"))
+        add_send_task_with_audit(
+            db,
+            SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=validate_send_task_content(templates[scene]), send_mode="dry_run"),
+            "create",
+            actor_from_request(request),
+            f"场景「{scene}」自动创建发送任务",
+        )
         created += 1
     db.commit()
     return {"created": created}
@@ -1296,7 +1379,7 @@ def list_send_tasks(status: str = "", device_id: str = "", db: Session = Depends
 
 # 直接新增一条发送任务。
 @app.post("/api/send-tasks")
-def create_send_task(payload: SendTaskIn, db: Session = Depends(get_db)):
+def create_send_task(payload: SendTaskIn, request: Request = None, db: Session = Depends(get_db)):
     data = payload.model_dump()
     data["content"] = validate_send_task_content(data.get("content", ""))
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
@@ -1304,19 +1387,21 @@ def create_send_task(payload: SendTaskIn, db: Session = Depends(get_db)):
     if data["send_mode"] == "real_send":
         validate_real_send_risk(db, data.get("target_name", ""), data["content"])
     task = SendTask(**data)
-    db.add(task)
+    add_send_task_with_audit(db, task, "create", actor_from_request(request), "控制端手动创建发送任务")
     db.commit()
     return as_dict(task)
 
 
 # 更新发送任务的内容和状态。
 @app.put("/api/send-tasks/{task_id}")
-def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depends(get_db)):
+def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = None, db: Session = Depends(get_db)):
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
     if payload.status not in {"pending", "approved", "assigned", "cancelled", "sent", "failed", "dry_run"}:
         raise HTTPException(400, "status 不合法")
+    before = send_task_snapshot(task)
+    previous_mode = task.send_mode
     target_name = payload.target_name or task.target_name
     device_id = task.device_id if payload.device_id is None else payload.device_id
     task.target_name = target_name
@@ -1329,28 +1414,34 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depend
     if task.send_mode == "real_send":
         validate_real_send_risk(db, target_name, task.content, exclude_task_id=task.id)
     task.status = payload.status
+    action = "confirm_real_send" if previous_mode != "real_send" and task.send_mode == "real_send" else "update"
+    summary = "确认真实发送" if action == "confirm_real_send" else "更新发送任务"
+    audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
     db.commit()
     return as_dict(task)
 
 
 @app.post("/api/send-tasks/{task_id}/cancel")
-def cancel_send_task(task_id: int, db: Session = Depends(get_db)):
+def cancel_send_task(task_id: int, request: Request = None, db: Session = Depends(get_db)):
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    before = send_task_snapshot(task)
     task.status = "cancelled"
+    audit_send_task_change(db, task, "cancel", actor_from_request(request), "取消发送任务", before)
     db.commit()
     return as_dict(task)
 
 
 @app.post("/api/send-tasks/{task_id}/result")
-def record_send_result(task_id: int, payload: SendResultIn, db: Session = Depends(get_db)):
+def record_send_result(task_id: int, payload: SendResultIn, request: Request = None, db: Session = Depends(get_db)):
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
     if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
         raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
     screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
+    before = send_task_snapshot(task)
     task.status = payload.status
     log = SendLog(
         task_id=task.id,
@@ -1362,17 +1453,20 @@ def record_send_result(task_id: int, payload: SendResultIn, db: Session = Depend
         screenshot_path=screenshot_path,
     )
     db.add(log)
+    actor = actor_from_request(request, f"设备:{payload.device_id}" if payload.device_id else "RPA被控端")
+    audit_send_task_change(db, task, "result", actor, f"回写发送结果：{payload.status}", before)
     db.commit()
     return as_dict(log)
 
 
-def send_task_to_web_chat(db: Session, task: SendTask) -> tuple[RawMessage, SendLog]:
+def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端", action: str = "web_send") -> tuple[RawMessage, SendLog]:
     family = db.query(Family).filter(Family.family_id == task.family_id).first()
     if not family:
         raise HTTPException(404, "任务对应家庭不存在，无法发送到网页通讯")
     if task.status != "pending":
         raise HTTPException(400, "只有 pending 状态的任务可以发送")
     task.content = validate_send_task_content(task.content)
+    before = send_task_snapshot(task)
 
     message = RawMessage(
         family_id=task.family_id,
@@ -1392,26 +1486,27 @@ def send_task_to_web_chat(db: Session, task: SendTask) -> tuple[RawMessage, Send
     )
     db.add(message)
     db.add(log)
+    audit_send_task_change(db, task, action, actor, "发送到网页通讯会话", before)
     return message, log
 
 
 @app.post("/api/send-tasks/{task_id}/web-send")
-def web_send(task_id: int, db: Session = Depends(get_db)):
+def web_send(task_id: int, request: Request = None, db: Session = Depends(get_db)):
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
-    message, log = send_task_to_web_chat(db, task)
+    message, log = send_task_to_web_chat(db, task, actor_from_request(request), "web_send")
     db.commit()
     return {"task": as_dict(task), "message": as_dict(message), "log": as_dict(log)}
 
 
 @app.post("/api/send-tasks/web-send-all")
-def web_send_all(db: Session = Depends(get_db)):
+def web_send_all(request: Request = None, db: Session = Depends(get_db)):
     sent = 0
     skipped = 0
     for task in db.query(SendTask).filter(SendTask.status == "pending").all():
         try:
-            send_task_to_web_chat(db, task)
+            send_task_to_web_chat(db, task, actor_from_request(request), "web_send_all")
             sent += 1
         except HTTPException:
             skipped += 1
@@ -1422,6 +1517,17 @@ def web_send_all(db: Session = Depends(get_db)):
 @app.get("/api/send-logs")
 def list_send_logs(db: Session = Depends(get_db)):
     return [as_dict(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()]
+
+
+@app.get("/api/audit-logs")
+def list_audit_logs(entity_type: str = "", entity_id: int = 0, limit: int = 200, db: Session = Depends(get_db)):
+    safe_limit = min(max(limit, 1), 500)
+    query = db.query(AuditLog)
+    if entity_type:
+        query = query.filter(AuditLog.entity_type == entity_type)
+    if entity_id:
+        query = query.filter(AuditLog.entity_id == entity_id)
+    return [as_dict(l) for l in query.order_by(AuditLog.id.desc()).limit(safe_limit).all()]
 
 
 @app.get("/api/send-artifacts/{filename}")
@@ -1613,6 +1719,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
             if task.send_mode == "real_send":
                 validate_real_send_risk(db, task.target_name, task.content, exclude_task_id=task.id)
         except HTTPException as exc:
+            before = send_task_snapshot(task)
             task.status = "failed"
             db.add(
                 SendLog(
@@ -1624,16 +1731,23 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
                     device_id=dev.device_id,
                 )
             )
+            audit_send_task_change(db, task, "send_guard_failed", f"设备:{dev.device_id}", f"发送安全闸门拦截：{exc.detail}", before)
             continue
         # 原子领取：只有仍是 pending 才领得到，避免两台设备抢到同一条。
         # 同时把 scheduled_at 刷成领取时刻，作为超时回收的判断依据。
+        before = send_task_snapshot(task)
+        assigned_at = datetime.utcnow()
         updated = (
             db.query(SendTask)
             .filter(SendTask.id == task.id, SendTask.status == "pending")
-            .update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": datetime.utcnow()})
+            .update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": assigned_at})
         )
         if updated == 1:
+            task.status = "assigned"
+            task.device_id = dev.device_id
+            task.scheduled_at = assigned_at
             claimed.append(task)
+            audit_send_task_change(db, task, "assign_device", f"设备:{dev.device_id}", "设备领取发送任务", before)
     db.commit()
     return [as_dict(db.get(SendTask, t.id)) for t in claimed]
 

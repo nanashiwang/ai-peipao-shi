@@ -14,15 +14,21 @@ from app.db import Base
 from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
     SendResultIn,
+    SendTaskIn,
+    SendTaskUpdate,
+    cancel_send_task,
+    create_send_task,
+    list_audit_logs,
     record_send_result,
     resolve_send_screenshot,
+    update_send_task,
     validate_device_conversation_scope,
     validate_real_send_risk,
     validate_send_mode,
     validate_send_mode_submit,
     validate_send_task_content,
 )
-from app.models import SendLog, SendTask
+from app.models import AuditLog, SendLog, SendTask
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -168,6 +174,60 @@ class RealSendRiskValidationTest(unittest.TestCase):
         self.assertIsNone(validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u65b0\u5185\u5bb9", now=self.now))
 
 
+class SendTaskAuditLogTest(unittest.TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        self.db = sessionmaker(bind=engine, future=True)()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_create_task_writes_audit_log(self):
+        task = create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u5f85\u5ba1\u6838\u5185\u5bb9",
+            ),
+            db=self.db,
+        )
+
+        logs = self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).all()
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0].action, "create")
+        self.assertIn("\u5f85\u5ba1\u6838\u5185\u5bb9", logs[0].after_json)
+
+    def test_confirm_real_send_is_audited(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u6d4b\u8bd5\u5185\u5bb9"),
+            db=self.db,
+        )
+
+        update_send_task(
+            task["id"],
+            SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u6d4b\u8bd5\u5185\u5bb9", status="pending"),
+            db=self.db,
+        )
+
+        actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
+        self.assertIn("confirm_real_send", actions)
+
+    def test_cancel_task_is_audited_and_list_is_limited(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u6d4b\u8bd5\u5185\u5bb9"),
+            db=self.db,
+        )
+
+        cancel_send_task(task["id"], db=self.db)
+        logs = list_audit_logs(entity_type="send_task", entity_id=task["id"], limit=1, db=self.db)
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["action"], "cancel")
+
+
 class SendResultEvidenceTest(unittest.TestCase):
     PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
 
@@ -207,7 +267,7 @@ class SendResultEvidenceTest(unittest.TestCase):
             screenshot_base64=base64.b64encode(self.PNG_BYTES).decode("ascii"),
         )
 
-        log = record_send_result(task.id, payload, self.db)
+        log = record_send_result(task.id, payload, db=self.db)
 
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["device_id"], "rpa-01")
@@ -223,7 +283,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         )
 
         with self.assertRaises(HTTPException):
-            record_send_result(task.id, payload, self.db)
+            record_send_result(task.id, payload, db=self.db)
 
     def test_rejects_artifact_path_traversal(self):
         with self.assertRaises(HTTPException):
