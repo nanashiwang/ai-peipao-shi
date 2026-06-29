@@ -1,9 +1,21 @@
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from app.main import validate_device_conversation_scope, validate_send_mode, validate_send_mode_submit, validate_send_task_content
+from app.db import Base
+from app.main import (
+    REAL_SEND_MIN_INTERVAL_SECONDS,
+    validate_device_conversation_scope,
+    validate_real_send_risk,
+    validate_send_mode,
+    validate_send_mode_submit,
+    validate_send_task_content,
+)
+from app.models import SendLog, SendTask
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -77,6 +89,76 @@ class DeviceBindingValidationTest(unittest.TestCase):
         dev = SimpleNamespace(device_id="rpa-01", conversations='["\u4e00\u5408\u5b66\u793e"]')
 
         self.assertIsNone(validate_device_conversation_scope(dev, "\u4e00\u5408\u5b66\u793e"))
+
+
+class RealSendRiskValidationTest(unittest.TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        self.db = sessionmaker(bind=engine, future=True)()
+        self.now = datetime(2026, 6, 29, 10, 0, 0)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_rejects_duplicate_active_real_send_task(self):
+        self.db.add(
+            SendTask(
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u6d4b\u8bd5\u5185\u5bb9",
+                send_mode="real_send",
+                status="pending",
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException):
+            validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u6d4b\u8bd5\u5185\u5bb9", now=self.now)
+
+    def test_rejects_recent_same_content_after_interval(self):
+        task = SendTask(
+            family_id="f1",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="sent",
+            content="\u76f8\u540c\u5185\u5bb9",
+            send_mode="real_send",
+            status="sent",
+        )
+        self.db.add(task)
+        self.db.flush()
+        self.db.add(
+            SendLog(
+                task_id=task.id,
+                family_id=task.family_id,
+                target_name=task.target_name,
+                status="sent",
+                sent_at=self.now - timedelta(minutes=10),
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException):
+            validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u76f8\u540c\u5185\u5bb9", now=self.now)
+
+    def test_rejects_min_interval_even_for_different_content(self):
+        self.db.add(
+            SendLog(
+                task_id=1,
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                status="sent",
+                sent_at=self.now - timedelta(seconds=REAL_SEND_MIN_INTERVAL_SECONDS - 1),
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException):
+            validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u4e0d\u540c\u5185\u5bb9", now=self.now)
+
+    def test_allows_real_send_when_no_duplicate_or_recent_send(self):
+        self.assertIsNone(validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u65b0\u5185\u5bb9", now=self.now))
 
 
 if __name__ == "__main__":

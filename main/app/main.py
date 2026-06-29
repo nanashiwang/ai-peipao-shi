@@ -49,6 +49,8 @@ from app.services.scenario import detect_checkin, detect_scene
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
 STATIC = Path(__file__).resolve().parent / "static"
+REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
+REAL_SEND_MIN_INTERVAL_SECONDS = 30
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
 app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
@@ -251,6 +253,60 @@ def validate_send_mode_submit(send_mode: str, confirm_real_send: bool, current_m
     if mode == "real_send" and current_mode != "real_send" and not confirm_real_send:
         raise HTTPException(400, "真实发送需要显式确认")
     return mode
+
+
+def normalize_send_content(content: str) -> str:
+    return re.sub(r"\s+", " ", (content or "").strip())
+
+
+def validate_real_send_risk(
+    db: Session,
+    target_name: str,
+    content: str,
+    exclude_task_id: int = 0,
+    now: datetime | None = None,
+) -> None:
+    now = now or datetime.utcnow()
+    normalized = normalize_send_content(content)
+    if not target_name or not normalized:
+        return
+
+    active_tasks = (
+        db.query(SendTask)
+        .filter(
+            SendTask.target_name == target_name,
+            SendTask.send_mode == "real_send",
+            SendTask.status.in_(["pending", "assigned"]),
+        )
+        .all()
+    )
+    for task in active_tasks:
+        if exclude_task_id and task.id == exclude_task_id:
+            continue
+        if normalize_send_content(task.content) == normalized:
+            raise HTTPException(400, f"目标「{target_name}」已有相同真实发送任务，已阻止重复排队")
+
+    interval_start = now - timedelta(seconds=REAL_SEND_MIN_INTERVAL_SECONDS)
+    last_sent = (
+        db.query(SendLog)
+        .filter(SendLog.target_name == target_name, SendLog.status == "sent", SendLog.sent_at >= interval_start)
+        .order_by(SendLog.sent_at.desc())
+        .first()
+    )
+    if last_sent:
+        raise HTTPException(400, f"目标「{target_name}」距离上次发送不足 {REAL_SEND_MIN_INTERVAL_SECONDS} 秒，已阻止")
+
+    duplicate_start = now - timedelta(seconds=REAL_SEND_DUPLICATE_WINDOW_SECONDS)
+    recent_logs = (
+        db.query(SendLog)
+        .filter(SendLog.target_name == target_name, SendLog.status == "sent", SendLog.sent_at >= duplicate_start)
+        .all()
+    )
+    for log in recent_logs:
+        task = db.get(SendTask, log.task_id)
+        if task and normalize_send_content(task.content) == normalized:
+            minutes = max(1, REAL_SEND_DUPLICATE_WINDOW_SECONDS // 60)
+            raise HTTPException(400, f"目标「{target_name}」近 {minutes} 分钟已发送相同内容，已阻止")
 
 
 def device_conversations(dev: Device) -> list[str]:
@@ -853,13 +909,16 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     target_name = data.target_name.strip() or (family.parent_nickname if family else output.family_id)
     scene = data.scene.strip() or output.source or output.agent_type
     device_id = validate_task_device_binding(db, data.device_id, target_name)
+    send_mode = validate_send_mode_submit(data.send_mode, data.confirm_real_send)
+    if send_mode == "real_send":
+        validate_real_send_risk(db, target_name, content)
     task = SendTask(
         family_id=output.family_id,
         target_name=target_name,
         scene=scene,
         content=content,
         device_id=device_id,
-        send_mode=validate_send_mode_submit(data.send_mode, data.confirm_real_send),
+        send_mode=send_mode,
         status="pending",
     )
     output.status = "task_created"
@@ -1190,6 +1249,8 @@ def create_send_task(payload: SendTaskIn, db: Session = Depends(get_db)):
     data["content"] = validate_send_task_content(data.get("content", ""))
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
     data["device_id"] = validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
+    if data["send_mode"] == "real_send":
+        validate_real_send_risk(db, data.get("target_name", ""), data["content"])
     task = SendTask(**data)
     db.add(task)
     db.commit()
@@ -1213,6 +1274,8 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depend
     if payload.send_mode:
         task.send_mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send, task.send_mode)
     task.device_id = validate_task_device_binding(db, device_id or "", target_name)
+    if task.send_mode == "real_send":
+        validate_real_send_risk(db, target_name, task.content, exclude_task_id=task.id)
     task.status = payload.status
     db.commit()
     return as_dict(task)
@@ -1487,6 +1550,8 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         try:
             task.content = validate_send_task_content(task.content)
             task.send_mode = validate_send_mode(task.send_mode)
+            if task.send_mode == "real_send":
+                validate_real_send_risk(db, task.target_name, task.content, exclude_task_id=task.id)
         except HTTPException as exc:
             task.status = "failed"
             db.add(
@@ -1495,7 +1560,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
                     family_id=task.family_id,
                     target_name=task.target_name,
                     status="failed",
-                    detail=f"CONTENT_VALIDATION: {exc.detail}",
+                    detail=f"SEND_GUARD: {exc.detail}",
                     device_id=dev.device_id,
                 )
             )
