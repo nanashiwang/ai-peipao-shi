@@ -2129,6 +2129,27 @@ def cancel_send_task(task_id: int, request: Request = None, db: Session = Depend
     return as_dict(task)
 
 
+@app.post("/api/send-tasks/{task_id}/dry-run")
+def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depends(get_db)):
+    task = db.get(SendTask, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    if task.status != "pending":
+        raise HTTPException(400, "只有 pending 状态的任务可以发起试运行")
+    content = validate_send_task_content(task.content)
+    clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
+    before = send_task_snapshot(task)
+    task.content = content
+    task.device_id = clean_device_id
+    task.send_mode = "dry_run"
+    task.status = "pending"
+    task.scheduled_at = datetime.utcnow()
+    audit_send_task_change(db, task, "queue_dry_run", actor_from_request(request), "控制端发起企微 dry-run 试运行", before)
+    sync_weekly_report_send_status(db, task, "pending")
+    db.commit()
+    return as_dict(task)
+
+
 @app.post("/api/send-tasks/{task_id}/result")
 def record_send_result(task_id: int, payload: SendResultIn, request: Request = None, db: Session = Depends(get_db)):
     task = db.get(SendTask, task_id)

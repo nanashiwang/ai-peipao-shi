@@ -20,6 +20,7 @@ from app.main import (
     claim_tasks,
     create_send_task,
     list_audit_logs,
+    queue_task_dry_run,
     record_send_result,
     resolve_send_screenshot,
     update_send_task,
@@ -394,6 +395,38 @@ class SendTaskAuditLogTest(unittest.TestCase):
 
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0]["action"], "cancel")
+
+    def test_queue_dry_run_forces_safe_mode_and_audits(self):
+        task = create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u8bd5\u8fd0\u884c\u5185\u5bb9",
+                send_mode="real_send",
+                confirm_real_send=True,
+            ),
+            db=self.db,
+        )
+
+        result = queue_task_dry_run(task["id"], db=self.db)
+
+        self.assertEqual(result["send_mode"], "dry_run")
+        self.assertEqual(result["status"], "pending")
+        self.assertTrue(result["scheduled_at"])
+        actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
+        self.assertIn("queue_dry_run", actions)
+
+    def test_queue_dry_run_rejects_finished_task(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u8bd5\u8fd0\u884c\u5185\u5bb9"),
+            db=self.db,
+        )
+        self.db.get(SendTask, task["id"]).status = "sent"
+        self.db.commit()
+
+        with self.assertRaises(HTTPException):
+            queue_task_dry_run(task["id"], db=self.db)
 
 
 class ClaimTaskGuardTest(unittest.TestCase):

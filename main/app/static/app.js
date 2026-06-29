@@ -795,7 +795,7 @@ function renderTasks() {
     { label: "操作", render: (r) => `
       <div class="cell-actions">
         <button onclick="saveTask(${r.id})">保存</button>
-        ${r.status === "pending" ? `<button onclick="sendTask(${r.id})">发送</button><button onclick="cancelTask(${r.id})">取消</button>` : ""}
+        ${r.status === "pending" ? `<button onclick="queueTaskDryRun(${r.id})">企微试运行</button><button onclick="sendTask(${r.id})">网页发送</button><button onclick="cancelTask(${r.id})">取消</button>` : ""}
       </div>
     ` },
   ], state.tasks);
@@ -1131,6 +1131,28 @@ async function cancelTask(id) {
   return withAction("取消任务", async () => {
     await api(`/api/send-tasks/${id}/cancel`, { method: "POST" });
     toast("任务已取消");
+    await refreshAll();
+  });
+}
+
+// 把任务显式加入企微 dry-run 队列：被控端只定位、粘贴、清空，不按发送键。
+async function queueTaskDryRun(id) {
+  return withAction("企微试运行", async () => {
+    const task = state.tasks.find((item) => item.id === id);
+    const editor = $(`task-${id}`);
+    await api(`/api/send-tasks/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...task,
+        content: editor?.value || task?.content || "",
+        device_id: $(`task-device-${id}`)?.value || "",
+        send_mode: "dry_run",
+        status: "pending",
+      }),
+    });
+    await api(`/api/send-tasks/${id}/dry-run`, { method: "POST" });
+    toast("已加入企微试运行队列；被控端会定位、粘贴并清空，不会真实发送");
     await refreshAll();
   });
 }
