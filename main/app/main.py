@@ -56,6 +56,7 @@ SEND_SCREENSHOT_DIR = ROOT / "data" / "send_screenshots"
 MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
+SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
 app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
@@ -323,6 +324,18 @@ def validate_send_mode(send_mode: str) -> str:
     mode = (send_mode or "dry_run").strip()
     if mode not in {"dry_run", "real_send"}:
         raise HTTPException(400, "send_mode 只能是 dry_run 或 real_send")
+    return mode
+
+
+def validate_send_task_execution_guard(task: SendTask, now: datetime | None = None) -> str:
+    mode = validate_send_mode(task.send_mode)
+    reference_time = task.scheduled_at or task.created_at
+    if not reference_time:
+        raise HTTPException(400, "任务缺少调度时间，疑似旧任务，请保存后重新审核")
+    now = now or datetime.utcnow()
+    stale_before = now - timedelta(days=SEND_TASK_EXECUTION_MAX_AGE_DAYS)
+    if reference_time < stale_before:
+        raise HTTPException(400, f"任务已超过 {SEND_TASK_EXECUTION_MAX_AGE_DAYS} 天未处理，请保存后重新审核")
     return mode
 
 
@@ -1419,6 +1432,8 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     if task.send_mode == "real_send":
         validate_real_send_risk(db, target_name, task.content, exclude_task_id=task.id)
     task.status = payload.status
+    if task.status == "pending":
+        task.scheduled_at = datetime.utcnow()
     action = "confirm_real_send" if previous_mode != "real_send" and task.send_mode == "real_send" else "update"
     summary = "确认真实发送" if action == "confirm_real_send" else "更新发送任务"
     audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
@@ -1471,6 +1486,7 @@ def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端",
         raise HTTPException(404, "任务对应家庭不存在，无法发送到网页通讯")
     if task.status != "pending":
         raise HTTPException(400, "只有 pending 状态的任务可以发送")
+    task.send_mode = validate_send_task_execution_guard(task)
     task.content = validate_send_task_content(task.content)
     before = send_task_snapshot(task)
 
@@ -1722,7 +1738,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     for task in candidates:
         try:
             task.content = validate_send_task_content(task.content)
-            task.send_mode = validate_send_mode(task.send_mode)
+            task.send_mode = validate_send_task_execution_guard(task)
             if task.send_mode == "real_send":
                 validate_real_send_risk(db, task.target_name, task.content, exclude_task_id=task.id)
         except HTTPException as exc:

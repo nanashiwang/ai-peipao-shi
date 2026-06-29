@@ -17,18 +17,20 @@ from app.main import (
     SendTaskIn,
     SendTaskUpdate,
     cancel_send_task,
+    claim_tasks,
     create_send_task,
     list_audit_logs,
     record_send_result,
     resolve_send_screenshot,
     update_send_task,
+    validate_send_task_execution_guard,
     validate_device_conversation_scope,
     validate_real_send_risk,
     validate_send_mode,
     validate_send_mode_submit,
     validate_send_task_content,
 )
-from app.models import AuditLog, SendLog, SendTask
+from app.models import AuditLog, Device, SendLog, SendTask
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -79,6 +81,33 @@ class SendModeValidationTest(unittest.TestCase):
 
     def test_existing_real_send_can_be_saved_without_reconfirm(self):
         self.assertEqual(validate_send_mode_submit("real_send", False, "real_send"), "real_send")
+
+
+class SendTaskExecutionGuardTest(unittest.TestCase):
+    def test_rejects_stale_pending_task(self):
+        task = SimpleNamespace(
+            send_mode="dry_run",
+            scheduled_at=datetime(2026, 6, 1, 10, 0, 0),
+            created_at=datetime(2026, 6, 1, 10, 0, 0),
+        )
+
+        with self.assertRaises(HTTPException):
+            validate_send_task_execution_guard(task, now=datetime(2026, 6, 29, 10, 0, 0))
+
+    def test_rejects_task_without_execution_time(self):
+        task = SimpleNamespace(send_mode="dry_run", scheduled_at=None, created_at=None)
+
+        with self.assertRaises(HTTPException):
+            validate_send_task_execution_guard(task, now=datetime(2026, 6, 29, 10, 0, 0))
+
+    def test_accepts_recent_task_and_returns_mode(self):
+        task = SimpleNamespace(
+            send_mode="real_send",
+            scheduled_at=datetime(2026, 6, 28, 10, 0, 0),
+            created_at=datetime(2026, 6, 20, 10, 0, 0),
+        )
+
+        self.assertEqual(validate_send_task_execution_guard(task, now=datetime(2026, 6, 29, 10, 0, 0)), "real_send")
 
 
 class DeviceBindingValidationTest(unittest.TestCase):
@@ -226,6 +255,57 @@ class SendTaskAuditLogTest(unittest.TestCase):
 
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0]["action"], "cancel")
+
+
+class ClaimTaskGuardTest(unittest.TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=engine)
+        self.db = sessionmaker(bind=engine, future=True)()
+        self.dev = Device(
+            device_id="dev-a",
+            token="token",
+            conversations='["\u4e00\u5408\u5b66\u793e"]',
+        )
+        self.db.add(self.dev)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_claim_marks_stale_task_failed_and_only_returns_recent_task(self):
+        stale_time = datetime.utcnow() - timedelta(days=8)
+        old_task = SendTask(
+            family_id="f-old",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="old",
+            content="\u65e7\u4efb\u52a1",
+            send_mode="dry_run",
+            status="pending",
+            scheduled_at=stale_time,
+            created_at=stale_time,
+        )
+        recent_task = SendTask(
+            family_id="f-new",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="new",
+            content="\u65b0\u4efb\u52a1",
+            send_mode="dry_run",
+            status="pending",
+        )
+        self.db.add_all([old_task, recent_task])
+        self.db.commit()
+
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.db.refresh(old_task)
+        self.db.refresh(recent_task)
+        self.assertEqual([item["id"] for item in claimed], [recent_task.id])
+        self.assertEqual(old_task.status, "failed")
+        self.assertEqual(recent_task.status, "assigned")
+        guard_log = self.db.query(SendLog).filter(SendLog.task_id == old_task.id).one()
+        self.assertIn("SEND_GUARD", guard_log.detail)
+        self.assertEqual(guard_log.send_mode, "dry_run")
 
 
 class SendResultEvidenceTest(unittest.TestCase):
