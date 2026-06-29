@@ -229,6 +229,39 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.assertEqual(logs[0].action, "create")
         self.assertIn("\u5f85\u5ba1\u6838\u5185\u5bb9", logs[0].after_json)
 
+    def test_create_task_rejects_mojibake_content(self):
+        with self.assertRaises(HTTPException):
+            create_send_task(
+                SendTaskIn(
+                    family_id="f1",
+                    target_name="\u4e00\u5408\u5b66\u793e",
+                    scene="test",
+                    content="RPA?????????????????????",
+                ),
+                db=self.db,
+            )
+
+        self.assertEqual(self.db.query(SendTask).count(), 0)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_update_task_rejects_mojibake_content_without_mutating_task(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u539f\u59cb\u5185\u5bb9"),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException):
+            update_send_task(
+                task["id"],
+                SendTaskUpdate(content="RPA?????????????????????", status="pending"),
+                db=self.db,
+            )
+
+        saved = self.db.get(SendTask, task["id"])
+        self.assertEqual(saved.content, "\u539f\u59cb\u5185\u5bb9")
+        self.assertEqual(saved.status, "pending")
+        self.assertEqual(self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).count(), 1)
+
     def test_confirm_real_send_is_audited(self):
         task = create_send_task(
             SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u6d4b\u8bd5\u5185\u5bb9"),
