@@ -5,6 +5,7 @@
 
 
 REAL_SEND_GUARD_MESSAGE = "REAL_SEND_GUARD: 被控端 allow_real_send=false，已阻止真实发送。"
+TARGET_NOT_ALLOWED_TEMPLATE = "目标「{target}」不在白名单，已跳过。"
 
 
 class SendGuardError(ValueError):
@@ -17,6 +18,16 @@ def real_send_enabled(config: dict) -> bool:
 
 def real_send_block_detail() -> str:
     return REAL_SEND_GUARD_MESSAGE
+
+
+def target_not_allowed_detail(target: str) -> str:
+    return TARGET_NOT_ALLOWED_TEMPLATE.format(target=target or "")
+
+
+def target_in_allowed_conversations(target: str, allowed_conversations) -> bool:
+    allowed = {str(item).strip() for item in (allowed_conversations or []) if str(item).strip()}
+    clean_target = (target or "").strip()
+    return bool(clean_target) and clean_target in allowed
 
 
 def real_send_requested(config: dict, send_mode: str) -> bool:

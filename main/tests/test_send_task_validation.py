@@ -307,6 +307,36 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertIn("SEND_GUARD", guard_log.detail)
         self.assertEqual(guard_log.send_mode, "dry_run")
 
+    def test_claim_only_returns_tasks_in_device_conversation_scope(self):
+        allowed_task = SendTask(
+            family_id="f-allowed",
+            target_name="一合学社",
+            scene="allowed",
+            content="允许领取",
+            send_mode="dry_run",
+            status="pending",
+        )
+        outside_task = SendTask(
+            family_id="f-outside",
+            target_name="测试2群",
+            scene="outside",
+            content="不应领取",
+            send_mode="dry_run",
+            status="pending",
+        )
+        self.db.add_all([allowed_task, outside_task])
+        self.db.commit()
+
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.db.refresh(allowed_task)
+        self.db.refresh(outside_task)
+        self.assertEqual([item["id"] for item in claimed], [allowed_task.id])
+        self.assertEqual(allowed_task.status, "assigned")
+        self.assertEqual(allowed_task.device_id, "dev-a")
+        self.assertEqual(outside_task.status, "pending")
+        self.assertEqual(outside_task.device_id, "")
+
 
 class SendResultEvidenceTest(unittest.TestCase):
     PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24

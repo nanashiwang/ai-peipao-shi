@@ -22,9 +22,25 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
 
 try:
-    from rpa.send_guard import SendGuardError, config_for_send_mode, real_send_block_detail, real_send_enabled, real_send_requested
+    from rpa.send_guard import (
+        SendGuardError,
+        config_for_send_mode,
+        real_send_block_detail,
+        real_send_enabled,
+        real_send_requested,
+        target_in_allowed_conversations,
+        target_not_allowed_detail,
+    )
 except ModuleNotFoundError:
-    from send_guard import SendGuardError, config_for_send_mode, real_send_block_detail, real_send_enabled, real_send_requested
+    from send_guard import (
+        SendGuardError,
+        config_for_send_mode,
+        real_send_block_detail,
+        real_send_enabled,
+        real_send_requested,
+        target_in_allowed_conversations,
+        target_not_allowed_detail,
+    )
 
 try:
     import pyperclip
@@ -1690,10 +1706,9 @@ def config_for_task_send_mode(config: dict, send_mode: str) -> dict:
 
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
 def process_task(task: dict, config: dict):
-    allowed = set(config.get("allowed_conversations", []))
     target = task.get("target_name") or ""
-    if target not in allowed:
-        return "skipped", f"目标「{target}」不在白名单，已跳过。"
+    if not target_in_allowed_conversations(target, config.get("allowed_conversations", [])):
+        return "skipped", target_not_allowed_detail(target)
     mode = (task.get("send_mode") or "").strip()
     if real_send_requested(config, mode) and not real_send_enabled(config):
         return "skipped", real_send_block_detail()

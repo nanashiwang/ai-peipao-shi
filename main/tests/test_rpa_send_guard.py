@@ -6,6 +6,8 @@ from rpa.send_guard import (
     real_send_block_detail,
     real_send_enabled,
     real_send_requested,
+    target_in_allowed_conversations,
+    target_not_allowed_detail,
 )
 
 
@@ -35,6 +37,14 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertTrue(real_send_requested({"dry_run": False}, ""))
         with self.assertRaises(SendGuardError):
             config_for_send_mode({"dry_run": False, "allow_real_send": False}, "")
+
+    def test_target_must_be_in_allowed_conversations(self):
+        allowed = ["一合学社", "测试2群", ""]
+
+        self.assertTrue(target_in_allowed_conversations(" 一合学社 ", allowed))
+        self.assertFalse(target_in_allowed_conversations("许宝月", allowed))
+        self.assertFalse(target_in_allowed_conversations("", allowed))
+        self.assertEqual(target_not_allowed_detail("许宝月"), "目标「许宝月」不在白名单，已跳过。")
 
 
 if __name__ == "__main__":
