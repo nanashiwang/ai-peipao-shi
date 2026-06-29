@@ -94,6 +94,9 @@ class WeeklyReport(Base):
     teacher_suggestion: Mapped[str] = mapped_column(Text, default="")
     next_followup: Mapped[str] = mapped_column(Text, default="")
     final_text: Mapped[str] = mapped_column(Text, default="")
+    send_task_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    send_status: Mapped[str] = mapped_column(String(30), default="not_created", index=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

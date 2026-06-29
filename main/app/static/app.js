@@ -102,6 +102,22 @@ function sendModeBadge(mode) {
   return badge(`未知模式：${mode}`);
 }
 
+function reportSendStatusBadge(status) {
+  const labels = {
+    not_created: "未建任务",
+    task_created: "已建任务",
+    pending: "待发送",
+    assigned: "发送中",
+    sent: "已发送",
+    failed: "发送失败",
+    dry_run: "试运行完成",
+    skipped: "已跳过",
+    cancelled: "已取消",
+  };
+  const kind = status === "sent" || status === "dry_run" ? "ok" : (status === "failed" || status === "assigned" ? "warn" : "");
+  return badge(labels[status || "not_created"] || status || "未建任务", kind);
+}
+
 function sendModeSelect(task) {
   const mode = task.send_mode || "dry_run";
   return `
@@ -547,8 +563,13 @@ function renderReports() {
   $("reportList").innerHTML = state.reports.length ? state.reports.map((r) => `
     <article class="report-card">
       <div class="card-top">
-        <div><strong>${esc(familyName(r.family_id))}</strong> ${badge(r.status, r.status === "approved" ? "ok" : "warn")} <span class="muted">${esc(r.week_label)}</span></div>
-        <button onclick="createReportTask(${r.id})">加入发送任务</button>
+        <div>
+          <strong>${esc(familyName(r.family_id))}</strong>
+          ${badge(r.status, r.status === "approved" ? "ok" : "warn")}
+          ${reportSendStatusBadge(r.send_status || "not_created")}
+          <span class="muted">${esc(r.week_label)}${r.send_task_id ? ` · 任务 #${esc(r.send_task_id)}` : ""}</span>
+        </div>
+        <button onclick="createReportTask(${r.id})">${r.send_task_id ? "同步发送任务" : "加入发送任务"}</button>
       </div>
       <div class="report-grid">
         <p><strong>总结</strong>${esc(r.overall_state)}</p>
@@ -832,21 +853,14 @@ async function createReportTask(id) {
   return withAction("创建周报任务", async () => {
     const report = state.reports.find((item) => item.id === id);
     if (!report) return;
-    if (report.status !== "approved") await approveReport(id);
-    const family = state.families.find((item) => item.family_id === report.family_id);
-    await api("/api/send-tasks", {
-      method: "POST",
+    const final_text = $(`report-${id}`).value;
+    await api(`/api/reports/${id}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        family_id: report.family_id,
-        target_name: family?.parent_nickname || report.family_id,
-        scene: "周报发送",
-        content: $(`report-${id}`).value,
-        device_id: "",
-        send_mode: "dry_run",
-      }),
+      body: JSON.stringify({ final_text, status: "approved" }),
     });
-    toast("周报已加入发送任务");
+    const res = await api(`/api/reports/${id}/send-task`, { method: "POST" });
+    toast(res.created ? "周报已加入发送任务" : "周报已绑定已有发送任务");
     await refreshAll();
     switchTab("tasks");
   });

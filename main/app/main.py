@@ -57,6 +57,7 @@ MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
 SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
+WEEKLY_REPORT_SCENE = "周报发送"
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
 app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
@@ -501,6 +502,82 @@ def validate_task_device_binding(db: Session, device_id: str, target_name: str) 
     dev = db.query(Device).filter(Device.device_id == clean_device_id).first()
     validate_device_conversation_scope(dev, target_name)
     return clean_device_id
+
+
+def weekly_report_send_status(task: SendTask | None) -> str:
+    if not task:
+        return "not_created"
+    if task.status == "pending":
+        return "task_created"
+    return task.status or "task_created"
+
+
+def sync_weekly_report_send_status(
+    db: Session,
+    task: SendTask,
+    status: str | None = None,
+    sent_at: datetime | None = None,
+) -> None:
+    reports = db.query(WeeklyReport).filter(WeeklyReport.send_task_id == task.id).all()
+    if not reports:
+        return
+    now = datetime.utcnow()
+    next_status = status or weekly_report_send_status(task)
+    for report in reports:
+        report.send_status = next_status
+        if next_status == "sent":
+            report.sent_at = sent_at or now
+        report.updated_at = now
+
+
+def ensure_weekly_report_send_task(db: Session, report: WeeklyReport, actor: str) -> tuple[SendTask, bool]:
+    if report.status != "approved":
+        raise HTTPException(400, "只有已审核周报可以创建发送任务")
+    content = validate_send_task_content(report.final_text)
+    family = db.query(Family).filter(Family.family_id == report.family_id).first()
+    target_name = family.parent_nickname if family else report.family_id
+    task = db.get(SendTask, report.send_task_id) if report.send_task_id else None
+    if task:
+        before = send_task_snapshot(task)
+        if task.status == "pending" and task.send_mode == "dry_run":
+            task.target_name = target_name
+            task.scene = WEEKLY_REPORT_SCENE
+            task.content = content
+            if changed_fields(before, send_task_snapshot(task)):
+                audit_send_task_change(db, task, "update", actor, "同步周报发送任务内容", before)
+        report.send_status = weekly_report_send_status(task)
+        return task, False
+
+    active_task = (
+        db.query(SendTask)
+        .filter(
+            SendTask.family_id == report.family_id,
+            SendTask.scene == WEEKLY_REPORT_SCENE,
+            SendTask.content == content,
+            SendTask.status.in_(["pending", "assigned"]),
+        )
+        .order_by(SendTask.id.desc())
+        .first()
+    )
+    if active_task:
+        report.send_task_id = active_task.id
+        report.send_status = weekly_report_send_status(active_task)
+        report.updated_at = datetime.utcnow()
+        return active_task, False
+
+    task = SendTask(
+        family_id=report.family_id,
+        target_name=target_name,
+        scene=WEEKLY_REPORT_SCENE,
+        content=content,
+        send_mode="dry_run",
+    )
+    add_send_task_with_audit(db, task, "create", actor, f"已审核周报 {report.id} 创建发送任务")
+    report.send_task_id = task.id
+    report.send_status = "task_created"
+    report.sent_at = None
+    report.updated_at = datetime.utcnow()
+    return task, True
 
 
 # 兼容多种日期字符串格式，供 RPA 同步时使用。
@@ -1589,27 +1666,23 @@ def scan_checkins(db: Session = Depends(get_db)):
 def create_tasks_from_reports(request: Request = None, db: Session = Depends(get_db)):
     created = 0
     reports = db.query(WeeklyReport).filter(WeeklyReport.status == "approved").all()
+    actor = actor_from_request(request)
     for report in reports:
-        exists = db.query(SendTask).filter(SendTask.family_id == report.family_id, SendTask.scene == "周报发送").first()
-        if exists:
-            continue
-        family = db.query(Family).filter(Family.family_id == report.family_id).first()
-        add_send_task_with_audit(
-            db,
-            SendTask(
-                family_id=report.family_id,
-                target_name=family.parent_nickname if family else report.family_id,
-                scene="周报发送",
-                content=validate_send_task_content(report.final_text),
-                send_mode="dry_run",
-            ),
-            "create",
-            actor_from_request(request),
-            f"已审核周报 {report.id} 创建发送任务",
-        )
-        created += 1
+        _, was_created = ensure_weekly_report_send_task(db, report, actor)
+        if was_created:
+            created += 1
     db.commit()
     return {"created": created}
+
+
+@app.post("/api/reports/{report_id}/send-task")
+def create_task_from_report(report_id: int, request: Request = None, db: Session = Depends(get_db)):
+    report = db.get(WeeklyReport, report_id)
+    if not report:
+        raise HTTPException(404, "周报不存在")
+    task, created = ensure_weekly_report_send_task(db, report, actor_from_request(request))
+    db.commit()
+    return {"created": created, "report": as_dict(report), "task": as_dict(task)}
 
 
 # 按场景规则和话术模板创建发送任务。
@@ -1690,6 +1763,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     action = "confirm_real_send" if previous_mode != "real_send" and task.send_mode == "real_send" else "update"
     summary = "确认真实发送" if action == "confirm_real_send" else "更新发送任务"
     audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
+    sync_weekly_report_send_status(db, task)
     db.commit()
     return as_dict(task)
 
@@ -1702,6 +1776,7 @@ def cancel_send_task(task_id: int, request: Request = None, db: Session = Depend
     before = send_task_snapshot(task)
     task.status = "cancelled"
     audit_send_task_change(db, task, "cancel", actor_from_request(request), "取消发送任务", before)
+    sync_weekly_report_send_status(db, task, "cancelled")
     db.commit()
     return as_dict(task)
 
@@ -1716,6 +1791,7 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
     before = send_task_snapshot(task)
     task.status = payload.status
+    finished_at = datetime.utcnow()
     log = SendLog(
         task_id=task.id,
         family_id=task.family_id,
@@ -1725,10 +1801,12 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         detail=payload.detail,
         device_id=payload.device_id or task.device_id,
         screenshot_path=screenshot_path,
+        sent_at=finished_at,
     )
     db.add(log)
     actor = actor_from_request(request, f"设备:{payload.device_id}" if payload.device_id else "RPA被控端")
     audit_send_task_change(db, task, "result", actor, f"回写发送结果：{payload.status}", before)
+    sync_weekly_report_send_status(db, task, payload.status, finished_at)
     db.commit()
     return as_dict(log)
 
@@ -1751,6 +1829,7 @@ def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端",
         checkin_status=detect_checkin(task.content),
         is_effective="Y",
     )
+    finished_at = datetime.utcnow()
     task.status = "sent"
     log = SendLog(
         task_id=task.id,
@@ -1759,10 +1838,12 @@ def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端",
         status="sent",
         send_mode=send_log_mode(task),
         detail="WEB_CHAT: 已发送到网页通讯会话。",
+        sent_at=finished_at,
     )
     db.add(message)
     db.add(log)
     audit_send_task_change(db, task, action, actor, "发送到网页通讯会话", before)
+    sync_weekly_report_send_status(db, task, "sent", finished_at)
     return message, log
 
 
@@ -2009,6 +2090,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
                 )
             )
             audit_send_task_change(db, task, "send_guard_failed", f"设备:{dev.device_id}", f"发送安全闸门拦截：{exc.detail}", before)
+            sync_weekly_report_send_status(db, task, "failed")
             continue
         # 原子领取：只有仍是 pending 才领得到，避免两台设备抢到同一条。
         # 同时把 scheduled_at 刷成领取时刻，作为超时回收的判断依据。
@@ -2025,6 +2107,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
             task.scheduled_at = assigned_at
             claimed.append(task)
             audit_send_task_change(db, task, "assign_device", f"设备:{dev.device_id}", "设备领取发送任务", before)
+            sync_weekly_report_send_status(db, task, "assigned")
     db.commit()
     return [as_dict(db.get(SendTask, t.id)) for t in claimed]
 
