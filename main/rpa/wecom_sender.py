@@ -25,22 +25,26 @@ try:
     from rpa.send_guard import (
         SendGuardError,
         config_for_send_mode,
+        conversation_title_mismatch_detail,
         real_send_block_detail,
         real_send_enabled,
         real_send_requested,
         target_in_allowed_conversations,
         target_not_allowed_detail,
+        validate_active_conversation_title,
         validate_foreground_wecom,
     )
 except ModuleNotFoundError:
     from send_guard import (
         SendGuardError,
         config_for_send_mode,
+        conversation_title_mismatch_detail,
         real_send_block_detail,
         real_send_enabled,
         real_send_requested,
         target_in_allowed_conversations,
         target_not_allowed_detail,
+        validate_active_conversation_title,
         validate_foreground_wecom,
     )
 
@@ -1046,31 +1050,47 @@ def verify_active_conversation(window, target: str, config: dict):
     verify_block_on_mismatch=true 时不匹配直接 raise；false 时仅告警。"""
     if not config.get("verify_active_conversation_enabled", True):
         return
-    import difflib
-
     region = tuple(config.get("chat_title_region", [0.30, 0.0, 0.80, 0.13]))
     img, rect = screenshot_wecom(window, config, f"verify_{target}")
     try:
-        ok = False
         text = visible_text(window)
-        if target in text or target in window.window_text():
-            ok = True
+        title = window.window_text()
+        ocr_items = []
         if config.get("use_local_ocr", True):
             try:
-                min_ratio = float(config.get("title_match_min_ratio", 0.7))
-                for it in ocr_region(img, region, rect, config):
-                    if target in it["text"] or difflib.SequenceMatcher(None, target, it["text"]).ratio() >= min_ratio:
-                        ok = True
-                        break
+                ocr_items = ocr_region(img, region, rect, config)
             except RpaError as exc:
                 print(f"local_ocr_unavailable detail={exc}")
-        if not ok:
-            ok = ark_locate_in_region(img, target, config, rect, region) is not None
+        min_ratio = float(config.get("title_match_min_ratio", 0.7))
+        try:
+            validate_active_conversation_title(
+                target,
+                visible_text=text,
+                window_title=title,
+                ocr_items=ocr_items,
+                ark_hit=False,
+                min_ratio=min_ratio,
+            )
+            ok = True
+        except SendGuardError:
+            ark_hit = ark_locate_in_region(img, target, config, rect, region) is not None
+            try:
+                validate_active_conversation_title(
+                    target,
+                    visible_text=text,
+                    window_title=title,
+                    ocr_items=ocr_items,
+                    ark_hit=ark_hit,
+                    min_ratio=min_ratio,
+                )
+                ok = True
+            except SendGuardError:
+                ok = False
     finally:
         _cleanup_debug_image(img, config)
     if not ok:
         if config.get("verify_block_on_mismatch", True):
-            raise RpaError(f"发送前校验失败：当前聊天标题不是「{target}」，已阻止发送（防发错群）。")
+            raise RpaError(conversation_title_mismatch_detail(target))
         print(f"WARN 未确认当前会话为「{target}」，但 verify_block_on_mismatch=false，继续。")
 
 

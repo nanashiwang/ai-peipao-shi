@@ -2,12 +2,15 @@ import unittest
 
 from rpa.send_guard import (
     SendGuardError,
+    active_conversation_verified,
     config_for_send_mode,
+    conversation_title_mismatch_detail,
     real_send_block_detail,
     real_send_enabled,
     real_send_requested,
     target_in_allowed_conversations,
     target_not_allowed_detail,
+    validate_active_conversation_title,
     validate_foreground_wecom,
 )
 
@@ -60,6 +63,19 @@ class RpaSendGuardTest(unittest.TestCase):
             validate_foreground_wecom(303, target_handle=202, foreground_is_wecom=False, foreground_title="浏览器")
         self.assertIn("当前前台窗口不是企业微信", str(mismatch.exception))
         self.assertIn("浏览器", str(mismatch.exception))
+
+    def test_active_conversation_title_accepts_visible_ocr_or_ark_match(self):
+        self.assertTrue(active_conversation_verified(" 一合学社 ", visible_text="当前聊天：一合学社"))
+        self.assertTrue(active_conversation_verified("一合学社", ocr_items=[{"text": "一合学社", "score": 0.9}]))
+        self.assertTrue(active_conversation_verified("一合学社", ocr_items=[{"text": "一合学舍", "score": 0.9}], min_ratio=0.7))
+        self.assertTrue(active_conversation_verified("一合学社", ark_hit=True))
+
+    def test_active_conversation_title_rejects_ocr_wrong_conversation(self):
+        self.assertFalse(active_conversation_verified("一合学社", ocr_items=[{"text": "测试2群", "score": 0.99}], min_ratio=0.9))
+
+        with self.assertRaises(SendGuardError) as ctx:
+            validate_active_conversation_title("一合学社", ocr_items=[{"text": "测试2群", "score": 0.99}], min_ratio=0.9)
+        self.assertEqual(str(ctx.exception), conversation_title_mismatch_detail("一合学社"))
 
 
 if __name__ == "__main__":
