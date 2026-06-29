@@ -140,6 +140,7 @@ class SendTask(Base):
     target_name: Mapped[str] = mapped_column(String(120), default="")
     scene: Mapped[str] = mapped_column(String(80), default="")
     content: Mapped[str] = mapped_column(Text)
+    send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     status: Mapped[str] = mapped_column(String(30), default="pending")
     device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

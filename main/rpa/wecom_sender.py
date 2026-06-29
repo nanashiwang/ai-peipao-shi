@@ -1630,6 +1630,18 @@ def validate_task_content(content: str) -> str:
     return text
 
 
+def config_for_task_send_mode(config: dict, send_mode: str) -> dict:
+    task_config = {**config}
+    mode = (send_mode or "").strip()
+    if mode == "dry_run":
+        task_config["dry_run"] = True
+    elif mode == "real_send":
+        task_config["dry_run"] = False
+    elif mode:
+        raise RpaError(f"未知发送模式：{mode}")
+    return task_config
+
+
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
 def process_task(task: dict, config: dict):
     allowed = set(config.get("allowed_conversations", []))
@@ -1637,10 +1649,11 @@ def process_task(task: dict, config: dict):
     if target not in allowed:
         return "skipped", f"目标「{target}」不在白名单，已跳过。"
     content = validate_task_content(task.get("content") or "")
-    window = find_wecom_window(config)
-    search_conversation(window, target, config)
-    verify_active_conversation(window, target, config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
-    return send_message(window, content, config)
+    task_config = config_for_task_send_mode(config, task.get("send_mode") or "")
+    window = find_wecom_window(task_config)
+    search_conversation(window, target, task_config)
+    verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
+    return send_message(window, content, task_config)
 
 
 # 发送单条任务并把结果回写到后端日志接口。
@@ -1653,7 +1666,7 @@ def send_task_and_record(task: dict, config: dict):
     request_json(config["api_base_url"], f"/api/send-tasks/{task_id}/result", method="POST",
                  payload={"status": status, "detail": detail, "device_id": config.get("device_id", "")},
                  extra_headers=device_headers(config))
-    print(f"task={task_id} target={task.get('target_name')} status={status} detail={detail}")
+    print(f"task={task_id} target={task.get('target_name')} mode={task.get('send_mode') or 'config_default'} status={status} detail={detail}")
     return status, detail
 
 
@@ -1723,12 +1736,12 @@ def run_once(config: dict):
         send_heartbeat(config)
         selected = request_json(base_url, f"/api/devices/{device_id}/claim?limit={limit}",
                                 method="POST", extra_headers=device_headers(config))
-        print(f"device={device_id}, claimed={len(selected)}, dry_run={config.get('dry_run', True)}")
+        print(f"device={device_id}, claimed={len(selected)}, default_dry_run={config.get('dry_run', True)}")
     else:
         tasks = request_json(base_url, "/api/send-tasks")
         pending = [task for task in tasks if task.get("status") == "pending"]
         selected = pending[:limit]
-        print(f"pending={len(pending)}, selected={len(selected)}, dry_run={config.get('dry_run', True)}")
+        print(f"pending={len(pending)}, selected={len(selected)}, default_dry_run={config.get('dry_run', True)}")
     for task in selected:
         send_task_and_record(task, config)
         time.sleep(float(config.get("send_interval_seconds", 3)))

@@ -87,6 +87,17 @@ function badge(text, kind = "") {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
 }
 
+function sendModeSelect(task) {
+  const mode = task.send_mode || "dry_run";
+  return `
+    <select id="task-mode-${task.id}">
+      <option value="dry_run" ${mode === "dry_run" ? "selected" : ""}>试运行</option>
+      <option value="real_send" ${mode === "real_send" ? "selected" : ""}>真实发送</option>
+    </select>
+    ${mode === "real_send" ? badge("高风险", "warn") : badge("安全", "ok")}
+  `;
+}
+
 // 渲染通用表格，减少重复 HTML 拼接。
 function table(headers, rows) {
   if (!rows.length) return '<p class="empty">暂无数据</p>';
@@ -506,6 +517,7 @@ function renderTasks() {
     { label: "对象", key: "target_name" },
     { label: "来源/场景", key: "scene" },
     { label: "状态", render: (r) => badge(r.status, r.status === "sent" ? "ok" : r.status === "cancelled" ? "" : "warn") },
+    { label: "企微模式", render: (r) => sendModeSelect(r) },
     { label: "最终内容", render: (r) => `<textarea id="task-${r.id}">${esc(r.content)}</textarea>` },
     { label: "操作", render: (r) => `
       <div class="cell-actions">
@@ -731,6 +743,7 @@ async function createReportTask(id) {
         target_name: family?.parent_nickname || report.family_id,
         scene: "周报发送",
         content: $(`report-${id}`).value,
+        send_mode: "dry_run",
       }),
     });
     toast("周报已加入发送任务");
@@ -746,7 +759,7 @@ async function saveTask(id) {
     await api(`/api/send-tasks/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...task, content: $(`task-${id}`).value }),
+      body: JSON.stringify({ ...task, content: $(`task-${id}`).value, send_mode: $(`task-mode-${id}`)?.value || "dry_run" }),
     });
     toast("任务已保存");
     await refreshAll();
@@ -761,7 +774,7 @@ async function saveTaskFromChat(id) {
     await api(`/api/send-tasks/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...task, content: editor?.value || task?.content || "" }),
+      body: JSON.stringify({ ...task, content: editor?.value || task?.content || "", send_mode: task?.send_mode || "dry_run" }),
     });
     toast("回复已保存");
     await refreshAll();
@@ -795,7 +808,7 @@ async function sendTaskFromChat(id) {
       await api(`/api/send-tasks/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...task, content: editor.value }),
+        body: JSON.stringify({ ...task, content: editor.value, send_mode: task?.send_mode || "dry_run" }),
       });
     }
     await api(`/api/send-tasks/${id}/web-send`, { method: "POST" });

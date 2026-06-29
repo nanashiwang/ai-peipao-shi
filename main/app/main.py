@@ -82,6 +82,7 @@ class SendTaskIn(BaseModel):
     target_name: str
     scene: str = "手动测试"
     content: str
+    send_mode: str = "dry_run"
 
 
 # 页面手动登记企微会话时使用；parent_nickname 就是企微搜索框里要输入的会话名。
@@ -149,6 +150,7 @@ class SendTaskUpdate(BaseModel):
     target_name: str = ""
     scene: str = ""
     content: str = ""
+    send_mode: str = ""
     status: str = "pending"
 
 
@@ -171,6 +173,7 @@ class AIOutputTaskIn(BaseModel):
     content: str = ""
     scene: str = ""
     target_name: str = ""
+    send_mode: str = "dry_run"
 
 
 class AccountIn(BaseModel):
@@ -227,6 +230,13 @@ def validate_send_task_content(content: str) -> str:
     if mojibake_hits >= 3:
         raise HTTPException(400, "发送内容疑似乱码，请重新编辑后再提交")
     return text
+
+
+def validate_send_mode(send_mode: str) -> str:
+    mode = (send_mode or "dry_run").strip()
+    if mode not in {"dry_run", "real_send"}:
+        raise HTTPException(400, "send_mode 只能是 dry_run 或 real_send")
+    return mode
 
 
 # 兼容多种日期字符串格式，供 RPA 同步时使用。
@@ -801,7 +811,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     content = validate_send_task_content(content)
     target_name = data.target_name.strip() or (family.parent_nickname if family else output.family_id)
     scene = data.scene.strip() or output.source or output.agent_type
-    task = SendTask(family_id=output.family_id, target_name=target_name, scene=scene, content=content, status="pending")
+    task = SendTask(family_id=output.family_id, target_name=target_name, scene=scene, content=content, send_mode=validate_send_mode(data.send_mode), status="pending")
     output.status = "task_created"
     output.edited_output = content
     output.updated_at = datetime.utcnow()
@@ -1085,6 +1095,7 @@ def create_tasks_from_reports(db: Session = Depends(get_db)):
                 target_name=family.parent_nickname if family else report.family_id,
                 scene="周报发送",
                 content=validate_send_task_content(report.final_text),
+                send_mode="dry_run",
             )
         )
         created += 1
@@ -1105,7 +1116,7 @@ def create_tasks_from_scenes(db: Session = Depends(get_db)):
         if exists:
             continue
         family = db.query(Family).filter(Family.family_id == msg.family_id).first()
-        db.add(SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=validate_send_task_content(templates[scene])))
+        db.add(SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=validate_send_task_content(templates[scene]), send_mode="dry_run"))
         created += 1
     db.commit()
     return {"created": created}
@@ -1127,6 +1138,7 @@ def list_send_tasks(status: str = "", device_id: str = "", db: Session = Depends
 def create_send_task(payload: SendTaskIn, db: Session = Depends(get_db)):
     data = payload.model_dump()
     data["content"] = validate_send_task_content(data.get("content", ""))
+    data["send_mode"] = validate_send_mode(data.get("send_mode", "dry_run"))
     task = SendTask(**data)
     db.add(task)
     db.commit()
@@ -1145,6 +1157,8 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, db: Session = Depend
     task.scene = payload.scene or task.scene
     if payload.content:
         task.content = validate_send_task_content(payload.content)
+    if payload.send_mode:
+        task.send_mode = validate_send_mode(payload.send_mode)
     task.status = payload.status
     db.commit()
     return as_dict(task)
@@ -1417,6 +1431,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     for task in candidates:
         try:
             task.content = validate_send_task_content(task.content)
+            task.send_mode = validate_send_mode(task.send_mode)
         except HTTPException as exc:
             task.status = "failed"
             db.add(

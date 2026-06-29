@@ -2,7 +2,7 @@ import unittest
 
 from fastapi import HTTPException
 
-from app.main import validate_send_task_content
+from app.main import validate_send_mode, validate_send_task_content
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -31,6 +31,18 @@ class SendTaskValidationTest(unittest.TestCase):
         content = "\u8bf7\u95ee\u4eca\u5929\u9700\u8981\u6253\u5361\u5417?"
 
         self.assertEqual(validate_send_task_content(content), content)
+
+class SendModeValidationTest(unittest.TestCase):
+    def test_defaults_to_dry_run(self):
+        self.assertEqual(validate_send_mode(""), "dry_run")
+
+    def test_accepts_supported_modes(self):
+        self.assertEqual(validate_send_mode("dry_run"), "dry_run")
+        self.assertEqual(validate_send_mode("real_send"), "real_send")
+
+    def test_rejects_unknown_mode(self):
+        with self.assertRaises(HTTPException):
+            validate_send_mode("auto_send")
 
 
 if __name__ == "__main__":

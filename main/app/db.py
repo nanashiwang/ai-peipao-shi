@@ -38,7 +38,7 @@ def init_db():
 # create_all 只建新表，不会给已存在的旧表补列。这里为旧库平滑补 device_id 列，避免删库重建。
 def ensure_columns():
     wanted = {
-        "send_tasks": [("device_id", "VARCHAR(64)")],
+        "send_tasks": [("device_id", "VARCHAR(64)"), ("send_mode", "VARCHAR(20)")],
         "send_logs": [("device_id", "VARCHAR(64)")],
     }
     inspector = inspect(engine)
@@ -51,5 +51,6 @@ def ensure_columns():
             for col_name, col_type in cols:
                 if col_name in have:
                     continue
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT ''"))
+                default = "'dry_run'" if table == "send_tasks" and col_name == "send_mode" else "''"
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))
