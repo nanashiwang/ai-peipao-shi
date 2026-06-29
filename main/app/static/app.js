@@ -10,6 +10,7 @@ const state = {
   auditLogs: [],
   todayPriorities: [],
   workbenchOverview: {},
+  serviceQuality: {},
   devices: [],
   arkConfig: {},
   importTemplates: [],
@@ -335,6 +336,33 @@ function renderWorkbenchOverview() {
   renderCoachFilter();
   renderServiceFunnel();
   renderTodoBoard();
+}
+
+function percent(value) {
+  return `${Math.round((Number(value) || 0) * 100)}%`;
+}
+
+function renderServiceQuality() {
+  const summaryEl = $("serviceQualitySummary");
+  const tableEl = $("serviceQualityTable");
+  if (!summaryEl || !tableEl) return;
+  const totals = state.serviceQuality?.totals || {};
+  summaryEl.innerHTML = [
+    ["陪跑师", totals.coach_count || 0],
+    ["家庭数", totals.family_count || 0],
+    ["风险家庭", totals.risk_family_count || 0],
+    ["发送完成率", percent(totals.send_completion_rate)],
+  ].map(([label, value]) => `<article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join("");
+  tableEl.innerHTML = table([
+    { label: "陪跑师", key: "coach_name" },
+    { label: "家庭", key: "family_count" },
+    { label: "风险/跟进", render: (r) => `${badge(`风险 ${r.risk_family_count}`, r.risk_family_count ? "danger" : "ok")} ${badge(`跟进 ${r.followup_family_count}`, r.followup_family_count ? "warn" : "ok")}` },
+    { label: "续报/结课", render: (r) => `${esc(r.renewal_family_count)} / ${esc(r.closed_family_count)}` },
+    { label: "待审核", render: (r) => `AI ${esc(r.review_output_count)} · 周报 ${esc(r.review_report_count)}` },
+    { label: "待发送", key: "pending_task_count" },
+    { label: "发送完成率", render: (r) => `${badge(percent(r.send_completion_rate), r.send_failure_rate ? "warn" : "ok")} <span class="muted">失败 ${percent(r.send_failure_rate)}</span>` },
+    { label: "风险家庭", render: (r) => (r.risk_families || []).map((family) => `<button onclick="setSelectedFamily('${esc(family.family_id)}')">${esc(family.family_name)}</button>`).join("") || "—" },
+  ], state.serviceQuality?.coaches || []);
 }
 
 // 侧栏优先处理列表，帮助用户先看最紧急的事。
@@ -809,6 +837,7 @@ function renderTemplates() {
 function renderAll() {
   renderKpis();
   renderWorkbenchOverview();
+  renderServiceQuality();
   renderPriorityList();
   renderRecentOutputs();
   renderWebChat();
@@ -832,7 +861,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -842,6 +871,7 @@ async function refreshAll() {
       api("/api/audit-logs?entity_type=send_task&limit=200"),
       api("/api/workbench/today-priorities?limit=12"),
       api(`/api/workbench/overview?limit=8${coachSuffix}`),
+      api("/api/admin/service-quality"),
       api("/api/ai-outputs"),
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
@@ -850,7 +880,7 @@ async function refreshAll() {
       api("/api/import/templates"),
       api("/api/agent/evaluations/run", { method: "POST" }),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {

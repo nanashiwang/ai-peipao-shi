@@ -1422,6 +1422,93 @@ def build_workbench_overview(db: Session, coach_name: str = "", limit: int = 8, 
     }
 
 
+def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    rows = []
+    totals = {
+        "family_count": 0,
+        "risk_family_count": 0,
+        "followup_family_count": 0,
+        "pending_task_count": 0,
+        "review_output_count": 0,
+        "review_report_count": 0,
+        "send_log_count": 0,
+        "sent_count": 0,
+        "dry_run_count": 0,
+        "failed_count": 0,
+    }
+    grouped: dict[str, list[Family]] = {}
+    for family in family_scope_query(db, coach_name).all():
+        grouped.setdefault(family.coach_name or "未分配", []).append(family)
+
+    for coach, families in sorted(grouped.items()):
+        row = {
+            "coach_name": coach,
+            "family_count": len(families),
+            "normal_count": 0,
+            "followup_family_count": 0,
+            "risk_family_count": 0,
+            "renewal_family_count": 0,
+            "closed_family_count": 0,
+            "pending_task_count": 0,
+            "review_output_count": 0,
+            "review_report_count": 0,
+            "send_log_count": 0,
+            "sent_count": 0,
+            "dry_run_count": 0,
+            "failed_count": 0,
+            "send_completion_rate": 0.0,
+            "send_failure_rate": 0.0,
+            "risk_families": [],
+        }
+        for family in families:
+            stage, reason = infer_family_service_stage(db, family, now)
+            if stage == "正常":
+                row["normal_count"] += 1
+            elif stage == "需跟进":
+                row["followup_family_count"] += 1
+            elif stage == "风险":
+                row["risk_family_count"] += 1
+                row["risk_families"].append({
+                    "family_id": family.family_id,
+                    "family_name": family.parent_nickname or family.family_id,
+                    "reason": reason,
+                })
+            elif stage == "续报":
+                row["renewal_family_count"] += 1
+            elif stage == "已结课":
+                row["closed_family_count"] += 1
+
+            row["pending_task_count"] += db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status.in_(["pending", "assigned"])).count()
+            row["review_output_count"] += db.query(AIOutput).filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review").count()
+            row["review_report_count"] += db.query(WeeklyReport).filter(WeeklyReport.family_id == family.family_id, WeeklyReport.status != "approved").count()
+            logs = db.query(SendLog).filter(SendLog.family_id == family.family_id).all()
+            row["send_log_count"] += len(logs)
+            row["sent_count"] += sum(1 for log in logs if log.status == "sent")
+            row["dry_run_count"] += sum(1 for log in logs if log.status == "dry_run")
+            row["failed_count"] += sum(1 for log in logs if log.status == "failed")
+
+        completed = row["sent_count"] + row["dry_run_count"]
+        if row["send_log_count"]:
+            row["send_completion_rate"] = round(completed / row["send_log_count"], 4)
+            row["send_failure_rate"] = round(row["failed_count"] / row["send_log_count"], 4)
+        row["risk_families"] = row["risk_families"][:5]
+        for key in totals:
+            totals[key] += row.get(key, 0)
+        rows.append(row)
+
+    totals["coach_count"] = len(rows)
+    totals["send_completion_rate"] = round((totals["sent_count"] + totals["dry_run_count"]) / totals["send_log_count"], 4) if totals["send_log_count"] else 0.0
+    totals["send_failure_rate"] = round(totals["failed_count"] / totals["send_log_count"], 4) if totals["send_log_count"] else 0.0
+    rows.sort(key=lambda item: (-item["risk_family_count"], -item["pending_task_count"], item["coach_name"]))
+    return {
+        "generated_at": timeline_time(now),
+        "coach_name": (coach_name or "").strip(),
+        "totals": totals,
+        "coaches": rows,
+    }
+
+
 def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None) -> list[dict]:
     now = now or datetime.utcnow()
     safe_limit = min(max(limit, 1), 50)
@@ -1540,6 +1627,11 @@ def today_priorities(limit: int = 12, db: Session = Depends(get_db)):
 @app.get("/api/workbench/overview")
 def workbench_overview(coach_name: str = "", limit: int = 8, db: Session = Depends(get_db)):
     return build_workbench_overview(db, coach_name, limit)
+
+
+@app.get("/api/admin/service-quality")
+def admin_service_quality(coach_name: str = "", db: Session = Depends(get_db)):
+    return build_admin_service_quality_dashboard(db, coach_name)
 
 
 @app.get("/api/agent/evaluations")

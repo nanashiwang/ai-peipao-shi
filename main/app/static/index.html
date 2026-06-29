@@ -15,6 +15,7 @@
     </div>
     <nav>
       <button data-tab="dashboard" class="active">工作台</button>
+      <button data-tab="adminDashboard">管理看板</button>
       <button data-tab="webChat">陪跑会话</button>
       <button data-tab="familyDetailPanel">家庭档案</button>
       <button data-tab="tasks">审核发送</button>
@@ -87,6 +88,19 @@
           <div id="recentOutputs" class="stack"></div>
         </section>
       </div>
+    </section>
+
+    <!-- 管理看板：按陪跑师统计服务质量、风险家庭和发送完成率。 -->
+    <section id="adminDashboard" class="panel">
+      <div class="section-head">
+        <h2>管理端服务质量看板</h2>
+        <div class="actions left">
+          <span class="muted">按陪跑师统计风险、待办、审核和发送闭环</span>
+          <button onclick="refreshAll()">刷新</button>
+        </div>
+      </div>
+      <div id="serviceQualitySummary" class="summary-grid"></div>
+      <div id="serviceQualityTable"></div>
     </section>
 
     <!-- 陪跑会话：纯网页版陪跑师/家长聊天，用来绕开 RPA 测试 AI 效果。 -->
