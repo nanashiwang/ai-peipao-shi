@@ -78,9 +78,23 @@ body {
   font-size: 12px;
 }
 
-nav {
+.sidebar nav {
+  display: grid;
+  gap: 18px;
+}
+
+.nav-group {
   display: grid;
   gap: 8px;
+}
+
+.nav-label {
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .sidebar button {
@@ -1142,7 +1156,7 @@ summary {
     display: none;
   }
 
-  nav {
+  .sidebar nav {
     display: flex;
     overflow-x: auto;
     width: 100%;
@@ -1152,6 +1166,16 @@ summary {
     padding-bottom: 2px;
     overscroll-behavior-x: contain;
     scrollbar-width: thin;
+  }
+
+  .nav-group {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
+  .nav-label {
+    display: none;
   }
 
   .sidebar button {

@@ -282,7 +282,7 @@ function switchTab(tabId) {
   document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
   document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
   const active = document.querySelector(`.sidebar button[data-tab="${tabId}"]`);
-  $("pageTitle").textContent = active ? active.textContent : "工作台";
+  $("pageTitle").textContent = active ? (active.dataset.title || active.textContent.trim()) : "工作台";
   // 设备页每 5 秒轮询刷新在线状态；离开则停止。
   if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
   if (tabId === "devices") {

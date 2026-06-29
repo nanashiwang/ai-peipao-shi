@@ -13,16 +13,31 @@
       <strong>陪跑师效率系统</strong>
       <span>重庆机构试点</span>
     </div>
-    <nav>
-      <button data-tab="dashboard" class="active">工作台</button>
-      <button data-tab="adminDashboard">管理看板</button>
-      <button data-tab="webChat">陪跑会话</button>
-      <button data-tab="familyDetailPanel">家庭档案</button>
-      <button data-tab="tasks">审核发送</button>
-      <button data-tab="logs">发送日志</button>
-      <button data-tab="audit">审计日志</button>
-      <button data-tab="devices">设备监控</button>
-      <button data-tab="templates">系统设置</button>
+    <nav aria-label="主导航">
+      <div class="nav-group">
+        <span class="nav-label">日常工作</span>
+        <button data-tab="dashboard" data-title="工作台" class="active">工作台</button>
+        <button data-tab="webChat" data-title="陪跑会话">陪跑会话</button>
+        <button data-tab="familyDetailPanel" data-title="家庭档案">家庭档案</button>
+        <button data-tab="tasks" data-title="审核发送">审核发送</button>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">资料与 AI</span>
+        <button data-tab="families" data-title="家庭/学员">家庭/学员</button>
+        <button data-tab="profiles" data-title="AI画像">AI画像</button>
+        <button data-tab="reports" data-title="AI周报">AI周报</button>
+        <button data-tab="replies" data-title="AI回复">AI回复</button>
+        <button data-tab="checkins" data-title="打卡/PBL">打卡/PBL</button>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">运营排障</span>
+        <button data-tab="adminDashboard" data-title="管理看板">管理看板</button>
+        <button data-tab="wecom" data-title="企微会话">企微会话</button>
+        <button data-tab="logs" data-title="发送日志">发送日志</button>
+        <button data-tab="audit" data-title="审计日志">审计日志</button>
+        <button data-tab="devices" data-title="设备监控">设备监控</button>
+        <button data-tab="templates" data-title="系统设置">系统设置</button>
+      </div>
     </nav>
   </aside>
 
