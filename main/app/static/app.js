@@ -202,6 +202,33 @@ function timelineCard(item) {
   `;
 }
 
+function outputEvidence(output) {
+  try {
+    return JSON.parse(output.evidence_json || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function evidenceView(output) {
+  const evidence = outputEvidence(output);
+  const summaries = evidence.evidence_summary || [];
+  const messages = evidence.source_messages || [];
+  if (!summaries.length && !messages.length) return '<p class="empty">暂无可追溯证据。</p>';
+  return `
+    <div class="evidence-box">
+      ${summaries.length ? `<p><strong>依据摘要：</strong>${summaries.map(esc).join("；")}</p>` : ""}
+      ${messages.length ? messages.map((msg) => `
+        <blockquote>
+          <strong>#${esc(msg.message_id)} ${esc(msg.message_time)} ${esc(msg.speaker)}</strong>
+          <p>${esc(msg.content)}</p>
+          <span class="muted">${esc(msg.source || "")}${msg.checkin_status ? ` · ${esc(msg.checkin_status)}` : ""}</span>
+        </blockquote>
+      `).join("") : ""}
+    </div>
+  `;
+}
+
 // 顶部 KPI 卡片反映整体待办和风险状态。
 function renderKpis() {
   const pendingTasks = state.tasks.filter((task) => task.status === "pending").length;
@@ -260,7 +287,8 @@ function outputCard(output, compact = false) {
       ${compact ? `<pre>${esc(output.display_text).slice(0, 220)}</pre>` : `
         <textarea id="${textId}">${esc(output.edited_output || output.display_text)}</textarea>
         <details>
-          <summary>查看原始 JSON 与依据</summary>
+          <summary>查看证据链与原始 JSON</summary>
+          ${evidenceView(output)}
           <pre>${esc(output.raw_json)}</pre>
         </details>
         <div class="actions left">

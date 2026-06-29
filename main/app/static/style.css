@@ -573,6 +573,29 @@ dd {
   white-space: pre-wrap;
 }
 
+.evidence-box {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .56);
+}
+
+.evidence-box blockquote {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--blue);
+  background: rgba(0, 122, 255, .05);
+  border-radius: 8px;
+}
+
+.evidence-box p {
+  margin: 4px 0;
+  line-height: 1.6;
+}
+
 .msg {
   padding: 14px 16px;
   border-bottom: 1px solid var(--soft-line);

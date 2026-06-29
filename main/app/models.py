@@ -135,6 +135,7 @@ class AIOutput(Base):
     agent_type: Mapped[str] = mapped_column(String(60), index=True)
     source: Mapped[str] = mapped_column(String(120), default="")
     raw_json: Mapped[str] = mapped_column(Text, default="")
+    evidence_json: Mapped[str] = mapped_column(Text, default="")
     display_text: Mapped[str] = mapped_column(Text, default="")
     edited_output: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="needs_review")

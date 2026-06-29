@@ -525,6 +525,7 @@ def save_ai_output(db: Session, family_id: str, agent_type: str, source: str, re
         agent_type=agent_type,
         source=source,
         raw_json=json.dumps(result["raw"], ensure_ascii=False, indent=2),
+        evidence_json=json.dumps(build_ai_evidence(db, family_id, result), ensure_ascii=False, indent=2),
         display_text=result["display_text"],
         edited_output=result["display_text"],
         status="needs_review",
@@ -534,6 +535,35 @@ def save_ai_output(db: Session, family_id: str, agent_type: str, source: str, re
     )
     db.add(output)
     return output
+
+
+def build_ai_evidence(db: Session, family_id: str, result: dict, limit: int = 6) -> dict:
+    raw = result.get("raw") or {}
+    evidence_summary = raw.get("使用依据摘要") or raw.get("evidence") or raw.get("依据") or []
+    if not isinstance(evidence_summary, list):
+        evidence_summary = [str(evidence_summary)] if evidence_summary else []
+    messages = (
+        db.query(RawMessage)
+        .filter(RawMessage.family_id == family_id)
+        .order_by(RawMessage.message_time.desc(), RawMessage.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "family_id": family_id,
+        "evidence_summary": [str(item) for item in evidence_summary if str(item).strip()],
+        "source_messages": [
+            {
+                "message_id": msg.id,
+                "message_time": timeline_time(msg.message_time),
+                "speaker": msg.speaker,
+                "content": msg.content,
+                "source": msg.source,
+                "checkin_status": msg.checkin_status,
+            }
+            for msg in sorted(messages, key=lambda item: item.message_time)
+        ],
+    }
 
 
 def join_agent_field(value) -> str:
