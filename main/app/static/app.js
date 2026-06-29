@@ -9,6 +9,7 @@ const state = {
   logs: [],
   auditLogs: [],
   todayPriorities: [],
+  workbenchOverview: {},
   devices: [],
   arkConfig: {},
   templates: [],
@@ -17,6 +18,7 @@ const state = {
   conversations: [],
   chatMessages: [],
   currentUser: JSON.parse(localStorage.getItem("chatUser") || "null"),
+  selectedCoachName: localStorage.getItem("coachFilter") || "",
   selectedChatFamilyId: "",
   selectedFamilyId: "",
 };
@@ -263,6 +265,74 @@ function renderKpis() {
       <small>${esc(hint)}</small>
     </article>
   `).join("");
+}
+
+function renderCoachFilter() {
+  const el = $("coachFilter");
+  if (!el) return;
+  const coaches = [...new Set(state.families.map((family) => family.coach_name).filter(Boolean))].sort();
+  const options = ['<option value="">全部陪跑师</option>'].concat(
+    coaches.map((name) => `<option value="${esc(name)}" ${name === state.selectedCoachName ? "selected" : ""}>${esc(name)}</option>`)
+  );
+  el.innerHTML = options.join("");
+}
+
+async function setCoachFilter(coachName) {
+  state.selectedCoachName = coachName || "";
+  localStorage.setItem("coachFilter", state.selectedCoachName);
+  await refreshWorkbenchOverview();
+}
+
+async function refreshWorkbenchOverview() {
+  const suffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
+  state.workbenchOverview = await api(`/api/workbench/overview?limit=8${suffix}`);
+  renderWorkbenchOverview();
+}
+
+function renderServiceFunnel() {
+  const stages = state.workbenchOverview?.service_funnel?.stages || [];
+  $("serviceFunnel").innerHTML = stages.length ? stages.map((stage) => `
+    <article class="funnel-row funnel-${esc(stage.stage)}">
+      <div class="funnel-top">
+        ${badge(stage.stage, stage.stage === "风险" ? "danger" : stage.stage === "需跟进" || stage.stage === "续报" ? "warn" : "ok")}
+        <strong>${esc(stage.family_count)}</strong>
+      </div>
+      <div class="funnel-families">
+        ${(stage.families || []).map((family) => `
+          <button onclick="setSelectedFamily('${esc(family.family_id)}')" title="${esc(family.reason || "")}">
+            ${esc(family.family_name)}
+          </button>
+        `).join("") || '<span class="muted">暂无</span>'}
+      </div>
+    </article>
+  `).join("") : '<p class="empty">暂无服务状态数据。</p>';
+}
+
+function renderTodoBoard() {
+  const categories = state.workbenchOverview?.todos?.categories || [];
+  $("todoBoard").innerHTML = categories.length ? categories.map((category) => `
+    <article class="todo-column">
+      <div class="todo-head">
+        <strong>${esc(category.label)}</strong>
+        ${badge(category.count || 0, category.count ? "warn" : "ok")}
+      </div>
+      <div class="stack">
+        ${(category.items || []).map((item) => `
+          <button class="todo-item" onclick="setSelectedFamily('${esc(item.family_id)}')">
+            <strong>${esc(item.family_name)}</strong>
+            <span>${esc(item.reason)}</span>
+            <small>${esc((item.evidence || "").slice(0, 80))}</small>
+          </button>
+        `).join("") || '<p class="empty">暂无</p>'}
+      </div>
+    </article>
+  `).join("") : '<p class="empty">暂无聚合待办。</p>';
+}
+
+function renderWorkbenchOverview() {
+  renderCoachFilter();
+  renderServiceFunnel();
+  renderTodoBoard();
 }
 
 // 侧栏优先处理列表，帮助用户先看最紧急的事。
@@ -699,6 +769,7 @@ function renderTemplates() {
 // 渲染所有内容。
 function renderAll() {
   renderKpis();
+  renderWorkbenchOverview();
   renderPriorityList();
   renderRecentOutputs();
   renderWebChat();
@@ -719,7 +790,8 @@ function renderAll() {
 // 刷新所有内容。
 async function refreshAll() {
   return withAction("刷新数据", async () => {
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
+    const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -728,13 +800,14 @@ async function refreshAll() {
       api("/api/send-logs"),
       api("/api/audit-logs?entity_type=send_task&limit=200"),
       api("/api/workbench/today-priorities?limit=12"),
+      api(`/api/workbench/overview?limit=8${coachSuffix}`),
       api("/api/ai-outputs"),
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
       api("/api/devices"),
       api("/api/ark-config").catch(() => ({})),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, outputs, accounts, conversations, devices, arkConfig });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, outputs, accounts, conversations, devices, arkConfig });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {

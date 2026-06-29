@@ -285,6 +285,10 @@ h3 {
   gap: 20px;
 }
 
+.ops-split {
+  margin-bottom: 24px;
+}
+
 .three-col {
   display: grid;
   grid-template-columns: 260px minmax(320px, 1fr) minmax(360px, 1fr);
@@ -403,6 +407,72 @@ h3 {
 
 .priority-低 {
   border-left-color: var(--green);
+}
+
+.funnel-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.funnel-row,
+.todo-column {
+  border: 1px solid var(--soft-line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, .62);
+}
+
+.funnel-top,
+.todo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.funnel-top strong {
+  font-size: 26px;
+}
+
+.funnel-families {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.funnel-families button {
+  min-height: 30px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.todo-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.todo-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  min-height: 68px;
+}
+
+.todo-item span,
+.todo-item small {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-item small {
+  white-space: nowrap;
+  font-size: 12px;
 }
 
 .row-card:hover {
@@ -941,7 +1011,8 @@ summary {
   }
 
   .kpi-grid,
-  .summary-grid {
+  .summary-grid,
+  .funnel-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -987,6 +1058,8 @@ summary {
 
   .kpi-grid,
   .summary-grid,
+  .funnel-list,
+  .todo-board,
   .report-grid,
   .template-form,
   .wecom-form {

@@ -1189,6 +1189,220 @@ def priority_level(score: int) -> str:
     return "低"
 
 
+SERVICE_FUNNEL_STAGES = ["正常", "需跟进", "风险", "续报", "已结课"]
+RISK_TERMS = ("退费", "退款", "投诉", "维权", "不满", "没效果", "无效果", "负面", "高风险")
+FOLLOWUP_TERMS = ("请假", "补课", "缺课", "没打卡", "未打卡", "没提交", "未提交", "PBL", "跟进")
+RENEWAL_TERMS = ("续报", "续费", "下一阶段", "报名", "续班")
+
+
+def has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in (text or "") for term in terms)
+
+
+def latest_family_message(db: Session, family_id: str) -> RawMessage | None:
+    return (
+        db.query(RawMessage)
+        .filter(RawMessage.family_id == family_id)
+        .order_by(RawMessage.message_time.desc())
+        .first()
+    )
+
+
+def family_scope_query(db: Session, coach_name: str = ""):
+    query = db.query(Family).order_by(Family.family_id)
+    clean_coach = (coach_name or "").strip()
+    if clean_coach:
+        query = query.filter(Family.coach_name == clean_coach)
+    return query
+
+
+def infer_family_service_stage(db: Session, family: Family, now: datetime | None = None) -> tuple[str, str]:
+    now = now or datetime.utcnow()
+    explicit_status = family.service_status or ""
+    if has_any(explicit_status, ("已结课", "结课", "结束服务")):
+        return "已结课", "服务状态已标记结课"
+    if has_any(explicit_status, RENEWAL_TERMS):
+        return "续报", "服务状态已进入续报阶段"
+
+    profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
+    recent_messages = (
+        db.query(RawMessage)
+        .filter(RawMessage.family_id == family.family_id)
+        .order_by(RawMessage.message_time.desc())
+        .limit(20)
+        .all()
+    )
+    signal_text = " ".join(
+        [
+            explicit_status,
+            profile.service_risks if profile else "",
+            profile.suggested_actions if profile else "",
+            profile.trust_trend if profile else "",
+            " ".join(msg.content or "" for msg in recent_messages),
+        ]
+    )
+    if has_any(signal_text, RISK_TERMS):
+        return "风险", "存在退费/投诉/负面等风险信号"
+    if has_any(signal_text, RENEWAL_TERMS):
+        return "续报", "出现续报/下一阶段沟通信号"
+
+    pending_tasks = db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status == "pending").count()
+    review_outputs = db.query(AIOutput).filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review").count()
+    review_reports = db.query(WeeklyReport).filter(WeeklyReport.family_id == family.family_id, WeeklyReport.status != "approved").count()
+    last_msg = recent_messages[0] if recent_messages else None
+    silent_days = (now - last_msg.message_time).days if last_msg else 999
+    if pending_tasks or review_outputs or review_reports:
+        return "需跟进", "存在待发送/待审核事项"
+    if silent_days >= 3:
+        return "需跟进", f"已 {silent_days} 天无最新沟通"
+    if has_any(signal_text, FOLLOWUP_TERMS):
+        return "需跟进", "出现打卡/PBL/请假补课跟进信号"
+    return "正常", "暂无高优先级异常"
+
+
+def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None = None, family_limit: int = 8) -> dict:
+    now = now or datetime.utcnow()
+    buckets = {stage: [] for stage in SERVICE_FUNNEL_STAGES}
+    for family in family_scope_query(db, coach_name).all():
+        stage, reason = infer_family_service_stage(db, family, now)
+        last_msg = latest_family_message(db, family.family_id)
+        buckets[stage].append({
+            "family_id": family.family_id,
+            "family_name": family.parent_nickname or family.family_id,
+            "coach_name": family.coach_name,
+            "service_status": family.service_status,
+            "reason": reason,
+            "last_message_at": timeline_time(last_msg.message_time) if last_msg else "",
+        })
+
+    stages = []
+    for stage in SERVICE_FUNNEL_STAGES:
+        families = sorted(buckets[stage], key=lambda item: (item["coach_name"] or "", item["family_id"]))
+        stages.append({
+            "stage": stage,
+            "family_count": len(families),
+            "families": families[:family_limit],
+        })
+    return {
+        "generated_at": timeline_time(now),
+        "coach_name": (coach_name or "").strip(),
+        "total_families": sum(item["family_count"] for item in stages),
+        "stages": stages,
+    }
+
+
+def todo_item(family: Family, reason: str, evidence: str = "", related_id: int = 0, occurred_at=None) -> dict:
+    return {
+        "family_id": family.family_id,
+        "family_name": family.parent_nickname or family.family_id,
+        "coach_name": family.coach_name,
+        "reason": reason,
+        "evidence": evidence or "",
+        "related_id": related_id,
+        "occurred_at": timeline_time(occurred_at) if occurred_at else "",
+    }
+
+
+def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None) -> dict:
+    safe_limit = min(max(limit, 1), 30)
+    categories = {
+        "pbl_incomplete": {"label": "PBL未完成", "items": []},
+        "leave_makeup": {"label": "请假补课", "items": []},
+        "weekly_pending_send": {"label": "周报待发", "items": []},
+        "negative_feedback": {"label": "负面反馈", "items": []},
+        "ai_review": {"label": "AI待审核", "items": []},
+        "send_failed": {"label": "发送失败", "items": []},
+    }
+
+    for family in family_scope_query(db, coach_name).all():
+        messages = (
+            db.query(RawMessage)
+            .filter(RawMessage.family_id == family.family_id)
+            .order_by(RawMessage.message_time.desc())
+            .limit(80)
+            .all()
+        )
+        for msg in messages:
+            content = msg.content or ""
+            if "PBL" in content.upper() and has_any(content, ("没", "未", "还没", "未提交", "没提交", "未完成", "没完成", "忘了")):
+                categories["pbl_incomplete"]["items"].append(todo_item(family, "PBL 作品疑似未完成/未提交", content, msg.id, msg.message_time))
+                break
+
+        for msg in messages:
+            content = msg.content or ""
+            scene = detect_scene(content)
+            if scene in {"请假/孩子有事", "请假/补课"} or has_any(content, ("请假", "补课", "缺课", "调课", "上不了")):
+                categories["leave_makeup"]["items"].append(todo_item(family, "请假/补课事项待确认", content, msg.id, msg.message_time))
+                break
+
+        weekly = (
+            db.query(WeeklyReport)
+            .filter(
+                WeeklyReport.family_id == family.family_id,
+                WeeklyReport.status == "approved",
+                or_(
+                    WeeklyReport.send_status.notin_(["sent", "dry_run"]),
+                    WeeklyReport.send_status.is_(None),
+                    WeeklyReport.send_status == "",
+                ),
+            )
+            .order_by(WeeklyReport.updated_at.desc())
+            .first()
+        )
+        if weekly:
+            reason = "周报已审核但尚未完成发送闭环"
+            categories["weekly_pending_send"]["items"].append(todo_item(family, reason, weekly.final_text, weekly.id, weekly.updated_at))
+
+        profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
+        risk_text = " ".join([profile.service_risks if profile else "", profile.suggested_actions if profile else ""])
+        risk_msg = next((msg for msg in messages if has_any(msg.content or "", RISK_TERMS)), None)
+        if has_any(risk_text, RISK_TERMS) or risk_msg:
+            categories["negative_feedback"]["items"].append(
+                todo_item(family, "出现退费/投诉/不满等负面信号", risk_msg.content if risk_msg else risk_text, risk_msg.id if risk_msg else 0, risk_msg.message_time if risk_msg else None)
+            )
+
+        output = (
+            db.query(AIOutput)
+            .filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review")
+            .order_by(AIOutput.updated_at.desc())
+            .first()
+        )
+        if output:
+            categories["ai_review"]["items"].append(todo_item(family, "AI 输出需要人工审核", output.edited_output or output.display_text, output.id, output.updated_at or output.created_at))
+
+        failed_log = (
+            db.query(SendLog)
+            .filter(SendLog.family_id == family.family_id, SendLog.status == "failed")
+            .order_by(SendLog.sent_at.desc())
+            .first()
+        )
+        if failed_log:
+            categories["send_failed"]["items"].append(todo_item(family, "发送失败需要复核", failed_log.detail, failed_log.task_id, failed_log.sent_at))
+
+    result = []
+    for key, data in categories.items():
+        items = sorted(data["items"], key=lambda item: item.get("occurred_at") or "", reverse=True)
+        result.append({
+            "key": key,
+            "label": data["label"],
+            "count": len(items),
+            "items": items[:safe_limit],
+        })
+    return {
+        "generated_at": timeline_time(now or datetime.utcnow()),
+        "coach_name": (coach_name or "").strip(),
+        "categories": result,
+    }
+
+
+def build_workbench_overview(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    return {
+        "service_funnel": build_service_funnel(db, coach_name, now, limit),
+        "todos": build_workbench_todos(db, coach_name, limit, now),
+    }
+
+
 def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None) -> list[dict]:
     now = now or datetime.utcnow()
     safe_limit = min(max(limit, 1), 50)
@@ -1302,6 +1516,11 @@ def family_timeline(family_id: str, limit: int = 80, db: Session = Depends(get_d
 @app.get("/api/workbench/today-priorities")
 def today_priorities(limit: int = 12, db: Session = Depends(get_db)):
     return build_today_priorities(db, limit)
+
+
+@app.get("/api/workbench/overview")
+def workbench_overview(coach_name: str = "", limit: int = 8, db: Session = Depends(get_db)):
+    return build_workbench_overview(db, coach_name, limit)
 
 
 # 如果家庭没有有效消息，就不生成周报和画像，避免写入空数据。

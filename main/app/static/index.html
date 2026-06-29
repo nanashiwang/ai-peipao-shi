@@ -48,6 +48,29 @@
     <!-- 工作台：总览 KPI、待处理事项和最近的 AI 输出。 -->
     <section id="dashboard" class="panel active">
       <div id="kpis" class="kpi-grid"></div>
+      <div class="section-head">
+        <h2>服务状态与待办漏斗</h2>
+        <div class="actions left">
+          <select id="coachFilter" onchange="setCoachFilter(this.value)"></select>
+          <button onclick="refreshWorkbenchOverview()">刷新漏斗</button>
+        </div>
+      </div>
+      <div class="split ops-split">
+        <section>
+          <div class="section-head compact-head">
+            <h2>家庭服务状态漏斗</h2>
+            <span class="muted">正常 / 需跟进 / 风险 / 续报 / 已结课</span>
+          </div>
+          <div id="serviceFunnel" class="funnel-list"></div>
+        </section>
+        <section>
+          <div class="section-head compact-head">
+            <h2>待办聚合</h2>
+            <span class="muted">PBL、请假补课、周报、负面反馈</span>
+          </div>
+          <div id="todoBoard" class="todo-board"></div>
+        </section>
+      </div>
       <div class="split">
         <section>
           <div class="section-head">
