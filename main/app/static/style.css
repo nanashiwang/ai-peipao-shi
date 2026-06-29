@@ -231,6 +231,14 @@ button:active,
   box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
 }
 
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+  transform: none;
+  box-shadow: none;
+}
+
 button:focus-visible,
 .file:focus-visible,
 select:focus-visible,
@@ -513,6 +521,21 @@ h3 {
   color: var(--danger);
 }
 
+.op-layer {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.op-layer strong {
+  font-size: 13px;
+}
+
+.op-layer .muted {
+  margin: 0;
+  font-size: 12px;
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -732,6 +755,11 @@ textarea:hover,
 input:hover,
 select:hover {
   border-color: rgba(0, 122, 255, .24);
+}
+
+textarea[readonly] {
+  background: rgba(242, 242, 247, .68);
+  color: var(--muted);
 }
 
 textarea {

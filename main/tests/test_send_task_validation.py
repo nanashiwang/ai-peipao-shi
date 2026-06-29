@@ -20,6 +20,7 @@ from app.main import (
     claim_tasks,
     create_send_task,
     list_audit_logs,
+    list_send_tasks,
     queue_task_dry_run,
     record_send_result,
     resolve_send_screenshot,
@@ -32,6 +33,12 @@ from app.main import (
     validate_send_task_content,
 )
 from app.models import AuditLog, Device, SendLog, SendTask
+from app.services.admin_auth import admin_auth_secret, sign_admin_token
+
+
+def admin_request(role: str = "admin"):
+    token = sign_admin_token(role, role, role, admin_auth_secret())
+    return SimpleNamespace(headers={"authorization": f"Bearer {token}"}, state=SimpleNamespace())
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -292,6 +299,43 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.assertEqual(self.db.query(SendTask).count(), 1)
         self.assertEqual(self.db.query(AuditLog).count(), 1)
 
+    def test_coach_role_cannot_create_real_send_task(self):
+        with self.assertRaises(HTTPException) as ctx:
+            create_send_task(
+                SendTaskIn(
+                    family_id="f1",
+                    target_name="\u4e00\u5408\u5b66\u793e",
+                    scene="test",
+                    content="\u771f\u5b9e\u53d1\u9001\u5185\u5bb9",
+                    send_mode="real_send",
+                    confirm_real_send=True,
+                ),
+                request=admin_request("coach"),
+                db=self.db,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(self.db.query(SendTask).count(), 0)
+
+    def test_coach_role_cannot_bind_device_when_creating_task(self):
+        self.db.add(Device(device_id="rpa-01", token="token", conversations='["\u4e00\u5408\u5b66\u793e"]'))
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            create_send_task(
+                SendTaskIn(
+                    family_id="f1",
+                    target_name="\u4e00\u5408\u5b66\u793e",
+                    scene="test",
+                    content="\u5f85\u5ba1\u6838\u5185\u5bb9",
+                    device_id="rpa-01",
+                ),
+                request=admin_request("coach"),
+                db=self.db,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+
     def test_create_real_send_rejects_recent_sent_same_content(self):
         sent_task = SendTask(
             family_id="f1",
@@ -369,6 +413,24 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.assertEqual(saved.status, "pending")
         self.assertEqual(self.db.query(AuditLog).filter(AuditLog.entity_id == candidate["id"]).count(), 1)
 
+    def test_coach_role_cannot_confirm_existing_real_send_task(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u5f85\u786e\u8ba4\u5185\u5bb9"),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException) as ctx:
+            update_send_task(
+                task["id"],
+                SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u5f85\u786e\u8ba4\u5185\u5bb9", status="pending"),
+                request=admin_request("coach"),
+                db=self.db,
+            )
+
+        saved = self.db.get(SendTask, task["id"])
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(saved.send_mode, "dry_run")
+
     def test_confirm_real_send_is_audited(self):
         task = create_send_task(
             SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u6d4b\u8bd5\u5185\u5bb9"),
@@ -383,6 +445,18 @@ class SendTaskAuditLogTest(unittest.TestCase):
 
         actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
         self.assertIn("confirm_real_send", actions)
+
+    def test_task_list_returns_operation_layer_for_role(self):
+        create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u5f85\u5ba1\u6838\u5185\u5bb9"),
+            db=self.db,
+        )
+
+        row = list_send_tasks(request=admin_request("coach"), db=self.db)[0]
+
+        self.assertEqual(row["workflow_stage"], "\u5f85\u5ba1\u6838/\u8bd5\u8fd0\u884c")
+        self.assertIn("dry_run", row["allowed_operations"])
+        self.assertNotIn("confirm_real_send", row["allowed_operations"])
 
     def test_cancel_task_is_audited_and_list_is_limited(self):
         task = create_send_task(

@@ -142,12 +142,33 @@ function sendReasonCell(log) {
   return `${badge(log.send_stage || "发送结果", level)}<strong>${esc(log.send_reason_label || "未分类")}</strong>${trace}`;
 }
 
+function taskAllowedOperations(task) {
+  if (Array.isArray(task.allowed_operations)) return task.allowed_operations;
+  if (state.currentUser?.role === "readonly") return ["view"];
+  return ["view", "edit", "review", "assign_device", "dry_run", "web_send", "cancel", "confirm_real_send"];
+}
+
+function taskCan(task, operation) {
+  return taskAllowedOperations(task).includes(operation);
+}
+
+function taskOperationBadges(task) {
+  const labels = task.operation_labels || {};
+  const ops = taskAllowedOperations(task);
+  const warnings = Array.isArray(task.operation_warnings) ? task.operation_warnings : [];
+  const chips = ops.map((op) => badge(labels[op] || op, op === "confirm_real_send" ? "danger" : (op === "dry_run" ? "ok" : ""))).join("");
+  const warningText = warnings.length ? `<p class="muted">${esc(warnings.join(" "))}</p>` : "";
+  return `<div class="op-layer"><strong>${esc(task.workflow_stage || "待处理")}</strong><div>${chips || badge("仅查看")}</div>${warningText}</div>`;
+}
+
 function sendModeSelect(task) {
   const mode = task.send_mode || "dry_run";
+  const canEdit = taskCan(task, "edit") || taskCan(task, "confirm_real_send");
+  const canRealSend = taskCan(task, "confirm_real_send") || mode === "real_send";
   return `
-    <select id="task-mode-${task.id}">
+    <select id="task-mode-${task.id}" ${canEdit ? "" : "disabled"}>
       <option value="dry_run" ${mode === "dry_run" ? "selected" : ""}>试运行</option>
-      <option value="real_send" ${mode === "real_send" ? "selected" : ""}>真实发送</option>
+      <option value="real_send" ${mode === "real_send" ? "selected" : ""} ${canRealSend ? "" : "disabled"}>真实发送</option>
     </select>
     ${sendModeBadge(mode)}
   `;
@@ -155,13 +176,14 @@ function sendModeSelect(task) {
 
 function deviceSelect(task) {
   const current = task.device_id || "";
+  const disabled = taskCan(task, "assign_device") ? "" : "disabled";
   const options = ['<option value="">自动领取</option>'].concat(
     state.devices.map((device) => {
       const label = `${device.device_id}${device.name ? ` · ${device.name}` : ""}`;
       return `<option value="${esc(device.device_id)}" ${current === device.device_id ? "selected" : ""}>${esc(label)}</option>`;
     })
   );
-  return `<select id="task-device-${task.id}">${options.join("")}</select>`;
+  return `<select id="task-device-${task.id}" ${disabled}>${options.join("")}</select>`;
 }
 
 // 渲染通用表格，减少重复 HTML 拼接。
@@ -625,11 +647,13 @@ function renderChatOutputs() {
         ${pendingTasks.length ? pendingTasks.map((task) => `
           <article class="task-card">
             <strong>${esc(task.scene || "AI回复")}</strong>
-            <textarea id="chat-task-${task.id}">${esc(task.content)}</textarea>
+            ${taskOperationBadges(task)}
+            <textarea id="chat-task-${task.id}" ${taskCan(task, "edit") ? "" : "readonly"}>${esc(task.content)}</textarea>
             <div class="actions left">
-              <button onclick="saveTaskFromChat(${task.id})">保存</button>
-              <button onclick="sendTaskFromChat(${task.id})">发送</button>
-              <button onclick="cancelTask(${task.id})">取消</button>
+              ${taskCan(task, "edit") ? `<button onclick="saveTaskFromChat(${task.id})">保存</button>` : ""}
+              ${taskCan(task, "web_send") ? `<button onclick="sendTaskFromChat(${task.id})">发送</button>` : ""}
+              ${taskCan(task, "cancel") ? `<button onclick="cancelTask(${task.id})">取消</button>` : ""}
+              ${taskAllowedOperations(task).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
             </div>
           </article>
         `).join("") : '<p class="empty">暂无待发送回复。点击“快速生成回复”。</p>'}
@@ -811,19 +835,28 @@ function renderCheckins() {
 
 // 渲染任务列表。
 function renderTasks() {
+  if ($("sendAllBtn")) {
+    const canBulkSend = state.tasks.some((task) => taskCan(task, "web_send"));
+    $("sendAllBtn").disabled = !canBulkSend;
+    $("sendAllBtn").title = canBulkSend ? "发送全部可网页发送任务" : "当前角色或任务状态不允许批量发送";
+  }
   $("taskTable").innerHTML = table([
     { label: "ID", key: "id" },
     { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
     { label: "对象", key: "target_name" },
     { label: "来源/场景", key: "scene" },
     { label: "状态", render: (r) => badge(r.status, r.status === "sent" ? "ok" : r.status === "cancelled" ? "" : "warn") },
+    { label: "操作分层", render: taskOperationBadges },
     { label: "发送设备", render: (r) => deviceSelect(r) },
     { label: "企微模式", render: (r) => sendModeSelect(r) },
-    { label: "最终内容", render: (r) => `<textarea id="task-${r.id}">${esc(r.content)}</textarea>` },
+    { label: "最终内容", render: (r) => `<textarea id="task-${r.id}" ${taskCan(r, "edit") ? "" : "readonly"}>${esc(r.content)}</textarea>` },
     { label: "操作", render: (r) => `
       <div class="cell-actions">
-        <button onclick="saveTask(${r.id})">保存</button>
-        ${r.status === "pending" ? `<button onclick="queueTaskDryRun(${r.id})">企微试运行</button><button onclick="sendTask(${r.id})">网页发送</button><button onclick="cancelTask(${r.id})">取消</button>` : ""}
+        ${taskCan(r, "edit") || taskCan(r, "confirm_real_send") ? `<button onclick="saveTask(${r.id})">保存/审核</button>` : ""}
+        ${taskCan(r, "dry_run") ? `<button onclick="queueTaskDryRun(${r.id})">企微试运行</button>` : ""}
+        ${taskCan(r, "web_send") ? `<button onclick="sendTask(${r.id})">网页发送</button>` : ""}
+        ${taskCan(r, "cancel") ? `<button onclick="cancelTask(${r.id})">取消</button>` : ""}
+        ${taskAllowedOperations(r).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
       </div>
     ` },
   ], state.tasks);

@@ -65,6 +65,11 @@ from app.services.runtime_config import assert_runtime_config_safe, runtime_conf
 from app.services.scenario import detect_checkin, detect_scene
 from app.services.send_log_classifier import classify_send_log
 from app.services.redaction_service import redact_record
+from app.services.send_task_operations import (
+    OPERATION_LABELS,
+    role_allows_task_operation,
+    send_task_operation_state,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
@@ -325,6 +330,35 @@ def should_redact_for_request(request: Request | None) -> bool:
 
 def maybe_redact_for_request(data, request: Request | None):
     return redact_record(data) if should_redact_for_request(request) else data
+
+
+def operation_role_from_request(request: Request | None) -> str:
+    identity = admin_identity_from_request(request)
+    if identity:
+        return identity.role
+    if request is not None and bearer_token(request.headers.get("authorization", "")):
+        return "readonly"
+    return "admin"
+
+
+def send_task_view(task: SendTask, request: Request | None = None) -> dict:
+    data = as_dict(task)
+    data.update(send_task_operation_state(task.status, task.send_mode, operation_role_from_request(request)))
+    return data
+
+
+def ensure_task_operation_allowed(task: SendTask, request: Request | None, operation: str) -> None:
+    role = operation_role_from_request(request)
+    if not role_allows_task_operation(task.status, task.send_mode, role, operation):
+        label = OPERATION_LABELS.get(operation, operation)
+        raise HTTPException(403, f"当前角色不能执行「{label}」操作")
+
+
+def ensure_new_task_operation_allowed(request: Request | None, operation: str) -> None:
+    role = operation_role_from_request(request)
+    if not role_allows_task_operation("pending", "dry_run", role, operation):
+        label = OPERATION_LABELS.get(operation, operation)
+        raise HTTPException(403, f"当前角色不能执行「{label}」操作")
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
@@ -1864,10 +1898,13 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     content = validate_send_task_content(content)
     target_name = data.target_name.strip() or (family.parent_nickname if family else output.family_id)
     scene = data.scene.strip() or output.source or output.agent_type
+    if data.device_id:
+        ensure_new_task_operation_allowed(request, "assign_device")
     device_id = validate_task_device_binding(db, data.device_id, target_name)
     send_mode = validate_send_mode_submit(data.send_mode, data.confirm_real_send)
     validate_ai_output_send_boundary(output, content, send_mode)
     if send_mode == "real_send":
+        ensure_new_task_operation_allowed(request, "confirm_real_send")
         validate_real_send_risk(db, target_name, content)
     task = SendTask(
         family_id=output.family_id,
@@ -1883,7 +1920,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     output.updated_at = datetime.utcnow()
     add_send_task_with_audit(db, task, "create", actor_from_request(request), f"AI 输出 {output_id} 创建发送任务")
     db.commit()
-    return as_dict(task)
+    return send_task_view(task, request)
 
 
 # 家庭画像 Agent 接口。
@@ -2202,7 +2239,7 @@ def list_send_tasks(status: str = "", device_id: str = "", request: Request = No
         query = query.filter(SendTask.status == status)
     if device_id:
         query = query.filter(SendTask.device_id == device_id)
-    return maybe_redact_for_request([as_dict(t) for t in query.order_by(SendTask.id.desc()).all()], request)
+    return maybe_redact_for_request([send_task_view(t, request) for t in query.order_by(SendTask.id.desc()).all()], request)
 
 
 # 直接新增一条发送任务。
@@ -2211,13 +2248,16 @@ def create_send_task(payload: SendTaskIn, request: Request = None, db: Session =
     data = payload.model_dump()
     data["content"] = validate_send_task_content(data.get("content", ""))
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
+    if data.get("device_id"):
+        ensure_new_task_operation_allowed(request, "assign_device")
     data["device_id"] = validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
     if data["send_mode"] == "real_send":
+        ensure_new_task_operation_allowed(request, "confirm_real_send")
         validate_real_send_risk(db, data.get("target_name", ""), data["content"])
     task = SendTask(**data)
     add_send_task_with_audit(db, task, "create", actor_from_request(request), "控制端手动创建发送任务")
     db.commit()
-    return as_dict(task)
+    return send_task_view(task, request)
 
 
 # 更新发送任务的内容和状态。
@@ -2234,6 +2274,20 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     scene = payload.scene or task.scene
     content = task.content
     device_id = task.device_id if payload.device_id is None else payload.device_id
+    requested_mode = payload.send_mode or task.send_mode
+    if requested_mode == "real_send" and task.send_mode != "real_send":
+        ensure_task_operation_allowed(task, request, "confirm_real_send")
+    if payload.device_id is not None and payload.device_id != task.device_id:
+        ensure_task_operation_allowed(task, request, "assign_device")
+    has_edit = any([
+        bool(payload.target_name and payload.target_name != task.target_name),
+        bool(payload.scene and payload.scene != task.scene),
+        bool(payload.content and payload.content != task.content),
+        bool(payload.status and payload.status != task.status),
+        bool(payload.send_mode and payload.send_mode != task.send_mode and payload.send_mode != "real_send"),
+    ])
+    if has_edit:
+        ensure_task_operation_allowed(task, request, "edit")
     if payload.content:
         content = validate_send_task_content(payload.content)
     send_mode = task.send_mode
@@ -2255,7 +2309,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
     sync_weekly_report_send_status(db, task)
     db.commit()
-    return as_dict(task)
+    return send_task_view(task, request)
 
 
 @app.post("/api/send-tasks/{task_id}/cancel")
@@ -2263,12 +2317,13 @@ def cancel_send_task(task_id: int, request: Request = None, db: Session = Depend
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_operation_allowed(task, request, "cancel")
     before = send_task_snapshot(task)
     task.status = "cancelled"
     audit_send_task_change(db, task, "cancel", actor_from_request(request), "取消发送任务", before)
     sync_weekly_report_send_status(db, task, "cancelled")
     db.commit()
-    return as_dict(task)
+    return send_task_view(task, request)
 
 
 @app.post("/api/send-tasks/{task_id}/dry-run")
@@ -2276,6 +2331,7 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_operation_allowed(task, request, "dry_run")
     if task.status != "pending":
         raise HTTPException(400, "只有 pending 状态的任务可以发起试运行")
     content = validate_send_task_content(task.content)
@@ -2289,7 +2345,7 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     audit_send_task_change(db, task, "queue_dry_run", actor_from_request(request), "控制端发起企微 dry-run 试运行", before)
     sync_weekly_report_send_status(db, task, "pending")
     db.commit()
-    return as_dict(task)
+    return send_task_view(task, request)
 
 
 @app.post("/api/send-tasks/{task_id}/result")
@@ -2363,9 +2419,10 @@ def web_send(task_id: int, request: Request = None, db: Session = Depends(get_db
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_operation_allowed(task, request, "web_send")
     message, log = send_task_to_web_chat(db, task, actor_from_request(request), "web_send")
     db.commit()
-    return {"task": as_dict(task), "message": as_dict(message), "log": send_log_view(log)}
+    return {"task": send_task_view(task, request), "message": as_dict(message), "log": send_log_view(log)}
 
 
 @app.post("/api/send-tasks/web-send-all")
@@ -2374,6 +2431,7 @@ def web_send_all(request: Request = None, db: Session = Depends(get_db)):
     skipped = 0
     for task in db.query(SendTask).filter(SendTask.status == "pending").all():
         try:
+            ensure_task_operation_allowed(task, request, "web_send")
             send_task_to_web_chat(db, task, actor_from_request(request), "web_send_all")
             sent += 1
         except HTTPException:
