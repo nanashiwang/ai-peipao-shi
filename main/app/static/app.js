@@ -13,6 +13,8 @@ const state = {
   serviceQuality: {},
   devices: [],
   opsHealth: {},
+  backups: [],
+  backupDrills: {},
   arkConfig: {},
   importTemplates: [],
   agentEval: {},
@@ -166,10 +168,12 @@ function switchTab(tabId) {
   if (tabId === "devices") {
     const poll = async () => {
       try {
-        const [devices, opsHealth] = await Promise.all([api("/api/devices"), api("/api/ops/health")]);
+        const [devices, opsHealth, backups] = await Promise.all([api("/api/devices"), api("/api/ops/health"), api("/api/ops/backups")]);
         state.devices = devices;
         state.opsHealth = opsHealth;
+        state.backups = backups;
         renderOpsHealth();
+        renderBackups();
         renderDevices();
       } catch (err) { /* 忽略轮询错误 */ }
     };
@@ -378,6 +382,13 @@ function statusBadge(status) {
   return badge("正常", "ok");
 }
 
+function formatBytes(bytes) {
+  const size = Number(bytes || 0);
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${size} B`;
+}
+
 function renderOpsHealth() {
   const el = $("opsHealthBoard");
   if (!el) return;
@@ -393,6 +404,32 @@ function renderOpsHealth() {
       { label: "状态", render: (r) => statusBadge(r.status) },
       { label: "详情", key: "detail" },
     ], components)}
+  `;
+}
+
+function renderBackups() {
+  const el = $("backupBoard");
+  if (!el) return;
+  const backups = state.backups || [];
+  el.innerHTML = `
+    <p class="muted">基础版采用非破坏式演练：校验备份文件可读、核心表存在和 SQLite 完整性，不覆盖当前业务库。</p>
+    ${table([
+      { label: "备份文件", render: (r) => `<strong>${esc(r.filename)}</strong>` },
+      { label: "大小", render: (r) => formatBytes(r.size_bytes) },
+      { label: "创建时间", key: "created_at" },
+      {
+        label: "演练结果",
+        render: (r) => {
+          const drill = state.backupDrills[r.filename];
+          if (!drill) return '<span class="muted">未演练</span>';
+          return `${badge(drill.passed ? "通过" : "失败", drill.passed ? "ok" : "danger")} <span class="muted">${drill.missing_tables?.length ? `缺表：${esc(drill.missing_tables.join("、"))}` : `完整性：${esc(drill.integrity)}`}</span>`;
+        },
+      },
+      {
+        label: "操作",
+        render: (r) => `<button onclick="runBackupDrill('${esc(r.filename)}')">恢复演练</button><a class="dl-link" href="/api/ops/backups/${encodeURIComponent(r.filename)}">下载</a>`,
+      },
+    ], backups)}
   `;
 }
 
@@ -882,6 +919,7 @@ function renderAll() {
   renderLogs();
   renderAuditLogs();
   renderOpsHealth();
+  renderBackups();
   renderDevices();
   renderArkConfig();
   renderImportTemplates();
@@ -893,7 +931,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, arkConfig, importTemplates, agentEval] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -909,11 +947,12 @@ async function refreshAll() {
       api("/api/test-chat/conversations"),
       api("/api/devices"),
       api("/api/ops/health"),
+      api("/api/ops/backups"),
       api("/api/ark-config").catch(() => ({})),
       api("/api/import/templates"),
       api("/api/agent/evaluations/run", { method: "POST" }),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, arkConfig, importTemplates, agentEval });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, arkConfig, importTemplates, agentEval });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
@@ -1233,6 +1272,31 @@ $("deviceForm").onsubmit = async (event) => {
     await refreshAll();
   });
 };
+
+async function refreshBackups() {
+  state.backups = await api("/api/ops/backups");
+  renderBackups();
+}
+
+async function createBackup() {
+  await withAction("创建数据备份", async () => {
+    const backup = await api("/api/ops/backups", { method: "POST" });
+    state.backupDrills = {};
+    toast(`备份已创建：${backup.filename}`);
+    await refreshBackups();
+    state.opsHealth = await api("/api/ops/health");
+    renderOpsHealth();
+  });
+}
+
+async function runBackupDrill(filename) {
+  await withAction("恢复演练", async () => {
+    const result = await api(`/api/ops/backups/${encodeURIComponent(filename)}/restore-drill`, { method: "POST" });
+    state.backupDrills[filename] = result;
+    renderBackups();
+    toast(result.passed ? `恢复演练通过：${filename}` : `恢复演练失败：${filename}`);
+  });
+}
 
 // 保存 ARK 云端定位密钥。
 $("arkConfigForm").onsubmit = async (event) => {

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.db import get_db, init_db
+from app.db import DATABASE_URL, get_db, init_db
 from app.models import (
     AIOutput,
     AuditLog,
@@ -47,6 +47,7 @@ from app.services.agent_service import (
 )
 from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
+from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.scenario import detect_checkin, detect_scene
 
@@ -54,6 +55,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
 STATIC = Path(__file__).resolve().parent / "static"
 SEND_SCREENSHOT_DIR = ROOT / "data" / "send_screenshots"
+BACKUP_DIR = ROOT / "data" / "backups"
 MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
@@ -2495,6 +2497,17 @@ def screenshot_artifact_stats() -> dict:
     }
 
 
+def backup_artifact_stats() -> dict:
+    backups = list_backups(BACKUP_DIR)
+    latest = backups[0] if backups else {}
+    return {
+        "file_count": len(backups),
+        "total_bytes": sum(item["size_bytes"] for item in backups),
+        "latest_filename": latest.get("filename", ""),
+        "latest_created_at": latest.get("created_at", ""),
+    }
+
+
 def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     devices = db.query(Device).all()
@@ -2507,6 +2520,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
     recent_failed_count = db.query(SendLog).filter(SendLog.status == "failed", SendLog.sent_at >= now - timedelta(hours=24)).count()
     ark = get_ark_config()
     artifact_stats = screenshot_artifact_stats()
+    backup_stats = backup_artifact_stats()
 
     components = [
         component_status("ok", "后端服务", "FastAPI 正常响应", {"mode": "local-mvp"}),
@@ -2546,6 +2560,12 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             f"{artifact_stats['file_count']} 个文件，{artifact_stats['total_bytes']} bytes",
             artifact_stats,
         ),
+        component_status(
+            "ok" if backup_stats["file_count"] else "warn",
+            "数据备份",
+            f"{backup_stats['file_count']} 个备份，最近：{backup_stats['latest_created_at'] or '暂无'}",
+            backup_stats,
+        ),
     ]
     if any(item["status"] == "critical" for item in components):
         overall = "critical"
@@ -2563,6 +2583,39 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
 @app.get("/api/ops/health")
 def ops_health(db: Session = Depends(get_db)):
     return build_ops_health_dashboard(db)
+
+
+@app.get("/api/ops/backups")
+def ops_list_backups():
+    return list_backups(BACKUP_DIR)
+
+
+@app.post("/api/ops/backups")
+def ops_create_backup():
+    try:
+        return create_sqlite_backup(DATABASE_URL, BACKUP_DIR, ROOT)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/ops/backups/{filename}")
+def ops_download_backup(filename: str):
+    try:
+        path = backup_path(BACKUP_DIR, filename)
+    except ValueError as exc:
+        raise HTTPException(404, "备份不存在") from exc
+    if not path.exists():
+        raise HTTPException(404, "备份不存在")
+    return FileResponse(path, media_type="application/octet-stream", filename=filename)
+
+
+@app.post("/api/ops/backups/{filename}/restore-drill")
+def ops_restore_drill(filename: str):
+    try:
+        path = backup_path(BACKUP_DIR, filename)
+        return run_restore_drill(path)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 # 保存 ARK 配置：写入 config/ark.json 并清缓存使其立即生效；被控端下载接入包时会带上这份配置。

@@ -306,6 +306,13 @@
         <h2>运维健康检查</h2>
         <div id="opsHealthBoard"></div>
       </section>
+      <section class="assist-section">
+        <div class="section-head compact-head">
+          <h2>数据备份与恢复演练</h2>
+          <button onclick="createBackup()">创建备份</button>
+        </div>
+        <div id="backupBoard"></div>
+      </section>
       <form id="deviceForm" class="template-form">
         <input name="device_id" placeholder="设备ID，如 rpa-01" required />
         <input name="name" placeholder="设备名称，如 重庆01" />

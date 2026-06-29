@@ -21,12 +21,15 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_screenshot_dir = main_module.SEND_SCREENSHOT_DIR
         self.old_ark_path = main_module.ARK_CONFIG_PATH
+        self.old_backup_dir = main_module.BACKUP_DIR
         main_module.SEND_SCREENSHOT_DIR = Path(self.tmp.name) / "shots"
         main_module.ARK_CONFIG_PATH = Path(self.tmp.name) / "ark.json"
+        main_module.BACKUP_DIR = Path(self.tmp.name) / "backups"
 
     def tearDown(self):
         main_module.SEND_SCREENSHOT_DIR = self.old_screenshot_dir
         main_module.ARK_CONFIG_PATH = self.old_ark_path
+        main_module.BACKUP_DIR = self.old_backup_dir
         self.db.close()
         self.tmp.cleanup()
 
@@ -39,6 +42,7 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard["overall_status"], "warn")
         self.assertEqual(self.component(dashboard, "被控端设备")["status"], "warn")
         self.assertEqual(self.component(dashboard, "云端视觉定位")["status"], "warn")
+        self.assertEqual(self.component(dashboard, "数据备份")["status"], "warn")
 
     def test_health_reports_devices_queue_failures_and_artifacts(self):
         self.db.add_all([
@@ -72,12 +76,15 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.db.add(Device(device_id="dev-online", token="t1", wecom_ok="Y", last_heartbeat=self.now))
         main_module.ARK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         main_module.ARK_CONFIG_PATH.write_text('{"api_key":"sk-test123456","endpoint_id":"qwen-vl-plus"}', encoding="utf-8")
+        main_module.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        (main_module.BACKUP_DIR / "coach_mvp_20260630_100000.sqlite3").write_bytes(b"backup")
         self.db.commit()
 
         dashboard = build_ops_health_dashboard(self.db, now=self.now)
 
         self.assertEqual(dashboard["overall_status"], "ok")
         self.assertTrue(self.component(dashboard, "云端视觉定位")["metrics"]["configured"])
+        self.assertEqual(self.component(dashboard, "数据备份")["metrics"]["file_count"], 1)
 
 
 if __name__ == "__main__":
