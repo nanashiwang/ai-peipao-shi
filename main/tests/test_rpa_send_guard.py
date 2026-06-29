@@ -5,10 +5,12 @@ from rpa.send_guard import (
     active_conversation_verified,
     config_for_send_mode,
     conversation_title_mismatch_detail,
+    dry_run_result_detail,
     real_send_block_detail,
     real_send_enabled,
     real_send_requested,
     search_result_not_found_detail,
+    should_press_send_hotkey,
     target_in_allowed_conversations,
     target_not_allowed_detail,
     validate_active_conversation_title,
@@ -31,9 +33,19 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertFalse(config["dry_run"])
 
     def test_dry_run_mode_overrides_even_when_hard_switch_is_enabled(self):
-        config = config_for_send_mode({"dry_run": False, "allow_real_send": True}, "dry_run")
+        config = config_for_send_mode({"dry_run": False, "allow_real_send": True, "clear_after_dry_run": False}, "dry_run")
 
         self.assertTrue(config["dry_run"])
+        self.assertTrue(config["clear_after_dry_run"])
+        self.assertFalse(should_press_send_hotkey(config))
+
+    def test_default_dry_run_forces_cleanup_and_never_presses_send_hotkey(self):
+        config = config_for_send_mode({"dry_run": True, "allow_real_send": True, "clear_after_dry_run": False}, "")
+
+        self.assertTrue(config["clear_after_dry_run"])
+        self.assertFalse(should_press_send_hotkey(config))
+        self.assertIn("未按发送键", dry_run_result_detail())
+        self.assertIn("已清空输入框", dry_run_result_detail())
 
     def test_real_send_enabled_requires_boolean_true(self):
         self.assertTrue(real_send_enabled({"allow_real_send": True}))
@@ -44,6 +56,11 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertTrue(real_send_requested({"dry_run": False}, ""))
         with self.assertRaises(SendGuardError):
             config_for_send_mode({"dry_run": False, "allow_real_send": False}, "")
+
+    def test_real_send_mode_allows_send_hotkey_only_after_hard_switch(self):
+        config = config_for_send_mode({"dry_run": True, "allow_real_send": True}, "real_send")
+
+        self.assertTrue(should_press_send_hotkey(config))
 
     def test_target_must_be_in_allowed_conversations(self):
         allowed = ["一合学社", "测试2群", ""]

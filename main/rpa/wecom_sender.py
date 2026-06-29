@@ -26,10 +26,12 @@ try:
         SendGuardError,
         config_for_send_mode,
         conversation_title_mismatch_detail,
+        dry_run_result_detail,
         real_send_block_detail,
         real_send_enabled,
         real_send_requested,
         search_result_not_found_detail,
+        should_press_send_hotkey,
         target_in_allowed_conversations,
         target_not_allowed_detail,
         validate_active_conversation_title,
@@ -41,10 +43,12 @@ except ModuleNotFoundError:
         SendGuardError,
         config_for_send_mode,
         conversation_title_mismatch_detail,
+        dry_run_result_detail,
         real_send_block_detail,
         real_send_enabled,
         real_send_requested,
         search_result_not_found_detail,
+        should_press_send_hotkey,
         target_in_allowed_conversations,
         target_not_allowed_detail,
         validate_active_conversation_title,
@@ -1669,6 +1673,13 @@ def sync_unread_conversations(config: dict, config_path: Path) -> list[dict]:
     return results
 
 
+def clear_message_input():
+    keyboard.send_keys("^a")
+    time.sleep(0.1)
+    keyboard.send_keys("{DELETE}")
+    time.sleep(0.1)
+
+
 # 真正发送消息前，先补充签名，再决定是 dry-run 还是回车发送。
 def send_message(window, content: str, config: dict):
     text = content.strip()
@@ -1683,22 +1694,15 @@ def send_message(window, content: str, config: dict):
         # 清空输入框：focus_message_input 已退出多选并点中输入框，此处 Ctrl+A 只全选输入框文本。
         # 若担心焦点未落在输入框（会误触发消息多选），把 clear_input_before_paste 关掉即可。
         if config.get("clear_input_before_paste", True):
-            keyboard.send_keys("^a")
-            time.sleep(0.1)
-            keyboard.send_keys("{DELETE}")
-            time.sleep(0.1)
+            clear_message_input()
         pyperclip.copy(text)
         ensure_foreground_wecom(window, config)
         keyboard.send_keys("^v")
         time.sleep(0.4)
-        if config.get("dry_run", True):
-            if config.get("clear_after_dry_run", True):
-                keyboard.send_keys("^a")
-                time.sleep(0.1)
-                keyboard.send_keys("{DELETE}")
-                time.sleep(0.1)
-                return "dry_run", "DRY_RUN: 已定位会话并粘贴内容，未按发送键，已清空输入框。"
-            return "dry_run", "DRY_RUN: 已定位会话并粘贴内容，未按发送键。"
+        if not should_press_send_hotkey(config):
+            ensure_foreground_wecom(window, config)
+            clear_message_input()
+            return "dry_run", dry_run_result_detail()
         ensure_foreground_wecom(window, config)
         hotkey(config.get("send_hotkey", ["enter"]))
         return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"

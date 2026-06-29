@@ -13,6 +13,7 @@ FOREGROUND_UNKNOWN_MESSAGE = "无法确认当前前台窗口，已停止 RPA 操
 FOREGROUND_NOT_WECOM_TEMPLATE = "当前前台窗口不是企业微信，已停止 RPA 操作。foreground={foreground}"
 CONVERSATION_TITLE_MISMATCH_TEMPLATE = "发送前校验失败：当前聊天标题不是「{target}」，已阻止发送（防发错群）。"
 SEARCH_RESULT_NOT_FOUND_TEMPLATE = "{stage}未命中「{target}」，已中止，绝不盲点坐标。"
+DRY_RUN_RESULT_MESSAGE = "DRY_RUN: 已定位会话并粘贴内容，未按发送键，已清空输入框。"
 
 
 class SendGuardError(ValueError):
@@ -25,6 +26,10 @@ def real_send_enabled(config: dict) -> bool:
 
 def real_send_block_detail() -> str:
     return REAL_SEND_GUARD_MESSAGE
+
+
+def dry_run_result_detail() -> str:
+    return DRY_RUN_RESULT_MESSAGE
 
 
 def target_not_allowed_detail(target: str) -> str:
@@ -138,4 +143,10 @@ def config_for_send_mode(config: dict, send_mode: str) -> dict:
         task_config["dry_run"] = False
     elif mode:
         raise SendGuardError(f"未知发送模式：{mode}")
+    if task_config.get("dry_run", True):
+        task_config["clear_after_dry_run"] = True
     return task_config
+
+
+def should_press_send_hotkey(config: dict) -> bool:
+    return config.get("dry_run") is False
