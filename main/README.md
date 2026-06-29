@@ -225,7 +225,7 @@ rpa/config.json
 | `auto_send_ai_replies` | 是否把本轮 AI回复任务直接交给 RPA 发送，默认关闭 |
 | `use_clipboard_chat_extract` | UIA 读不到消息控件时，是否允许剪贴板读取能力存在 |
 | `allow_clipboard_chat_extract` | 默认 `false`，避免误复制其他页面；只在命令行显式加 `--allow-clipboard-copy` 时开启 |
-| `search_result_click_ratio_x/y` | 搜索结果无法通过 UIA 精准点击时，兜底点击的窗口相对坐标 |
+| `search_result_open_click_ratio_x` | 搜索结果已被 OCR/ARK 命中后，点击命中行的横向比例；未命中会直接中止，不再 Enter/坐标兜底 |
 
 建议试点初期保持：
 

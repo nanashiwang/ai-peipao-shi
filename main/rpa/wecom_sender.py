@@ -29,10 +29,12 @@ try:
         real_send_block_detail,
         real_send_enabled,
         real_send_requested,
+        search_result_not_found_detail,
         target_in_allowed_conversations,
         target_not_allowed_detail,
         validate_active_conversation_title,
         validate_foreground_wecom,
+        validate_visual_hit,
     )
 except ModuleNotFoundError:
     from send_guard import (
@@ -42,10 +44,12 @@ except ModuleNotFoundError:
         real_send_block_detail,
         real_send_enabled,
         real_send_requested,
+        search_result_not_found_detail,
         target_in_allowed_conversations,
         target_not_allowed_detail,
         validate_active_conversation_title,
         validate_foreground_wecom,
+        validate_visual_hit,
     )
 
 try:
@@ -712,16 +716,7 @@ def click_matching_search_result(window, conversation: str) -> bool:
     return True
 
 
-# 搜索结果无法通过 UIA 精确定位时，按配置的窗口坐标兜底点击。
-def click_configured_search_result(window, config: dict):
-    ensure_foreground_wecom(window, config)
-    rect = window.rectangle()
-    x = int(rect.left + rect.width() * float(config.get("search_result_click_ratio_x", 0.20)))
-    y = int(rect.top + rect.height() * float(config.get("search_result_click_ratio_y", 0.22)))
-    mouse.click(button="left", coords=(x, y))
-
-
-# 打开搜索结果：优先靠 UIA，失败后用键盘/坐标兜底。
+# 打开搜索结果：只允许 UIA 精确命中；失败即中止，避免 Enter/坐标打开错误会话。
 def open_search_result(window, conversation: str, config: dict):
     ensure_foreground_wecom(window, config)
     if click_matching_search_result(window, conversation):
@@ -731,14 +726,7 @@ def open_search_result(window, conversation: str, config: dict):
         time.sleep(0.2)
         return
 
-    ensure_foreground_wecom(window, config)
-    keyboard.send_keys("{ENTER}")
-    time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
-    click_configured_search_result(window, config)
-    time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
-    ensure_foreground_wecom(window, config)
-    keyboard.send_keys("{ESC}")
-    time.sleep(0.2)
+    raise RpaError(search_result_not_found_detail(conversation, "搜索结果"))
 
 
 # ============ 视觉定位（整屏截图 + 本地 OCR，ARK Vision 兜底）============
@@ -791,12 +779,18 @@ def click_visual_region_hit(
     fallback_x_ratio_key: str,
     default_x_ratio: float,
     y_offset_key: str,
+    target: str = "",
+    stage: str = "视觉定位",
 ):
     """点击 OCR/视觉命中的列表行。
 
     OCR 坐标来自整屏截图；在高 DPI 缩放下，pywinauto 鼠标坐标与截图坐标一致，
     直接用 window.rectangle() 的物理尺寸会把点击点下移，容易点到下一行。
     """
+    try:
+        validate_visual_hit(target, hit, stage)
+    except SendGuardError as exc:
+        raise RpaError(str(exc)) from exc
     raw_rx = float(config.get(x_ratio_key, config.get(fallback_x_ratio_key, default_x_ratio)))
     raw_ry = float(hit["ry"]) + float(config.get(y_offset_key, 0.0))
     rx = max(0.0, min(1.0, raw_rx))
@@ -821,7 +815,7 @@ def click_visual_region_hit(
     return x, y
 
 
-def click_conversation_hit(window, hit: dict, win_rect_img: dict, config: dict):
+def click_conversation_hit(window, hit: dict, win_rect_img: dict, config: dict, target: str = ""):
     return click_visual_region_hit(
         window,
         hit,
@@ -831,10 +825,12 @@ def click_conversation_hit(window, hit: dict, win_rect_img: dict, config: dict):
         fallback_x_ratio_key="conversation_row_click_ratio_x",
         default_x_ratio=0.18,
         y_offset_key="conversation_open_click_offset_ratio_y",
+        target=target,
+        stage="会话列表",
     )
 
 
-def click_search_result_hit(window, hit: dict, win_rect_img: dict, config: dict):
+def click_search_result_hit(window, hit: dict, win_rect_img: dict, config: dict, target: str = ""):
     return click_visual_region_hit(
         window,
         hit,
@@ -844,6 +840,8 @@ def click_search_result_hit(window, hit: dict, win_rect_img: dict, config: dict)
         fallback_x_ratio_key="search_result_click_ratio_x",
         default_x_ratio=0.20,
         y_offset_key="search_result_open_click_offset_ratio_y",
+        target=target,
+        stage="搜索结果",
     )
 
 
@@ -980,7 +978,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
                 hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
                 if hit:
                     print(f"locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f} score={hit['score']:.2f}")
-                    click_conversation_hit(window, hit, rect, config)
+                    click_conversation_hit(window, hit, rect, config, target)
                     time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
                     return True
             except RpaError as exc:
@@ -988,7 +986,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
         hit = ark_locate_in_region(img, target, config, rect, region)
         if hit:
             print(f"locate target={target} via=ark rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
-            click_conversation_hit(window, hit, rect, config)
+            click_conversation_hit(window, hit, rect, config, target)
             time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
@@ -1020,7 +1018,7 @@ def search_then_locate(window, target: str, config: dict) -> bool:
                 hit = find_text_in_ocr(ocr_region(img, region, rect, config), target, config)
                 if hit:
                     print(f"search_locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
-                    click_search_result_hit(window, hit, rect, config)
+                    click_search_result_hit(window, hit, rect, config, target)
                     time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
                     return True
             except RpaError as exc:
@@ -1028,21 +1026,12 @@ def search_then_locate(window, target: str, config: dict) -> bool:
         hit = ark_locate_in_region(img, target, config, rect, region)
         if hit:
             print(f"search_locate target={target} via=ark")
-            click_search_result_hit(window, hit, rect, config)
+            click_search_result_hit(window, hit, rect, config, target)
             time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
         _cleanup_debug_image(img, config)
-    if config.get("allow_enter_search_fallback", True):
-        ensure_foreground_wecom(window, config)
-        keyboard.send_keys("{ENTER}")
-        time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
-        ensure_foreground_wecom(window, config)
-        keyboard.send_keys("{ESC}")
-        time.sleep(0.2)
-        print(f"search_locate target={target} via=enter_fallback")
-        return True
-    raise RpaError(f"搜索后仍无法定位「{target}」，已中止。")
+    raise RpaError(search_result_not_found_detail(target, "搜索结果"))
 
 
 def verify_active_conversation(window, target: str, config: dict):

@@ -8,10 +8,13 @@ from rpa.send_guard import (
     real_send_block_detail,
     real_send_enabled,
     real_send_requested,
+    search_result_not_found_detail,
     target_in_allowed_conversations,
     target_not_allowed_detail,
     validate_active_conversation_title,
     validate_foreground_wecom,
+    validate_visual_hit,
+    visual_hit_has_coordinates,
 )
 
 
@@ -76,6 +79,22 @@ class RpaSendGuardTest(unittest.TestCase):
         with self.assertRaises(SendGuardError) as ctx:
             validate_active_conversation_title("一合学社", ocr_items=[{"text": "测试2群", "score": 0.99}], min_ratio=0.9)
         self.assertEqual(str(ctx.exception), conversation_title_mismatch_detail("一合学社"))
+
+    def test_visual_hit_guard_accepts_coordinate_hit(self):
+        hit = {"rx": 0.2, "ry": 0.3, "text": "一合学社"}
+
+        self.assertTrue(visual_hit_has_coordinates(hit))
+        self.assertIsNone(validate_visual_hit("一合学社", hit, stage="搜索结果"))
+
+    def test_visual_hit_guard_rejects_empty_search_result(self):
+        with self.assertRaises(SendGuardError) as empty:
+            validate_visual_hit("一合学社", None, stage="搜索结果")
+        self.assertEqual(str(empty.exception), search_result_not_found_detail("一合学社", "搜索结果"))
+        self.assertIn("绝不盲点坐标", str(empty.exception))
+
+        with self.assertRaises(SendGuardError) as no_coordinate:
+            validate_visual_hit("一合学社", {"text": "测试2群"}, stage="搜索结果")
+        self.assertIn("搜索结果未命中「一合学社」", str(no_coordinate.exception))
 
 
 if __name__ == "__main__":
