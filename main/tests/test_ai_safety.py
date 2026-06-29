@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import AIOutputTaskIn, create_task_from_ai_output, save_ai_output
-from app.models import AIOutput, Family, SendTask
+from app.models import AIOutput, AuditLog, Family, SendTask
 
 
 class AiSafetyBoundaryTest(unittest.TestCase):
@@ -37,11 +37,32 @@ class AiSafetyBoundaryTest(unittest.TestCase):
         self.db.commit()
         return output
 
+    def add_safe_output(self, status="needs_review", text="\u5e38\u89c4\u6253\u5361\u63d0\u9192"):
+        output = AIOutput(
+            family_id="f1",
+            agent_type="ai_reply",
+            source="\u5355\u6d4b",
+            raw_json=json.dumps({"\u4f7f\u7528\u4f9d\u636e\u6458\u8981": ["\u5bb6\u957f\u8be2\u95ee\u6253\u5361"]}, ensure_ascii=False),
+            display_text=text,
+            edited_output=text,
+            status=status,
+            risk_level="\u4f4e",
+            need_human_review="N",
+        )
+        self.db.add(output)
+        self.db.commit()
+        return output
+
     def test_unapproved_sensitive_output_cannot_create_task(self):
         output = self.add_output(status="needs_review")
 
         with self.assertRaises(HTTPException):
             create_task_from_ai_output(output.id, AIOutputTaskIn(send_mode="dry_run"), db=self.db)
+
+        self.db.refresh(output)
+        self.assertEqual(output.status, "needs_review")
+        self.assertEqual(self.db.query(SendTask).count(), 0)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
 
     def test_approved_sensitive_output_cannot_create_real_send_task(self):
         output = self.add_output(status="approved")
@@ -52,6 +73,27 @@ class AiSafetyBoundaryTest(unittest.TestCase):
                 AIOutputTaskIn(send_mode="real_send", confirm_real_send=True),
                 db=self.db,
             )
+
+        self.db.refresh(output)
+        self.assertEqual(output.status, "approved")
+        self.assertEqual(self.db.query(SendTask).count(), 0)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_sensitive_override_content_requires_manual_review(self):
+        output = self.add_safe_output(status="needs_review")
+
+        with self.assertRaises(HTTPException):
+            create_task_from_ai_output(
+                output.id,
+                AIOutputTaskIn(content="\u8bf7\u5904\u7406\u9000\u6b3e\u6295\u8bc9", send_mode="dry_run"),
+                db=self.db,
+            )
+
+        self.db.refresh(output)
+        self.assertEqual(output.status, "needs_review")
+        self.assertEqual(output.edited_output, "\u5e38\u89c4\u6253\u5361\u63d0\u9192")
+        self.assertEqual(self.db.query(SendTask).count(), 0)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
 
     def test_approved_sensitive_output_can_create_dry_run_review_task(self):
         output = self.add_output(status="approved")
