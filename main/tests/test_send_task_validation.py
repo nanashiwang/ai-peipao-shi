@@ -2,7 +2,7 @@ import unittest
 
 from fastapi import HTTPException
 
-from app.main import validate_send_mode, validate_send_task_content
+from app.main import validate_send_mode, validate_send_mode_submit, validate_send_task_content
 
 
 class SendTaskValidationTest(unittest.TestCase):
@@ -43,6 +43,16 @@ class SendModeValidationTest(unittest.TestCase):
     def test_rejects_unknown_mode(self):
         with self.assertRaises(HTTPException):
             validate_send_mode("auto_send")
+
+    def test_real_send_requires_explicit_confirmation(self):
+        with self.assertRaises(HTTPException):
+            validate_send_mode_submit("real_send", False)
+
+    def test_real_send_accepts_explicit_confirmation(self):
+        self.assertEqual(validate_send_mode_submit("real_send", True), "real_send")
+
+    def test_existing_real_send_can_be_saved_without_reconfirm(self):
+        self.assertEqual(validate_send_mode_submit("real_send", False, "real_send"), "real_send")
 
 
 if __name__ == "__main__":

@@ -756,10 +756,16 @@ async function createReportTask(id) {
 async function saveTask(id) {
   return withAction("保存任务", async () => {
     const task = state.tasks.find((item) => item.id === id);
+    const sendMode = $(`task-mode-${id}`)?.value || "dry_run";
+    const confirmRealSend = sendMode === "real_send" && task?.send_mode !== "real_send";
+    if (confirmRealSend) {
+      const ok = window.confirm(`确认将任务 ${id} 设置为真实发送？\n目标：${task?.target_name || ""}\n真实发送会触达企业微信会话，请先确认内容无误。`);
+      if (!ok) return;
+    }
     await api(`/api/send-tasks/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...task, content: $(`task-${id}`).value, send_mode: $(`task-mode-${id}`)?.value || "dry_run" }),
+      body: JSON.stringify({ ...task, content: $(`task-${id}`).value, send_mode: sendMode, confirm_real_send: confirmRealSend }),
     });
     toast("任务已保存");
     await refreshAll();
