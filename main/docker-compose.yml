@@ -6,8 +6,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://coach:coach@postgres:5432/coach_mvp
-      APP_ENV: docker
+      APP_ENV: ${APP_ENV:-pilot}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:-coach}@postgres:5432/${POSTGRES_DB:-coach_mvp}
     depends_on:
       postgres:
         condition: service_healthy
@@ -20,13 +20,13 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: coach_mvp
-      POSTGRES_USER: coach
-      POSTGRES_PASSWORD: coach
+      POSTGRES_DB: ${POSTGRES_DB:-coach_mvp}
+      POSTGRES_USER: ${POSTGRES_USER:-coach}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coach}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U coach -d coach_mvp"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coach} -d ${POSTGRES_DB:-coach_mvp}"]
       interval: 5s
       timeout: 3s
       retries: 10

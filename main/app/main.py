@@ -7,6 +7,7 @@ import base64
 import binascii
 import io
 import json
+import os
 import re
 import secrets
 import zipfile
@@ -49,6 +50,7 @@ from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
+from app.services.runtime_config import assert_runtime_config_safe, runtime_config_report
 from app.services.scenario import detect_checkin, detect_scene
 from app.services.send_log_classifier import classify_send_log
 
@@ -241,6 +243,15 @@ def send_log_view(log: SendLog) -> dict:
     data = as_dict(log)
     data.update(classify_send_log(log.status, log.detail))
     return data
+
+
+def current_runtime_config_report() -> dict:
+    return runtime_config_report(
+        os.getenv("APP_ENV"),
+        DATABASE_URL,
+        ARK_CONFIG_PATH,
+        database_url_explicit=bool(os.getenv("DATABASE_URL")),
+    )
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
@@ -820,6 +831,7 @@ def latest_parent_message(context: dict) -> str:
 # 启动时初始化数据库并预置模板。
 @app.on_event("startup")
 def on_startup():
+    assert_runtime_config_safe(current_runtime_config_report())
     init_db()
     db = next(get_db())
     try:
@@ -837,7 +849,13 @@ def index():
 # 健康检查接口给 RPA 和前端都可以用。
 @app.get("/health")
 def health():
-    return {"ok": True, "mode": "local-mvp"}
+    report = current_runtime_config_report()
+    return {
+        "ok": report["status"] != "critical",
+        "mode": report["metrics"]["app_env"],
+        "database": report["metrics"]["database_kind"],
+        "config_status": report["status"],
+    }
 
 
 @app.post("/api/test-chat/register")
@@ -2555,11 +2573,13 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
     stale_assigned_count = db.query(SendTask).filter(SendTask.status == "assigned", SendTask.scheduled_at < stale_before).count()
     recent_failed_count = db.query(SendLog).filter(SendLog.status == "failed", SendLog.sent_at >= now - timedelta(hours=24)).count()
     ark = get_ark_config()
+    runtime_config = current_runtime_config_report()
     artifact_stats = screenshot_artifact_stats()
     backup_stats = backup_artifact_stats()
 
     components = [
-        component_status("ok", "后端服务", "FastAPI 正常响应", {"mode": "local-mvp"}),
+        runtime_config,
+        component_status("ok", "后端服务", "FastAPI 正常响应", {"mode": runtime_config["metrics"]["app_env"]}),
         component_status(
             "ok" if devices and len(online_devices) == len(devices) else ("warn" if devices else "warn"),
             "被控端设备",

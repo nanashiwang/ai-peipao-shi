@@ -152,7 +152,8 @@ http://127.0.0.1:8000
 - `app/services/scenario.py`：固定场景和打卡关键词规则。
 - `rpa/mock_sender.py`：mock 发送器，不触碰企业微信。
 - `rpa/wecom_sender.py`：真实企业微信 PC 端 RPA 发送器，使用 pywinauto / pywin32 / pyperclip。
-- `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL。
+- `APP_ENV`：`local/pilot/production` 等运行环境；`production` 会强制校验数据库和 ARK 密钥隔离。
+- `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL；正式环境禁止使用 SQLite。
 
 ## 企业微信 PC 端真实 RPA
 

@@ -29,6 +29,7 @@ echo ""
 echo "== 2/5 准备配置目录 =="
 mkdir -p config
 echo "  ARK 云端定位密钥改为「部署后在看板 → 系统设置 页在线配置」，这里无需填写。"
+echo "  默认 APP_ENV=pilot；正式环境请先创建 .env，设置 APP_ENV=production、独立数据库口令，并准备 config/ark.json。"
 echo ""
 
 echo "== 3/5 构建并启动（api + postgres）=="

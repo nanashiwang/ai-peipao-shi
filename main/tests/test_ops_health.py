@@ -40,6 +40,7 @@ class OpsHealthDashboardTest(unittest.TestCase):
         dashboard = build_ops_health_dashboard(self.db, now=self.now)
 
         self.assertEqual(dashboard["overall_status"], "warn")
+        self.assertEqual(self.component(dashboard, "运行环境配置")["status"], "ok")
         self.assertEqual(self.component(dashboard, "被控端设备")["status"], "warn")
         self.assertEqual(self.component(dashboard, "云端视觉定位")["status"], "warn")
         self.assertEqual(self.component(dashboard, "数据备份")["status"], "warn")
