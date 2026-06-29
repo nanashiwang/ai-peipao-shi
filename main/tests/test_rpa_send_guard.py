@@ -8,6 +8,7 @@ from rpa.send_guard import (
     real_send_requested,
     target_in_allowed_conversations,
     target_not_allowed_detail,
+    validate_foreground_wecom,
 )
 
 
@@ -45,6 +46,20 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertFalse(target_in_allowed_conversations("许宝月", allowed))
         self.assertFalse(target_in_allowed_conversations("", allowed))
         self.assertEqual(target_not_allowed_detail("许宝月"), "目标「许宝月」不在白名单，已跳过。")
+
+    def test_foreground_guard_accepts_wecom_process_or_target_window(self):
+        self.assertIsNone(validate_foreground_wecom(101, target_handle=202, foreground_is_wecom=True))
+        self.assertIsNone(validate_foreground_wecom(202, target_handle=202, foreground_is_wecom=False))
+
+    def test_foreground_guard_rejects_unknown_or_non_wecom_window(self):
+        with self.assertRaises(SendGuardError) as unknown:
+            validate_foreground_wecom(0, target_handle=202, foreground_is_wecom=False)
+        self.assertIn("无法确认当前前台窗口", str(unknown.exception))
+
+        with self.assertRaises(SendGuardError) as mismatch:
+            validate_foreground_wecom(303, target_handle=202, foreground_is_wecom=False, foreground_title="浏览器")
+        self.assertIn("当前前台窗口不是企业微信", str(mismatch.exception))
+        self.assertIn("浏览器", str(mismatch.exception))
 
 
 if __name__ == "__main__":

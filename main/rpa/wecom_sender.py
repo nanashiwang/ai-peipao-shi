@@ -30,6 +30,7 @@ try:
         real_send_requested,
         target_in_allowed_conversations,
         target_not_allowed_detail,
+        validate_foreground_wecom,
     )
 except ModuleNotFoundError:
     from send_guard import (
@@ -40,6 +41,7 @@ except ModuleNotFoundError:
         real_send_requested,
         target_in_allowed_conversations,
         target_not_allowed_detail,
+        validate_foreground_wecom,
     )
 
 try:
@@ -621,22 +623,38 @@ def foreground_handle() -> int:
 
 
 def ensure_foreground_wecom(window, config: dict | None = None):
-    handle = foreground_handle()
-    if not handle:
-        raise RpaError("无法确认当前前台窗口，已停止 RPA 操作，避免误操作其他页面。")
     effective_config = config or {}
-    if is_wecom_process(handle, effective_config):
+    target_handle = int(window.handle)
+    handle = foreground_handle()
+    try:
+        validate_foreground_wecom(
+            handle,
+            target_handle,
+            is_wecom_process(handle, effective_config) if handle else False,
+            win32gui.GetWindowText(handle) if handle else "",
+        )
         return
+    except SendGuardError as exc:
+        if not handle:
+            raise RpaError(str(exc)) from exc
     if config and config.get("recover_foreground_wecom", True):
         bring_wecom_to_front(window)
         handle = foreground_handle()
-        if handle and (handle == int(window.handle) or is_wecom_process(handle, effective_config)):
+        try:
+            validate_foreground_wecom(
+                handle,
+                target_handle,
+                is_wecom_process(handle, effective_config) if handle else False,
+                win32gui.GetWindowText(handle) if handle else "",
+            )
             return
-    if handle != int(window.handle):
-        title = win32gui.GetWindowText(handle)
-        raise RpaError(f"当前前台窗口不是企业微信，已停止 RPA 操作。foreground={title or handle}")
-    if config and not is_wecom_process(handle, config):
-        raise RpaError("当前前台窗口不是 WXWork.exe，已停止 RPA 操作。")
+        except SendGuardError as exc:
+            raise RpaError(str(exc)) from exc
+    title = win32gui.GetWindowText(handle) if handle else ""
+    try:
+        validate_foreground_wecom(handle, target_handle, False, title)
+    except SendGuardError as exc:
+        raise RpaError(str(exc)) from exc
 
 
 # 在搜索结果区域里挑选最像目标会话的控件。
