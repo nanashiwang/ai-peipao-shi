@@ -64,6 +64,7 @@ from app.services.retention_service import prune_retention, retention_policy_fro
 from app.services.runtime_config import assert_runtime_config_safe, runtime_config_report
 from app.services.scenario import detect_checkin, detect_scene
 from app.services.send_log_classifier import classify_send_log
+from app.services.redaction_service import redact_record
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
@@ -300,6 +301,30 @@ def admin_auth_component() -> dict:
         status = "ok"
         detail = "管理端鉴权未强制启用，仅适合本地/试点内网"
     return component_status(status, "管理端鉴权", detail, {"required": required, "secret_configured": has_secret})
+
+
+def admin_identity_from_request(request: Request | None):
+    if request is None:
+        return None
+    identity = getattr(getattr(request, "state", None), "admin_identity", None)
+    if identity:
+        return identity
+    token = bearer_token(request.headers.get("authorization", ""))
+    if not token:
+        return None
+    try:
+        return verify_admin_token(token, admin_auth_secret())
+    except (RuntimeError, ValueError):
+        return None
+
+
+def should_redact_for_request(request: Request | None) -> bool:
+    identity = admin_identity_from_request(request)
+    return bool(identity and identity.role == "readonly")
+
+
+def maybe_redact_for_request(data, request: Request | None):
+    return redact_record(data) if should_redact_for_request(request) else data
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
@@ -1200,9 +1225,10 @@ def load_sample_data(db: Session = Depends(get_db)):
 
 # 家庭列表接口，顺带补充每个家庭的消息数。
 @app.get("/api/families")
-def list_families(db: Session = Depends(get_db)):
+def list_families(request: Request = None, db: Session = Depends(get_db)):
     families = db.query(Family).order_by(Family.family_id).all()
-    return [{**as_dict(f), "message_count": db.query(RawMessage).filter(RawMessage.family_id == f.family_id).count()} for f in families]
+    rows = [{**as_dict(f), "message_count": db.query(RawMessage).filter(RawMessage.family_id == f.family_id).count()} for f in families]
+    return maybe_redact_for_request(rows, request)
 
 
 @app.post("/api/families")
@@ -1714,41 +1740,42 @@ def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = 
 
 # 单个家庭详情页要的消息、画像和周报都在这里聚合返回。
 @app.get("/api/families/{family_id}")
-def family_detail(family_id: str, timeline_limit: int = 80, db: Session = Depends(get_db)):
+def family_detail(family_id: str, timeline_limit: int = 80, request: Request = None, db: Session = Depends(get_db)):
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     if not family:
         raise HTTPException(404, "家庭不存在")
     messages = db.query(RawMessage).filter(RawMessage.family_id == family_id).order_by(RawMessage.message_time).all()
     profile = db.query(ParentProfile).filter(ParentProfile.family_id == family_id).one_or_none()
     reports = db.query(WeeklyReport).filter(WeeklyReport.family_id == family_id).order_by(WeeklyReport.id.desc()).all()
-    return {
+    data = {
         "family": as_dict(family),
         "messages": [as_dict(m) for m in messages],
         "profile": as_dict(profile) if profile else None,
         "reports": [as_dict(r) for r in reports],
         "timeline": build_family_timeline(db, family_id, timeline_limit),
     }
+    return maybe_redact_for_request(data, request)
 
 
 @app.get("/api/families/{family_id}/timeline")
-def family_timeline(family_id: str, limit: int = 80, db: Session = Depends(get_db)):
+def family_timeline(family_id: str, limit: int = 80, request: Request = None, db: Session = Depends(get_db)):
     require_family(db, family_id)
-    return build_family_timeline(db, family_id, limit)
+    return maybe_redact_for_request(build_family_timeline(db, family_id, limit), request)
 
 
 @app.get("/api/workbench/today-priorities")
-def today_priorities(limit: int = 12, db: Session = Depends(get_db)):
-    return build_today_priorities(db, limit)
+def today_priorities(limit: int = 12, request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request(build_today_priorities(db, limit), request)
 
 
 @app.get("/api/workbench/overview")
-def workbench_overview(coach_name: str = "", limit: int = 8, db: Session = Depends(get_db)):
-    return build_workbench_overview(db, coach_name, limit)
+def workbench_overview(coach_name: str = "", limit: int = 8, request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request(build_workbench_overview(db, coach_name, limit), request)
 
 
 @app.get("/api/admin/service-quality")
-def admin_service_quality(coach_name: str = "", db: Session = Depends(get_db)):
-    return build_admin_service_quality_dashboard(db, coach_name)
+def admin_service_quality(coach_name: str = "", request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request(build_admin_service_quality_dashboard(db, coach_name), request)
 
 
 @app.get("/api/agent/evaluations")
@@ -1803,13 +1830,13 @@ def generate_one(family_id: str, db: Session = Depends(get_db)):
 
 # AI 输出列表接口，支持按家庭和 Agent 类型筛选。
 @app.get("/api/ai-outputs")
-def list_ai_outputs(family_id: str = "", agent_type: str = "", db: Session = Depends(get_db)):
+def list_ai_outputs(family_id: str = "", agent_type: str = "", request: Request = None, db: Session = Depends(get_db)):
     query = db.query(AIOutput).order_by(AIOutput.id.desc())
     if family_id:
         query = query.filter(AIOutput.family_id == family_id)
     if agent_type:
         query = query.filter(AIOutput.agent_type == agent_type)
-    return [as_dict(item) for item in query.limit(200).all()]
+    return maybe_redact_for_request([as_dict(item) for item in query.limit(200).all()], request)
 
 
 # 保存人工审核后的 AI 输出。
@@ -2030,8 +2057,8 @@ def resolve_rpa_conversation(target_name: str, db: Session = Depends(get_db)):
 
 # 周报列表接口。
 @app.get("/api/reports")
-def list_reports(db: Session = Depends(get_db)):
-    return [as_dict(r) for r in db.query(WeeklyReport).order_by(WeeklyReport.id.desc()).all()]
+def list_reports(request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request([as_dict(r) for r in db.query(WeeklyReport).order_by(WeeklyReport.id.desc()).all()], request)
 
 
 # 一键把未审核周报全部标成已审核。
@@ -2059,8 +2086,8 @@ def update_report(report_id: int, payload: ReportUpdate, db: Session = Depends(g
 
 # 家长画像列表接口。
 @app.get("/api/profiles")
-def list_profiles(db: Session = Depends(get_db)):
-    return [as_dict(p) for p in db.query(ParentProfile).order_by(ParentProfile.family_id).all()]
+def list_profiles(request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request([as_dict(p) for p in db.query(ParentProfile).order_by(ParentProfile.family_id).all()], request)
 
 
 # 模板列表接口。
@@ -2169,13 +2196,13 @@ def create_tasks_from_scenes(request: Request = None, db: Session = Depends(get_
 
 # 发送任务列表接口（可选按 status / device_id 过滤，便于看板和调试）。
 @app.get("/api/send-tasks")
-def list_send_tasks(status: str = "", device_id: str = "", db: Session = Depends(get_db)):
+def list_send_tasks(status: str = "", device_id: str = "", request: Request = None, db: Session = Depends(get_db)):
     query = db.query(SendTask)
     if status:
         query = query.filter(SendTask.status == status)
     if device_id:
         query = query.filter(SendTask.device_id == device_id)
-    return [as_dict(t) for t in query.order_by(SendTask.id.desc()).all()]
+    return maybe_redact_for_request([as_dict(t) for t in query.order_by(SendTask.id.desc()).all()], request)
 
 
 # 直接新增一条发送任务。
@@ -2356,8 +2383,8 @@ def web_send_all(request: Request = None, db: Session = Depends(get_db)):
 
 
 @app.get("/api/send-logs")
-def list_send_logs(db: Session = Depends(get_db)):
-    return [send_log_view(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()]
+def list_send_logs(request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request([send_log_view(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()], request)
 
 
 @app.get("/api/audit-logs")
@@ -2746,6 +2773,20 @@ def ops_health(db: Session = Depends(get_db)):
 @app.get("/api/ops/backups")
 def ops_list_backups():
     return list_backups(BACKUP_DIR)
+
+
+@app.get("/api/ops/redacted-export")
+def ops_redacted_export(db: Session = Depends(get_db)):
+    snapshot = {
+        "sensitivity": "redacted",
+        "generated_at": datetime.utcnow().isoformat(sep=" ", timespec="seconds"),
+        "families": [as_dict(item) for item in db.query(Family).order_by(Family.family_id).all()],
+        "messages": [as_dict(item) for item in db.query(RawMessage).order_by(RawMessage.id).limit(500).all()],
+        "send_tasks": [as_dict(item) for item in db.query(SendTask).order_by(SendTask.id.desc()).limit(500).all()],
+        "send_logs": [send_log_view(item) for item in db.query(SendLog).order_by(SendLog.id.desc()).limit(500).all()],
+        "ai_outputs": [as_dict(item) for item in db.query(AIOutput).order_by(AIOutput.id.desc()).limit(500).all()],
+    }
+    return redact_record(snapshot)
 
 
 @app.get("/api/ops/retention")

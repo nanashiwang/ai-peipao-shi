@@ -67,6 +67,9 @@ def backup_file_info(path: Path) -> dict:
         "filename": path.name,
         "size_bytes": stat.st_size,
         "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
+        "sensitivity": "raw_sensitive",
+        "contains_sensitive_data": True,
+        "note": "原始数据库备份包含家长、孩子、聊天和发送内容，仅限管理员保存。",
     }
 
 

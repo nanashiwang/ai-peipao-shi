@@ -47,7 +47,10 @@ class BackupServiceTest(unittest.TestCase):
         drill = run_restore_drill(self.backup_dir / backup["filename"])
 
         self.assertEqual(backup["filename"], "coach_mvp_20260630_100000.sqlite3")
+        self.assertEqual(backup["sensitivity"], "raw_sensitive")
+        self.assertTrue(backup["contains_sensitive_data"])
         self.assertEqual([item["filename"] for item in backups], [backup["filename"]])
+        self.assertTrue(backups[0]["contains_sensitive_data"])
         self.assertTrue(drill["passed"])
         self.assertEqual(drill["integrity"], "ok")
         self.assertEqual(drill["missing_tables"], [])

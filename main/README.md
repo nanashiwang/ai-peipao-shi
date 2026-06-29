@@ -157,6 +157,13 @@ http://127.0.0.1:8000
 - `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD`：管理端鉴权配置；正式环境默认强制启用，支持管理员、陪跑师、只读角色。
 - `SEND_LOG_RETENTION_DAYS` / `SEND_SCREENSHOT_RETENTION_DAYS` / `RUNTIME_LOG_RETENTION_DAYS`：发送日志、截图证据、运行日志的保留天数；控制端可先预览，再显式确认清理。
 
+## 数据安全与脱敏
+
+- 管理端只读角色访问家庭、时间线、AI 输出、周报、画像、发送任务和发送日志时，后端会自动返回脱敏视图。
+- 脱敏视图会遮盖手机号、家长姓名、孩子年级/姓名，并把聊天内容、AI 生成正文、画像/周报文本替换为长度提示，不修改数据库原始记录。
+- 运维排障或外部演示优先使用 `GET /api/ops/redacted-export` 导出脱敏快照，避免直接复制原始聊天和发送内容。
+- SQLite 原始备份会标记为 `raw_sensitive` / `contains_sensitive_data=true`，仍包含家长、孩子、聊天和发送内容，只能由管理员加密保存。
+
 ## 企业微信 PC 端真实 RPA
 
 当前 RPA 已放弃截图/OCR 方案，主流程只走“页面登记会话名 -> UIA 搜索进入会话 -> UIA/剪贴板读取聊天文本”。RPA 支持两条链路：
