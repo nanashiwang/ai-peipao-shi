@@ -389,6 +389,22 @@ h3 {
   min-width: 0;
 }
 
+.priority-card {
+  border-left: 4px solid var(--line);
+}
+
+.priority-高 {
+  border-left-color: var(--danger);
+}
+
+.priority-中 {
+  border-left-color: var(--orange);
+}
+
+.priority-低 {
+  border-left-color: var(--green);
+}
+
 .row-card:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-hover);

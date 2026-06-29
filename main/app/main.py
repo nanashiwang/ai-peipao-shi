@@ -1042,6 +1042,100 @@ def build_family_timeline(db: Session, family_id: str, limit: int = 80) -> list[
     return items[:safe_limit]
 
 
+def priority_level(score: int) -> str:
+    if score >= 70:
+        return "高"
+    if score >= 45:
+        return "中"
+    return "低"
+
+
+def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None) -> list[dict]:
+    now = now or datetime.utcnow()
+    safe_limit = min(max(limit, 1), 50)
+    items: list[dict] = []
+    families = db.query(Family).order_by(Family.family_id).all()
+    for family in families:
+        reasons: list[str] = []
+        score = 0
+        profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
+        if profile:
+            risk_text = " ".join([profile.service_risks or "", profile.suggested_actions or "", profile.trust_trend or ""])
+            if any(token in risk_text for token in ("退费", "投诉", "高风险", "不满", "下降")):
+                score += 45
+                reasons.append("存在高风险/信任下降信号")
+            elif any(token in risk_text for token in ("风险", "焦虑", "担心", "负面")):
+                score += 25
+                reasons.append("存在需关注的服务风险")
+
+        last_msg = (
+            db.query(RawMessage)
+            .filter(RawMessage.family_id == family.family_id)
+            .order_by(RawMessage.message_time.desc())
+            .first()
+        )
+        if last_msg:
+            silent_days = (now - last_msg.message_time).days
+            if silent_days >= 7:
+                score += 35
+                reasons.append(f"已 {silent_days} 天无最新沟通")
+            elif silent_days >= 3:
+                score += 18
+                reasons.append(f"已 {silent_days} 天无最新沟通")
+        else:
+            silent_days = 999
+            score += 20
+            reasons.append("暂无有效沟通记录")
+
+        review_outputs = db.query(AIOutput).filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review").count()
+        if review_outputs:
+            score += min(30, review_outputs * 10)
+            reasons.append(f"{review_outputs} 条 AI 内容待审核")
+
+        review_reports = db.query(WeeklyReport).filter(WeeklyReport.family_id == family.family_id, WeeklyReport.status != "approved").count()
+        if review_reports:
+            score += min(24, review_reports * 8)
+            reasons.append(f"{review_reports} 份周报待审核")
+
+        pending_tasks = db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status == "pending").all()
+        if pending_tasks:
+            real_count = sum(1 for task in pending_tasks if task.send_mode == "real_send")
+            score += min(35, len(pending_tasks) * 8 + real_count * 12)
+            reasons.append(f"{len(pending_tasks)} 个发送任务待处理")
+
+        failed_send = db.query(SendLog).filter(SendLog.family_id == family.family_id, SendLog.status == "failed").count()
+        if failed_send:
+            score += min(20, failed_send * 6)
+            reasons.append(f"{failed_send} 条发送失败需复核")
+
+        if not reasons:
+            continue
+        if pending_tasks:
+            action = "先处理待发送任务"
+        elif review_outputs or review_reports:
+            action = "先审核 AI 内容/周报"
+        elif score >= 45:
+            action = "查看家庭时间线并人工跟进"
+        else:
+            action = "保持观察"
+        items.append({
+            "family_id": family.family_id,
+            "family_name": family.parent_nickname or family.family_id,
+            "coach_name": family.coach_name,
+            "score": score,
+            "level": priority_level(score),
+            "reasons": reasons,
+            "suggested_action": action,
+            "last_message_at": timeline_time(last_msg.message_time) if last_msg else "",
+            "pending_task_count": len(pending_tasks),
+            "review_output_count": review_outputs,
+            "review_report_count": review_reports,
+        })
+
+    items.sort(key=lambda item: (-item["score"], item["family_id"]))
+    return items[:safe_limit]
+
+
 # 单个家庭详情页要的消息、画像和周报都在这里聚合返回。
 @app.get("/api/families/{family_id}")
 def family_detail(family_id: str, timeline_limit: int = 80, db: Session = Depends(get_db)):
@@ -1064,6 +1158,11 @@ def family_detail(family_id: str, timeline_limit: int = 80, db: Session = Depend
 def family_timeline(family_id: str, limit: int = 80, db: Session = Depends(get_db)):
     require_family(db, family_id)
     return build_family_timeline(db, family_id, limit)
+
+
+@app.get("/api/workbench/today-priorities")
+def today_priorities(limit: int = 12, db: Session = Depends(get_db)):
+    return build_today_priorities(db, limit)
 
 
 # 如果家庭没有有效消息，就不生成周报和画像，避免写入空数据。

@@ -8,6 +8,7 @@ const state = {
   tasks: [],
   logs: [],
   auditLogs: [],
+  todayPriorities: [],
   devices: [],
   arkConfig: {},
   templates: [],
@@ -223,20 +224,22 @@ function renderKpis() {
 
 // 侧栏优先处理列表，帮助用户先看最紧急的事。
 function renderPriorityList() {
-  const pendingReports = state.reports.filter((item) => item.status !== "approved").slice(0, 4);
-  const pendingTasks = state.tasks.filter((item) => item.status === "pending").slice(0, 4);
-  const riskProfiles = state.profiles.filter((item) => (item.service_risks || "").includes("风险") || (item.service_risks || "").includes("退费")).slice(0, 4);
-  const items = [
-    ...riskProfiles.map((item) => ({ type: "风险画像", family_id: item.family_id, text: item.service_risks, action: `<button onclick="setSelectedFamily('${esc(item.family_id)}')">查看画像</button>` })),
-    ...pendingReports.map((item) => ({ type: "待审核周报", family_id: item.family_id, text: item.week_label, action: `<button onclick="switchTab('reports')">查看周报</button>` })),
-    ...pendingTasks.map((item) => ({ type: "待发送", family_id: item.family_id, text: item.scene, action: `<button onclick="switchTab('tasks')">处理任务</button>` })),
-  ];
+  const items = state.todayPriorities || [];
   $("priorityList").innerHTML = items.length ? items.map((item) => `
-    <article class="row-card">
-      <div>${badge(item.type)} <strong>${esc(familyName(item.family_id))}</strong><p>${esc(item.text)}</p></div>
-      ${item.action}
+    <article class="row-card priority-card priority-${esc(item.level)}">
+      <div>
+        ${badge(`优先级${item.level}`, item.level === "高" ? "warn" : item.level === "中" ? "ok" : "")}
+        <strong>${esc(item.family_name || familyName(item.family_id))}</strong>
+        <p>${(item.reasons || []).map(esc).join("；")}</p>
+        <span class="muted">分数 ${esc(item.score)} · ${esc(item.suggested_action)}${item.last_message_at ? ` · 最近沟通 ${esc(item.last_message_at)}` : ""}</span>
+      </div>
+      <div class="cell-actions">
+        <button onclick="setSelectedFamily('${esc(item.family_id)}')">看时间线</button>
+        ${item.pending_task_count ? `<button onclick="switchTab('tasks')">处理发送</button>` : ""}
+        ${item.review_output_count || item.review_report_count ? `<button onclick="switchTab('reports')">审核内容</button>` : ""}
+      </div>
     </article>
-  `).join("") : '<p class="empty">暂无待处理事项。先导入样例或生成 Agent 内容。</p>';
+  `).join("") : '<p class="empty">今日暂无高优先级事项。可继续同步企微或生成 Agent 内容。</p>';
 }
 
 // 输出卡片，展示 AI 生成的内容。
@@ -666,7 +669,7 @@ function renderAll() {
 // 刷新所有内容。
 async function refreshAll() {
   return withAction("刷新数据", async () => {
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, outputs, accounts, conversations, devices, arkConfig] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -674,13 +677,14 @@ async function refreshAll() {
       api("/api/send-tasks"),
       api("/api/send-logs"),
       api("/api/audit-logs?entity_type=send_task&limit=200"),
+      api("/api/workbench/today-priorities?limit=12"),
       api("/api/ai-outputs"),
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
       api("/api/devices"),
       api("/api/ark-config").catch(() => ({})),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, outputs, accounts, conversations, devices, arkConfig });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, outputs, accounts, conversations, devices, arkConfig });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
