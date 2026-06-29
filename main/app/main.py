@@ -50,6 +50,7 @@ from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
+from app.services.retention_service import prune_retention, retention_policy_from_env, retention_report
 from app.services.runtime_config import assert_runtime_config_safe, runtime_config_report
 from app.services.scenario import detect_checkin, detect_scene
 from app.services.send_log_classifier import classify_send_log
@@ -133,6 +134,10 @@ class HeartbeatIn(BaseModel):
     wecom_ok: str = ""
     detail: str = ""
     conversations: list[str] = []
+
+
+class RetentionPruneIn(BaseModel):
+    confirm_execute: bool = False
 
 
 # 控制台在线配置阿里 ARK（百炼）云端定位密钥。
@@ -252,6 +257,10 @@ def current_runtime_config_report() -> dict:
         ARK_CONFIG_PATH,
         database_url_explicit=bool(os.getenv("DATABASE_URL")),
     )
+
+
+def current_retention_policy() -> dict:
+    return retention_policy_from_env(os.environ)
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
@@ -2576,6 +2585,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
     runtime_config = current_runtime_config_report()
     artifact_stats = screenshot_artifact_stats()
     backup_stats = backup_artifact_stats()
+    retention = retention_report(db, SEND_SCREENSHOT_DIR, ROOT, current_retention_policy(), now)
 
     components = [
         runtime_config,
@@ -2622,6 +2632,16 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             f"{backup_stats['file_count']} 个备份，最近：{backup_stats['latest_created_at'] or '暂无'}",
             backup_stats,
         ),
+        component_status(
+            "warn" if retention["expired_count"] else "ok",
+            "日志保留策略",
+            retention["detail"],
+            {
+                "expired_count": retention["expired_count"],
+                "expired_bytes": retention["expired_bytes"],
+                "policy": retention["policy"],
+            },
+        ),
     ]
     if any(item["status"] == "critical" for item in components):
         overall = "critical"
@@ -2644,6 +2664,25 @@ def ops_health(db: Session = Depends(get_db)):
 @app.get("/api/ops/backups")
 def ops_list_backups():
     return list_backups(BACKUP_DIR)
+
+
+@app.get("/api/ops/retention")
+def ops_retention_plan(db: Session = Depends(get_db)):
+    return retention_report(db, SEND_SCREENSHOT_DIR, ROOT, current_retention_policy())
+
+
+@app.post("/api/ops/retention/prune")
+def ops_retention_prune(payload: RetentionPruneIn, db: Session = Depends(get_db)):
+    if not payload.confirm_execute:
+        result = prune_retention(db, SEND_SCREENSHOT_DIR, ROOT, current_retention_policy(), execute=False)
+        return {
+            **result["report"],
+            "executed": False,
+            "deleted": result["deleted"],
+            "detail": "未执行删除；传 confirm_execute=true 才会清理过期日志和截图。",
+        }
+    result = prune_retention(db, SEND_SCREENSHOT_DIR, ROOT, current_retention_policy(), execute=True)
+    return {**result["report"], "executed": True, "deleted": result["deleted"]}
 
 
 @app.post("/api/ops/backups")

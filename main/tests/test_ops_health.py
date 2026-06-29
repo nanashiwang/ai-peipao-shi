@@ -44,6 +44,7 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.assertEqual(self.component(dashboard, "被控端设备")["status"], "warn")
         self.assertEqual(self.component(dashboard, "云端视觉定位")["status"], "warn")
         self.assertEqual(self.component(dashboard, "数据备份")["status"], "warn")
+        self.assertEqual(self.component(dashboard, "日志保留策略")["status"], "ok")
 
     def test_health_reports_devices_queue_failures_and_artifacts(self):
         self.db.add_all([

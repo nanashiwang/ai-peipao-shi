@@ -14,6 +14,7 @@ const state = {
   devices: [],
   opsHealth: {},
   backups: [],
+  retention: {},
   backupDrills: {},
   arkConfig: {},
   importTemplates: [],
@@ -176,10 +177,11 @@ function switchTab(tabId) {
   if (tabId === "devices") {
     const poll = async () => {
       try {
-        const [devices, opsHealth, backups] = await Promise.all([api("/api/devices"), api("/api/ops/health"), api("/api/ops/backups")]);
+        const [devices, opsHealth, backups, retention] = await Promise.all([api("/api/devices"), api("/api/ops/health"), api("/api/ops/backups"), api("/api/ops/retention")]);
         state.devices = devices;
         state.opsHealth = opsHealth;
         state.backups = backups;
+        state.retention = retention;
         renderOpsHealth();
         renderBackups();
         renderDevices();
@@ -419,8 +421,19 @@ function renderBackups() {
   const el = $("backupBoard");
   if (!el) return;
   const backups = state.backups || [];
+  const retention = state.retention || {};
+  const policy = retention.policy || {};
+  const deleted = retention.deleted || {};
+  const retentionDetail = retention.detail || `过期对象 ${retention.expired_count ?? 0} 个`;
   el.innerHTML = `
     <p class="muted">基础版采用非破坏式演练：校验备份文件可读、核心表存在和 SQLite 完整性，不覆盖当前业务库。</p>
+    <div class="secondary-box">
+      <strong>日志保留策略</strong>
+      <p class="muted">${esc(retentionDetail)}；发送日志 ${esc(policy.send_log_days || "-")} 天，截图 ${esc(policy.screenshot_days || "-")} 天，运行日志 ${esc(policy.runtime_log_days || "-")} 天。</p>
+      ${retention.executed ? `<p>${badge("已清理", "ok")} <span class="muted">发送日志 ${esc(deleted.send_logs || 0)} 条，截图 ${esc(deleted.screenshots || 0)} 个，运行日志 ${esc(deleted.runtime_logs || 0)} 个。</span></p>` : ""}
+      <button onclick="refreshRetention()">刷新保留策略</button>
+      <button onclick="pruneRetention()">确认清理过期对象</button>
+    </div>
     ${table([
       { label: "备份文件", render: (r) => `<strong>${esc(r.filename)}</strong>` },
       { label: "大小", render: (r) => formatBytes(r.size_bytes) },
@@ -940,7 +953,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, arkConfig, importTemplates, agentEval] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -957,11 +970,12 @@ async function refreshAll() {
       api("/api/devices"),
       api("/api/ops/health"),
       api("/api/ops/backups"),
+      api("/api/ops/retention"),
       api("/api/ark-config").catch(() => ({})),
       api("/api/import/templates"),
       api("/api/agent/evaluations/run", { method: "POST" }),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, arkConfig, importTemplates, agentEval });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
@@ -1305,7 +1319,9 @@ $("deviceForm").onsubmit = async (event) => {
 };
 
 async function refreshBackups() {
-  state.backups = await api("/api/ops/backups");
+  const [backups, retention] = await Promise.all([api("/api/ops/backups"), api("/api/ops/retention")]);
+  state.backups = backups;
+  state.retention = retention;
   renderBackups();
 }
 
@@ -1317,6 +1333,31 @@ async function createBackup() {
     await refreshBackups();
     state.opsHealth = await api("/api/ops/health");
     renderOpsHealth();
+  });
+}
+
+async function refreshRetention() {
+  await withAction("刷新保留策略", async () => {
+    state.retention = await api("/api/ops/retention");
+    renderBackups();
+  });
+}
+
+async function pruneRetention() {
+  const expired = state.retention?.expired_count ?? 0;
+  if (!window.confirm(`将清理 ${expired} 个/条过期日志与截图证据。该操作不可撤销，确认继续？`)) return;
+  await withAction("清理过期日志", async () => {
+    state.retention = await api("/api/ops/retention/prune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm_execute: true }),
+    });
+    state.logs = await api("/api/send-logs");
+    state.opsHealth = await api("/api/ops/health");
+    renderBackups();
+    renderLogs();
+    renderOpsHealth();
+    toast("过期日志清理完成");
   });
 }
 
