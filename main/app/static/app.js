@@ -12,6 +12,7 @@ const state = {
   workbenchOverview: {},
   serviceQuality: {},
   devices: [],
+  opsHealth: {},
   arkConfig: {},
   importTemplates: [],
   agentEval: {},
@@ -164,7 +165,13 @@ function switchTab(tabId) {
   if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
   if (tabId === "devices") {
     const poll = async () => {
-      try { state.devices = await api("/api/devices"); renderDevices(); } catch (err) { /* 忽略轮询错误 */ }
+      try {
+        const [devices, opsHealth] = await Promise.all([api("/api/devices"), api("/api/ops/health")]);
+        state.devices = devices;
+        state.opsHealth = opsHealth;
+        renderOpsHealth();
+        renderDevices();
+      } catch (err) { /* 忽略轮询错误 */ }
     };
     poll();
     devicePollTimer = setInterval(poll, 5000);
@@ -363,6 +370,30 @@ function renderServiceQuality() {
     { label: "发送完成率", render: (r) => `${badge(percent(r.send_completion_rate), r.send_failure_rate ? "warn" : "ok")} <span class="muted">失败 ${percent(r.send_failure_rate)}</span>` },
     { label: "风险家庭", render: (r) => (r.risk_families || []).map((family) => `<button onclick="setSelectedFamily('${esc(family.family_id)}')">${esc(family.family_name)}</button>`).join("") || "—" },
   ], state.serviceQuality?.coaches || []);
+}
+
+function statusBadge(status) {
+  if (status === "critical") return badge("严重", "danger");
+  if (status === "warn") return badge("预警", "warn");
+  return badge("正常", "ok");
+}
+
+function renderOpsHealth() {
+  const el = $("opsHealthBoard");
+  if (!el) return;
+  const health = state.opsHealth || {};
+  const components = health.components || [];
+  el.innerHTML = `
+    <div class="section-head compact-head">
+      <h3>整体状态：${statusBadge(health.overall_status || "warn")}</h3>
+      <span class="muted">${esc(health.generated_at || "")}</span>
+    </div>
+    ${table([
+      { label: "组件", render: (r) => `<strong>${esc(r.label)}</strong>` },
+      { label: "状态", render: (r) => statusBadge(r.status) },
+      { label: "详情", key: "detail" },
+    ], components)}
+  `;
 }
 
 // 侧栏优先处理列表，帮助用户先看最紧急的事。
@@ -850,6 +881,7 @@ function renderAll() {
   renderTasks();
   renderLogs();
   renderAuditLogs();
+  renderOpsHealth();
   renderDevices();
   renderArkConfig();
   renderImportTemplates();
@@ -861,7 +893,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -876,11 +908,12 @@ async function refreshAll() {
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
       api("/api/devices"),
+      api("/api/ops/health"),
       api("/api/ark-config").catch(() => ({})),
       api("/api/import/templates"),
       api("/api/agent/evaluations/run", { method: "POST" }),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, arkConfig, importTemplates, agentEval });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, arkConfig, importTemplates, agentEval });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {

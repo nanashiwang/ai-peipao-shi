@@ -2480,6 +2480,91 @@ def get_ark_config():
     return {"configured": False, "api_key_masked": "", "endpoint_id": "", "base_url": ""}
 
 
+def component_status(status: str, label: str, detail: str, metrics: dict | None = None) -> dict:
+    return {"status": status, "label": label, "detail": detail, "metrics": metrics or {}}
+
+
+def screenshot_artifact_stats() -> dict:
+    if not SEND_SCREENSHOT_DIR.exists():
+        return {"exists": False, "file_count": 0, "total_bytes": 0}
+    files = [path for path in SEND_SCREENSHOT_DIR.iterdir() if path.is_file()]
+    return {
+        "exists": True,
+        "file_count": len(files),
+        "total_bytes": sum(path.stat().st_size for path in files),
+    }
+
+
+def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    devices = db.query(Device).all()
+    online_devices = [dev for dev in devices if dev.last_heartbeat and (now - dev.last_heartbeat) <= timedelta(seconds=HEARTBEAT_ONLINE_SECONDS)]
+    wecom_ok_devices = [dev for dev in online_devices if dev.wecom_ok == "Y"]
+    pending_count = db.query(SendTask).filter(SendTask.status == "pending").count()
+    assigned_count = db.query(SendTask).filter(SendTask.status == "assigned").count()
+    stale_before = now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
+    stale_assigned_count = db.query(SendTask).filter(SendTask.status == "assigned", SendTask.scheduled_at < stale_before).count()
+    recent_failed_count = db.query(SendLog).filter(SendLog.status == "failed", SendLog.sent_at >= now - timedelta(hours=24)).count()
+    ark = get_ark_config()
+    artifact_stats = screenshot_artifact_stats()
+
+    components = [
+        component_status("ok", "后端服务", "FastAPI 正常响应", {"mode": "local-mvp"}),
+        component_status(
+            "ok" if devices and len(online_devices) == len(devices) else ("warn" if devices else "warn"),
+            "被控端设备",
+            f"{len(online_devices)}/{len(devices)} 台在线" if devices else "尚未注册被控端设备",
+            {"total": len(devices), "online": len(online_devices)},
+        ),
+        component_status(
+            "ok" if not online_devices or len(wecom_ok_devices) == len(online_devices) else "warn",
+            "企业微信可用性",
+            f"{len(wecom_ok_devices)}/{len(online_devices)} 台在线设备企微正常",
+            {"online": len(online_devices), "wecom_ok": len(wecom_ok_devices)},
+        ),
+        component_status(
+            "critical" if stale_assigned_count else ("warn" if pending_count >= 50 else "ok"),
+            "发送队列",
+            f"pending={pending_count}, assigned={assigned_count}, stale_assigned={stale_assigned_count}",
+            {"pending": pending_count, "assigned": assigned_count, "stale_assigned": stale_assigned_count},
+        ),
+        component_status(
+            "warn" if recent_failed_count else "ok",
+            "近24小时发送失败",
+            f"{recent_failed_count} 条失败日志",
+            {"failed_24h": recent_failed_count},
+        ),
+        component_status(
+            "ok" if ark.get("configured") else "warn",
+            "云端视觉定位",
+            "ARK 已配置" if ark.get("configured") else "ARK 未配置，云端定位不可用",
+            {"configured": bool(ark.get("configured")), "endpoint_id": ark.get("endpoint_id", "")},
+        ),
+        component_status(
+            "ok",
+            "截图证据目录",
+            f"{artifact_stats['file_count']} 个文件，{artifact_stats['total_bytes']} bytes",
+            artifact_stats,
+        ),
+    ]
+    if any(item["status"] == "critical" for item in components):
+        overall = "critical"
+    elif any(item["status"] == "warn" for item in components):
+        overall = "warn"
+    else:
+        overall = "ok"
+    return {
+        "generated_at": timeline_time(now),
+        "overall_status": overall,
+        "components": components,
+    }
+
+
+@app.get("/api/ops/health")
+def ops_health(db: Session = Depends(get_db)):
+    return build_ops_health_dashboard(db)
+
+
 # 保存 ARK 配置：写入 config/ark.json 并清缓存使其立即生效；被控端下载接入包时会带上这份配置。
 @app.post("/api/ark-config")
 def save_ark_config(payload: ArkConfigIn):
