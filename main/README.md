@@ -169,7 +169,7 @@ http://127.0.0.1:8000
 - `rpa/wecom_sender.py`：真实企业微信 PC 端 RPA 发送器，使用 pywinauto / pywin32 / pyperclip。
 - `APP_ENV`：`local/pilot/production` 等运行环境；`production` 会强制校验数据库和 ARK 密钥隔离。
 - `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL；正式环境禁止使用 SQLite。
-- `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD`：管理端鉴权配置；正式环境默认强制启用，支持管理员、陪跑师、只读角色。
+- `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_CAMPUS_NAMES`：管理端鉴权配置；正式环境默认强制启用，支持管理员、陪跑师、只读角色，首个管理员可选绑定可访问校区。
 - `ADMIN_RATE_LIMIT_ENABLED` / `ADMIN_API_RATE_LIMIT` / `ADMIN_API_RATE_WINDOW_SECONDS` / `ADMIN_LOGIN_RATE_LIMIT` / `ADMIN_LOGIN_RATE_WINDOW_SECONDS`：管理端登录与控制端 API 限流配置；默认启用，设备心跳、领取任务和 RPA 回写接口不受影响。
 - `SEND_LOG_RETENTION_DAYS` / `SEND_SCREENSHOT_RETENTION_DAYS` / `RUNTIME_LOG_RETENTION_DAYS`：发送日志、截图证据、运行日志的保留天数；控制端可先预览，再显式确认清理。
 
@@ -180,6 +180,7 @@ http://127.0.0.1:8000
 - 运维排障或外部演示优先使用 `GET /api/ops/redacted-export` 导出脱敏快照，避免直接复制原始聊天和发送内容。
 - SQLite 原始备份会标记为 `raw_sensitive` / `contains_sensitive_data=true`，仍包含家长、孩子、聊天和发送内容，只能由管理员加密保存。
 - 陪跑师角色只返回自己负责的家庭及关联画像、周报、AI 输出、发送任务和发送日志；创建/更新家庭时也会强制绑定到本人，避免跨陪跑师误操作。
+- 管理员、陪跑师和只读账号可配置 `campus_names` 校区范围；配置后会和角色/陪跑师范围叠加，限制家庭、工作台、管理看板、网页测试会话及关联业务对象。
 - 家庭档案支持 `campus_name` 校区维度，导入、列表、工作台漏斗、今日优先级和服务质量看板可按校区聚合/过滤，控制端可直接切换校区筛选，便于多校区试点扩容。
 
 ## 控制端操作分层

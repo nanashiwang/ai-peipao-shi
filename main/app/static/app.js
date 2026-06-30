@@ -60,6 +60,11 @@ function userRoleBadge(user) {
   return badge(labels[user.role] || user.role, kind);
 }
 
+function userCampusText(user) {
+  const value = Array.isArray(user?.campus_names) ? user.campus_names.join("、") : user?.campus_names;
+  return String(value || "").trim();
+}
+
 // 把普通文本转成安全的 HTML 字符串，防止页面插入未转义内容。
 function esc(value) {
   return String(value ?? "")
@@ -771,8 +776,9 @@ function renderFamilies() {
 
 // 渲染网页通讯测试页。
 function renderWebChat() {
+  const campusText = userCampusText(state.currentUser);
   $("loginStatus").innerHTML = state.currentUser
-    ? `${userRoleBadge(state.currentUser)}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}</p>`
+    ? `${userRoleBadge(state.currentUser)}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}${campusText ? ` · 校区：${esc(campusText)}` : ""}</p>`
     : emptyState("请先登录测试账号", "登录陪跑师或家长账号后，可以在网页会话里测试 AI 回复闭环。");
   const rows = state.conversations.length ? state.conversations : state.families;
   $("chatConversations").innerHTML = rows.length ? rows.map((item) => `

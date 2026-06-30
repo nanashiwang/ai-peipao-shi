@@ -3,6 +3,7 @@ import unittest
 from app.services.admin_auth import (
     admin_auth_required,
     admin_auth_secret,
+    normalize_campus_names,
     path_requires_admin_auth,
     role_allowed_for_request,
     sign_admin_token,
@@ -29,10 +30,18 @@ class AdminAuthTest(unittest.TestCase):
 
         self.assertEqual(identity.username, "admin")
         self.assertEqual(identity.role, "admin")
+        self.assertEqual(identity.campus_names, ())
         with self.assertRaises(ValueError):
             verify_admin_token(token, "wrong", now=120)
         with self.assertRaises(ValueError):
             verify_admin_token(token, "secret", now=200)
+
+    def test_token_keeps_account_campus_scope(self):
+        token = sign_admin_token("ops", "readonly", "校区主管", "secret", campus_names="南坪校区，观音桥校区", now=100)
+        identity = verify_admin_token(token, "secret", now=120)
+
+        self.assertEqual(identity.campus_names, ("南坪校区", "观音桥校区"))
+        self.assertEqual(normalize_campus_names(["南坪校区", "南坪校区", " "]), ("南坪校区",))
 
     def test_protected_paths_and_role_permissions(self):
         self.assertFalse(path_requires_admin_auth("/health"))

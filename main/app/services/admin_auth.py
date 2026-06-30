@@ -38,6 +38,7 @@ class AdminIdentity:
     role: str
     display_name: str = ""
     exp: int = 0
+    campus_names: tuple[str, ...] = ()
 
 
 def admin_auth_required(env: dict | None = None) -> bool:
@@ -66,7 +67,27 @@ def _unb64(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
 
-def sign_admin_token(username: str, role: str, display_name: str, secret: str, ttl_seconds: int = 8 * 3600, now: int | None = None) -> str:
+def normalize_campus_names(value) -> tuple[str, ...]:
+    if not value:
+        return ()
+    raw_items = value if isinstance(value, (list, tuple, set)) else str(value).replace("，", ",").split(",")
+    names: list[str] = []
+    for item in raw_items:
+        name = str(item or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def sign_admin_token(
+    username: str,
+    role: str,
+    display_name: str,
+    secret: str,
+    ttl_seconds: int = 8 * 3600,
+    now: int | None = None,
+    campus_names=None,
+) -> str:
     if role not in ADMIN_ROLES:
         raise ValueError("非管理端角色不能签发控制端 token")
     issued_at = int(now if now is not None else time.time())
@@ -75,6 +96,7 @@ def sign_admin_token(username: str, role: str, display_name: str, secret: str, t
         "role": role,
         "display_name": display_name,
         "exp": issued_at + int(ttl_seconds),
+        "campus_names": list(normalize_campus_names(campus_names)),
     }
     payload_b64 = _b64(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
@@ -101,6 +123,7 @@ def verify_admin_token(token: str, secret: str, now: int | None = None) -> Admin
         role=role,
         display_name=str(payload.get("display_name", "")),
         exp=exp,
+        campus_names=normalize_campus_names(payload.get("campus_names")),
     )
 
 

@@ -65,6 +65,7 @@ def ensure_columns():
             ("satisfaction_level", "VARCHAR(20)"),
             ("renewal_intent", "VARCHAR(40)"),
         ],
+        "user_accounts": [("campus_names", "TEXT")],
     }
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())

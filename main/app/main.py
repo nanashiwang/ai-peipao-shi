@@ -55,6 +55,7 @@ from app.services.admin_auth import (
     admin_auth_required,
     admin_auth_secret,
     bearer_token,
+    normalize_campus_names,
     path_requires_admin_auth,
     role_allowed_for_request,
     sign_admin_token,
@@ -282,6 +283,7 @@ class AccountIn(BaseModel):
     password: str
     display_name: str = ""
     role: str = "parent"
+    campus_names: str = ""
     family_id: str = ""
 
 
@@ -391,34 +393,52 @@ def coach_scope_from_request(request: Request | None) -> str:
     return (identity.display_name or identity.username or "").strip()
 
 
+def campus_scope_from_request(request: Request | None) -> tuple[str, ...]:
+    identity = admin_identity_from_request(request)
+    return normalize_campus_names(identity.campus_names if identity else "")
+
+
 def coach_filter_for_request(request: Request | None, requested_coach: str = "") -> str:
     return coach_scope_from_request(request) or (requested_coach or "").strip()
 
 
+def family_scope_parts(request: Request | None) -> tuple[str, tuple[str, ...]]:
+    return coach_scope_from_request(request), campus_scope_from_request(request)
+
+
 def scoped_family_query(db: Session, request: Request | None = None):
     query = db.query(Family)
-    coach_name = coach_scope_from_request(request)
+    coach_name, campus_names = family_scope_parts(request)
     if coach_name:
         query = query.filter(Family.coach_name == coach_name)
+    if campus_names:
+        query = query.filter(Family.campus_name.in_(campus_names))
     return query
 
 
 def apply_family_id_scope(query, family_id_column, db: Session, request: Request | None = None):
-    coach_name = coach_scope_from_request(request)
-    if not coach_name:
+    coach_name, campus_names = family_scope_parts(request)
+    if not coach_name and not campus_names:
         return query
-    scoped_ids = db.query(Family.family_id).filter(Family.coach_name == coach_name)
+    scoped_ids = db.query(Family.family_id)
+    if coach_name:
+        scoped_ids = scoped_ids.filter(Family.coach_name == coach_name)
+    if campus_names:
+        scoped_ids = scoped_ids.filter(Family.campus_name.in_(campus_names))
     return query.filter(family_id_column.in_(scoped_ids))
 
 
 def ensure_family_access(family: Family | None, request: Request | None) -> None:
-    coach_name = coach_scope_from_request(request)
+    coach_name, campus_names = family_scope_parts(request)
     if coach_name and (not family or family.coach_name != coach_name):
         raise HTTPException(403, "当前陪跑师无权访问该家庭")
+    if campus_names and (not family or family.campus_name not in campus_names):
+        raise HTTPException(403, "当前账号无权访问该校区家庭")
 
 
 def ensure_family_id_access(db: Session, family_id: str, request: Request | None) -> None:
-    if not coach_scope_from_request(request):
+    coach_name, campus_names = family_scope_parts(request)
+    if not coach_name and not campus_names:
         return
     ensure_family_access(db.query(Family).filter(Family.family_id == family_id).one_or_none(), request)
 
@@ -436,6 +456,20 @@ def scoped_payload_coach_name(request: Request | None, coach_name: str) -> str:
             raise HTTPException(403, "陪跑师只能创建或维护自己负责的家庭")
         return scope
     return clean
+
+
+def scoped_payload_campus_name(request: Request | None, campus_name: str) -> str:
+    scope = campus_scope_from_request(request)
+    clean = (campus_name or "").strip()
+    if not scope:
+        return clean
+    if clean:
+        if clean not in scope:
+            raise HTTPException(403, "当前账号不能创建或维护其他校区家庭")
+        return clean
+    if len(scope) == 1:
+        return scope[0]
+    raise HTTPException(400, "当前账号绑定多个校区，请先选择家庭所属校区")
 
 
 def send_task_view(task: SendTask, request: Request | None = None) -> dict:
@@ -1055,7 +1089,7 @@ def account_payload(account: UserAccount) -> dict:
 def admin_account_payload(account: UserAccount) -> dict:
     data = account_payload(account)
     if account.role in ADMIN_ROLES:
-        data["admin_token"] = sign_admin_token(account.username, account.role, account.display_name, admin_auth_secret())
+        data["admin_token"] = sign_admin_token(account.username, account.role, account.display_name, admin_auth_secret(), campus_names=account.campus_names)
     return data
 
 
@@ -1084,15 +1118,16 @@ def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: st
     return family
 
 
-def ensure_account(db: Session, username: str, password: str, display_name: str, role: str, family_id: str = "") -> UserAccount:
+def ensure_account(db: Session, username: str, password: str, display_name: str, role: str, family_id: str = "", campus_names: str = "") -> UserAccount:
     account = db.query(UserAccount).filter(UserAccount.username == username).one_or_none()
     if account:
         account.password = password
         account.display_name = display_name
         account.role = role
         account.family_id = family_id
+        account.campus_names = campus_names
         return account
-    account = UserAccount(username=username, password=password, display_name=display_name, role=role, family_id=family_id)
+    account = UserAccount(username=username, password=password, display_name=display_name, role=role, family_id=family_id, campus_names=campus_names)
     db.add(account)
     db.flush()
     return account
@@ -1104,7 +1139,7 @@ def seed_bootstrap_admin(db: Session) -> None:
     if admin_auth_required():
         admin_auth_secret()
     if username and password:
-        ensure_account(db, username, password, os.getenv("ADMIN_DISPLAY_NAME", "系统管理员"), "admin")
+        ensure_account(db, username, password, os.getenv("ADMIN_DISPLAY_NAME", "系统管理员"), "admin", campus_names=os.getenv("ADMIN_CAMPUS_NAMES", ""))
     if admin_auth_required() and not db.query(UserAccount).filter(UserAccount.role == "admin").first():
         raise RuntimeError("管理端鉴权已启用，但没有 admin 账号；请设置 ADMIN_USERNAME/ADMIN_PASSWORD 完成首次引导。")
 
@@ -1183,6 +1218,7 @@ def register_account(payload: AccountIn, db: Session = Depends(get_db)):
         password=payload.password,
         display_name=payload.display_name or username,
         role=role,
+        campus_names=",".join(normalize_campus_names(payload.campus_names)),
         family_id=family_id,
     )
     db.add(account)
@@ -1216,6 +1252,7 @@ def admin_me(authorization: str = Header("")):
         "username": identity.username,
         "role": identity.role,
         "display_name": identity.display_name,
+        "campus_names": list(identity.campus_names),
         "expires_at": datetime.utcfromtimestamp(identity.exp).isoformat(sep=" ", timespec="seconds"),
     }
 
@@ -1226,9 +1263,9 @@ def list_accounts(db: Session = Depends(get_db)):
 
 
 @app.get("/api/test-chat/conversations")
-def list_test_conversations(db: Session = Depends(get_db)):
+def list_test_conversations(request: Request = None, db: Session = Depends(get_db)):
     rows = []
-    for family in db.query(Family).order_by(Family.family_id).all():
+    for family in scoped_family_query(db, request).order_by(Family.family_id).all():
         last = db.query(RawMessage).filter(RawMessage.family_id == family.family_id).order_by(RawMessage.message_time.desc()).first()
         rows.append(
             {
@@ -1242,15 +1279,15 @@ def list_test_conversations(db: Session = Depends(get_db)):
 
 
 @app.get("/api/test-chat/messages/{family_id}")
-def list_chat_messages(family_id: str, db: Session = Depends(get_db)):
-    require_family(db, family_id)
+def list_chat_messages(family_id: str, request: Request = None, db: Session = Depends(get_db)):
+    require_family_for_request(db, family_id, request)
     rows = db.query(RawMessage).filter(RawMessage.family_id == family_id).order_by(RawMessage.message_time).all()
     return [as_dict(item) for item in rows]
 
 
 @app.post("/api/test-chat/messages")
-def send_chat_message(payload: ChatMessageIn, db: Session = Depends(get_db)):
-    family = require_family(db, payload.family_id)
+def send_chat_message(payload: ChatMessageIn, request: Request = None, db: Session = Depends(get_db)):
+    family = require_family_for_request(db, payload.family_id, request)
     account = db.query(UserAccount).filter(UserAccount.username == payload.username.strip()).one_or_none()
     if not account:
         raise HTTPException(404, "账号不存在")
@@ -1338,7 +1375,7 @@ def seed_test_chat(db: Session = Depends(get_db)):
 @app.post("/api/test-chat/ai")
 def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Session = Depends(get_db)):
     started = perf_counter()
-    family = require_family(db, payload.family_id)
+    family = require_family_for_request(db, payload.family_id, request)
     context = build_agent_context(db, family.family_id)
     if not context["messages"]:
         raise HTTPException(404, "该会话还没有消息")
@@ -1375,7 +1412,7 @@ def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Sessio
 @app.post("/api/test-chat/reply")
 def generate_test_chat_reply(payload: ChatReplyIn, request: Request = None, db: Session = Depends(get_db)):
     started = perf_counter()
-    family = require_family(db, payload.family_id)
+    family = require_family_for_request(db, payload.family_id, request)
     context = build_agent_context(db, family.family_id)
     if not context["messages"]:
         raise HTTPException(404, "该会话还没有消息")
@@ -1476,10 +1513,11 @@ def upsert_family(payload: FamilyIn, request: Request = None, db: Session = Depe
         if payload.next_milestone:
             family.next_milestone = payload.next_milestone
         if payload.campus_name:
-            family.campus_name = payload.campus_name
+            family.campus_name = scoped_payload_campus_name(request, payload.campus_name)
         family.coach_name = coach_name
         family.service_status = payload.service_status
     else:
+        campus_name = scoped_payload_campus_name(request, payload.campus_name)
         family = Family(
             family_id=family_id,
             parent_nickname=target_name,
@@ -1489,7 +1527,7 @@ def upsert_family(payload: FamilyIn, request: Request = None, db: Session = Depe
             pbl_count=payload.pbl_count if payload.pbl_count is not None else 0,
             checkin_rate=payload.checkin_rate,
             next_milestone=payload.next_milestone,
-            campus_name=payload.campus_name,
+            campus_name=campus_name,
             coach_name=coach_name,
             service_status=payload.service_status,
         )
@@ -1627,12 +1665,15 @@ def latest_family_message(db: Session, family_id: str) -> RawMessage | None:
     )
 
 
-def family_scope_query(db: Session, coach_name: str = "", campus_name: str = ""):
+def family_scope_query(db: Session, coach_name: str = "", campus_name: str = "", campus_names: tuple[str, ...] | None = None):
     query = db.query(Family).order_by(Family.family_id)
     clean_coach = (coach_name or "").strip()
     clean_campus = (campus_name or "").strip()
+    scoped_campuses = normalize_campus_names(campus_names)
     if clean_campus:
         query = query.filter(Family.campus_name == clean_campus)
+    if scoped_campuses:
+        query = query.filter(Family.campus_name.in_(scoped_campuses))
     if clean_coach:
         query = query.filter(Family.coach_name == clean_coach)
     return query
@@ -1683,10 +1724,10 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
     return "正常", "暂无高优先级异常"
 
 
-def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None = None, family_limit: int = 8, campus_name: str = "") -> dict:
+def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None = None, family_limit: int = 8, campus_name: str = "", campus_names: tuple[str, ...] | None = None) -> dict:
     now = now or datetime.utcnow()
     buckets = {stage: [] for stage in SERVICE_FUNNEL_STAGES}
-    for family in family_scope_query(db, coach_name, campus_name).all():
+    for family in family_scope_query(db, coach_name, campus_name, campus_names).all():
         stage, reason = infer_family_service_stage(db, family, now)
         last_msg = latest_family_message(db, family.family_id)
         buckets[stage].append({
@@ -1729,7 +1770,7 @@ def todo_item(family: Family, reason: str, evidence: str = "", related_id: int =
     }
 
 
-def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None, campus_name: str = "") -> dict:
+def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None, campus_name: str = "", campus_names: tuple[str, ...] | None = None) -> dict:
     safe_limit = min(max(limit, 1), 30)
     categories = {
         "pbl_incomplete": {"label": "PBL未完成", "items": []},
@@ -1740,7 +1781,7 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
         "send_failed": {"label": "发送失败", "items": []},
     }
 
-    for family in family_scope_query(db, coach_name, campus_name).all():
+    for family in family_scope_query(db, coach_name, campus_name, campus_names).all():
         messages = (
             db.query(RawMessage)
             .filter(RawMessage.family_id == family.family_id)
@@ -1822,15 +1863,15 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
     }
 
 
-def build_workbench_overview(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None, campus_name: str = "") -> dict:
+def build_workbench_overview(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None, campus_name: str = "", campus_names: tuple[str, ...] | None = None) -> dict:
     now = now or datetime.utcnow()
     return {
-        "service_funnel": build_service_funnel(db, coach_name, now, limit, campus_name),
-        "todos": build_workbench_todos(db, coach_name, limit, now, campus_name),
+        "service_funnel": build_service_funnel(db, coach_name, now, limit, campus_name, campus_names),
+        "todos": build_workbench_todos(db, coach_name, limit, now, campus_name, campus_names),
     }
 
 
-def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now: datetime | None = None, campus_name: str = "") -> dict:
+def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now: datetime | None = None, campus_name: str = "", campus_names: tuple[str, ...] | None = None) -> dict:
     now = now or datetime.utcnow()
     rows = []
     totals = {
@@ -1847,7 +1888,7 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
     }
     grouped: dict[str, list[Family]] = {}
     campus_grouped: dict[str, list[Family]] = {}
-    for family in family_scope_query(db, coach_name, campus_name).all():
+    for family in family_scope_query(db, coach_name, campus_name, campus_names).all():
         grouped.setdefault(family.coach_name or "未分配", []).append(family)
         campus_grouped.setdefault(family.campus_name or "未分配校区", []).append(family)
 
@@ -1936,11 +1977,11 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
     }
 
 
-def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None, coach_name: str = "", campus_name: str = "") -> list[dict]:
+def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None, coach_name: str = "", campus_name: str = "", campus_names: tuple[str, ...] | None = None) -> list[dict]:
     now = now or datetime.utcnow()
     safe_limit = min(max(limit, 1), 50)
     items: list[dict] = []
-    families = family_scope_query(db, coach_name, campus_name).order_by(Family.family_id).all()
+    families = family_scope_query(db, coach_name, campus_name, campus_names).order_by(Family.family_id).all()
     for family in families:
         reasons: list[str] = []
         score = 0
@@ -2074,17 +2115,26 @@ def create_family_followup(family_id: str, payload: FollowupIn, request: Request
 
 @app.get("/api/workbench/today-priorities")
 def today_priorities(limit: int = 12, campus_name: str = "", request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_today_priorities(db, limit, coach_name=coach_filter_for_request(request), campus_name=campus_name), request)
+    return maybe_redact_for_request(
+        build_today_priorities(db, limit, coach_name=coach_filter_for_request(request), campus_name=campus_name, campus_names=campus_scope_from_request(request)),
+        request,
+    )
 
 
 @app.get("/api/workbench/overview")
 def workbench_overview(coach_name: str = "", campus_name: str = "", limit: int = 8, request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_workbench_overview(db, coach_filter_for_request(request, coach_name), limit, campus_name=campus_name), request)
+    return maybe_redact_for_request(
+        build_workbench_overview(db, coach_filter_for_request(request, coach_name), limit, campus_name=campus_name, campus_names=campus_scope_from_request(request)),
+        request,
+    )
 
 
 @app.get("/api/admin/service-quality")
 def admin_service_quality(coach_name: str = "", campus_name: str = "", request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_admin_service_quality_dashboard(db, coach_filter_for_request(request, coach_name), campus_name=campus_name), request)
+    return maybe_redact_for_request(
+        build_admin_service_quality_dashboard(db, coach_filter_for_request(request, coach_name), campus_name=campus_name, campus_names=campus_scope_from_request(request)),
+        request,
+    )
 
 
 @app.get("/api/agent/evaluations")

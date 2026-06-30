@@ -33,6 +33,7 @@ class UserAccount(Base):
     password: Mapped[str] = mapped_column(String(120), default="")
     display_name: Mapped[str] = mapped_column(String(120), default="")
     role: Mapped[str] = mapped_column(String(30), default="parent")
+    campus_names: Mapped[str] = mapped_column(Text, default="")
     family_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
