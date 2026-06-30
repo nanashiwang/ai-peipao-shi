@@ -340,7 +340,7 @@ function sendVerifyCell(log) {
 
 function canManualVerifyLog(log) {
   if (!isAdminUser() || (log.send_mode || "") !== "real_send") return false;
-  return !(log.status === "sent" && log.verify_status === "confirmed");
+  return log.manual_verify_allowed === true;
 }
 
 function manualVerifyLogActions(log) {

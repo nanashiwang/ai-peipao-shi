@@ -388,6 +388,7 @@ def as_dict(obj):
 def send_log_view(log: SendLog) -> dict:
     data = as_dict(log)
     data.update(classify_send_log(log.status, log.detail))
+    data.update(send_log_manual_verification_state(log))
     return data
 
 
@@ -890,6 +891,28 @@ REAL_SEND_AFTER_HOTKEY_TERMS = (
     "REAL_RPA",
     "发送结果未知",
 )
+REAL_SEND_MANUAL_CONFIRM_EVIDENCE_TERMS = REAL_SEND_AFTER_HOTKEY_TERMS + (
+    "SEND_CONFIRM_FAILED",
+    "VERIFY_PERSIST_FAILED",
+)
+
+
+def send_log_has_real_send_attempt_evidence(log: SendLog) -> bool:
+    if log.send_mode != "real_send":
+        return False
+    detail = f"{log.detail or ''}\n{log.verify_detail or ''}"
+    return log.status == "sent" or any(term in detail for term in REAL_SEND_MANUAL_CONFIRM_EVIDENCE_TERMS)
+
+
+def send_log_manual_verification_state(log: SendLog) -> dict:
+    is_confirmed = log.status == "sent" and log.verify_status == "confirmed"
+    has_attempt_evidence = send_log_has_real_send_attempt_evidence(log)
+    allowed = bool(log.send_mode == "real_send" and not is_confirmed and has_attempt_evidence)
+    return {
+        "manual_verify_allowed": allowed,
+        "manual_confirm_allowed": allowed,
+        "manual_verify_reason": "" if allowed else "仅真实发送热键已触发但自动回读未闭环的日志允许人工核验",
+    }
 
 
 def is_retryable_send_failure(task: SendTask, detail: str) -> bool:
@@ -3938,6 +3961,8 @@ def ensure_manual_send_log_verification_allowed(log: SendLog, request: Request |
         raise HTTPException(403, f"只有超管可以人工核验真实发送结果（当前角色：{role_label}）")
     if log.send_mode != "real_send":
         raise HTTPException(400, "只有企微真实发送日志需要人工核验")
+    if not send_log_has_real_send_attempt_evidence(log):
+        raise HTTPException(400, "该日志没有真实发送热键触发证据，不能人工标记为已发；请按原失败原因处理或重新下发")
 
 
 def manual_send_verify_detail(log: SendLog, confirmed: bool, detail: str) -> tuple[str, str]:

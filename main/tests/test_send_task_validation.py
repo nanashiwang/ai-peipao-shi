@@ -1622,6 +1622,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(task.status, "sent")
         self.assertIsNone(task.next_retry_at)
         self.assertEqual(task.last_error, "")
+        self.assertTrue(failed_log["manual_confirm_allowed"])
         self.assertEqual(result["log"]["status"], "sent")
         self.assertEqual(result["log"]["verify_status"], "confirmed")
         self.assertIn("回读已落库", result["log"]["verify_detail"])
@@ -1653,6 +1654,27 @@ class SendResultEvidenceTest(unittest.TestCase):
                 db=self.db,
             )
         self.assertEqual(detail_ctx.exception.status_code, 400)
+
+    def test_manual_verification_cannot_confirm_when_hotkey_was_not_triggered(self):
+        task = self.add_task()
+        skipped_log = record_send_result(
+            task.id,
+            SendResultIn(status="skipped", detail="REAL_SEND_GUARD: 控制端未开启该设备真实发送开关", device_id="rpa-01"),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException) as ctx:
+            manually_verify_send_log(
+                skipped_log["id"],
+                SendLogManualVerificationIn(confirmed=True, detail="误操作确认"),
+                request=admin_request("admin"),
+                db=self.db,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertFalse(skipped_log["manual_confirm_allowed"])
+        self.db.refresh(task)
+        self.assertNotEqual(task.status, "sent")
 
     def test_record_send_result_keeps_dry_run_mode(self):
         task = self.add_task()
