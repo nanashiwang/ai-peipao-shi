@@ -31,6 +31,7 @@ from app.models import (
     CheckinRecord,
     Device,
     Family,
+    FollowupRecord,
     ParentProfile,
     RawMessage,
     SendLog,
@@ -122,6 +123,16 @@ class TemplateIn(BaseModel):
 class ReportUpdate(BaseModel):
     final_text: str
     status: str = "approved"
+
+
+class FollowupIn(BaseModel):
+    followup_type: str = "私信"
+    content: str
+    result: str = ""
+    next_action: str = ""
+    owner: str = ""
+    status: str = "待跟进"
+    occurred_at: datetime | None = None
 
 
 # 直接创建发送任务时的输入结构。
@@ -879,6 +890,31 @@ def require_family(db: Session, family_id: str) -> Family:
     return family
 
 
+FOLLOWUP_TYPES = {"电话", "私信", "群提醒", "周报", "补课", "投诉", "续报沟通"}
+FOLLOWUP_STATUSES = {"待跟进", "已完成", "需升级"}
+
+
+def clean_followup_payload(payload: FollowupIn) -> dict:
+    followup_type = payload.followup_type.strip()
+    status = payload.status.strip()
+    content = payload.content.strip()
+    if followup_type not in FOLLOWUP_TYPES:
+        raise HTTPException(400, "跟进类型不合法")
+    if status not in FOLLOWUP_STATUSES:
+        raise HTTPException(400, "跟进状态不合法")
+    if not content:
+        raise HTTPException(400, "跟进内容不能为空")
+    return {
+        "followup_type": followup_type,
+        "status": status,
+        "content": content,
+        "result": payload.result.strip(),
+        "next_action": payload.next_action.strip(),
+        "owner": payload.owner.strip(),
+        "occurred_at": payload.occurred_at or datetime.utcnow(),
+    }
+
+
 def account_payload(account: UserAccount) -> dict:
     return {key: value for key, value in as_dict(account).items() if key != "password"}
 
@@ -1102,6 +1138,7 @@ def seed_test_chat(db: Session = Depends(get_db)):
         db.query(WeeklyReport).filter(WeeklyReport.family_id == family_id).delete()
         db.query(ParentProfile).filter(ParentProfile.family_id == family_id).delete()
         db.query(CheckinRecord).filter(CheckinRecord.family_id == family_id).delete()
+        db.query(FollowupRecord).filter(FollowupRecord.family_id == family_id).delete()
         db.query(RawMessage).filter(RawMessage.family_id == family_id).delete()
         db.query(Family).filter(Family.family_id == family_id).delete()
     for username in ["coach_yitong", "lin_mom", "zhou_dad", "chen_mom"]:
@@ -1379,6 +1416,24 @@ def build_family_timeline(db: Session, family_id: str, limit: int = 80) -> list[
             report.final_text or report.overall_state,
             status=report.status,
             related_id=report.id,
+        )
+
+    for record in db.query(FollowupRecord).filter(FollowupRecord.family_id == family_id).all():
+        detail = record.content
+        if record.result:
+            detail = f"{detail}\n结果：{record.result}"
+        if record.next_action:
+            detail = f"{detail}\n下一步：{record.next_action}"
+        add_timeline_item(
+            items,
+            "followup",
+            record.occurred_at,
+            f"跟进：{record.followup_type}",
+            detail,
+            status=record.status,
+            owner=record.owner,
+            created_by=record.created_by,
+            related_id=record.id,
         )
 
     for log in db.query(SendLog).filter(SendLog.family_id == family_id).all():
@@ -1805,11 +1860,13 @@ def family_detail(family_id: str, timeline_limit: int = 80, request: Request = N
     messages = db.query(RawMessage).filter(RawMessage.family_id == family_id).order_by(RawMessage.message_time).all()
     profile = db.query(ParentProfile).filter(ParentProfile.family_id == family_id).one_or_none()
     reports = db.query(WeeklyReport).filter(WeeklyReport.family_id == family_id).order_by(WeeklyReport.id.desc()).all()
+    followups = db.query(FollowupRecord).filter(FollowupRecord.family_id == family_id).order_by(FollowupRecord.occurred_at.desc()).all()
     data = {
         "family": as_dict(family),
         "messages": [as_dict(m) for m in messages],
         "profile": as_dict(profile) if profile else None,
         "reports": [as_dict(r) for r in reports],
+        "followups": [as_dict(r) for r in followups],
         "timeline": build_family_timeline(db, family_id, timeline_limit),
     }
     return maybe_redact_for_request(data, request)
@@ -1819,6 +1876,27 @@ def family_detail(family_id: str, timeline_limit: int = 80, request: Request = N
 def family_timeline(family_id: str, limit: int = 80, request: Request = None, db: Session = Depends(get_db)):
     require_family(db, family_id)
     return maybe_redact_for_request(build_family_timeline(db, family_id, limit), request)
+
+
+@app.get("/api/followups")
+def list_followups(family_id: str = "", status: str = "", request: Request = None, db: Session = Depends(get_db)):
+    query = db.query(FollowupRecord)
+    if family_id:
+        query = query.filter(FollowupRecord.family_id == family_id)
+    if status:
+        query = query.filter(FollowupRecord.status == status)
+    rows = query.order_by(FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc()).all()
+    return maybe_redact_for_request([as_dict(item) for item in rows], request)
+
+
+@app.post("/api/families/{family_id}/followups")
+def create_family_followup(family_id: str, payload: FollowupIn, request: Request = None, db: Session = Depends(get_db)):
+    family = require_family(db, family_id)
+    data = clean_followup_payload(payload)
+    record = FollowupRecord(family_id=family.family_id, created_by=actor_from_request(request), **data)
+    db.add(record)
+    db.commit()
+    return maybe_redact_for_request(as_dict(record), request)
 
 
 @app.get("/api/workbench/today-priorities")
@@ -2864,6 +2942,7 @@ def ops_redacted_export(db: Session = Depends(get_db)):
         "generated_at": datetime.utcnow().isoformat(sep=" ", timespec="seconds"),
         "families": [as_dict(item) for item in db.query(Family).order_by(Family.family_id).all()],
         "messages": [as_dict(item) for item in db.query(RawMessage).order_by(RawMessage.id).limit(500).all()],
+        "followups": [as_dict(item) for item in db.query(FollowupRecord).order_by(FollowupRecord.id.desc()).limit(500).all()],
         "send_tasks": [as_dict(item) for item in db.query(SendTask).order_by(SendTask.id.desc()).limit(500).all()],
         "send_logs": [send_log_view(item) for item in db.query(SendLog).order_by(SendLog.id.desc()).limit(500).all()],
         "ai_outputs": [as_dict(item) for item in db.query(AIOutput).order_by(AIOutput.id.desc()).limit(500).all()],

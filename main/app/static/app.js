@@ -140,6 +140,21 @@ function stageProfile(family) {
   `;
 }
 
+function followupRecords(records = []) {
+  return records.length ? records.slice(0, 8).map((item) => `
+    <article class="followup-card followup-${esc(item.status)}">
+      <div class="timeline-head">
+        ${badge(item.followup_type || "跟进", item.status === "已完成" ? "ok" : item.status === "需升级" ? "danger" : "warn")}
+        <strong>${esc(item.owner || item.created_by || "未分配")}</strong>
+        <time>${esc(item.occurred_at || "")}</time>
+      </div>
+      <p>${esc(item.content)}</p>
+      ${item.result ? `<p class="muted">结果：${esc(item.result)}</p>` : ""}
+      ${item.next_action ? `<p class="muted">下一步：${esc(item.next_action)}</p>` : ""}
+    </article>
+  `).join("") : emptyState("暂无跟进记录", "电话、私信、群提醒、补课、投诉和续报沟通会沉淀在这里。");
+}
+
 function statePanel(kind, title, detail = "", actionHtml = "") {
   const labels = { empty: "空状态", loading: "加载中", error: "错误", risk: "风险" };
   return `
@@ -357,6 +372,7 @@ function timelineKind(kind) {
     checkin: "打卡",
     ai_output: "AI",
     weekly_report: "周报",
+    followup: "跟进",
     send_log: "发送",
   })[kind] || kind;
 }
@@ -372,7 +388,7 @@ function timelineCard(item) {
   return `
     <article class="timeline-item timeline-${esc(item.kind)}">
       <div class="timeline-head">
-        ${badge(timelineKind(item.kind), item.kind === "send_log" || item.kind === "checkin" ? "ok" : "")}
+        ${badge(timelineKind(item.kind), item.kind === "send_log" || item.kind === "checkin" || item.kind === "followup" ? "ok" : "")}
         <strong>${esc(item.title)}</strong>
         <time>${esc(item.occurred_at)}</time>
       </div>
@@ -863,6 +879,7 @@ async function refreshFamilyDetail() {
   const data = await api(`/api/families/${encodeURIComponent(state.selectedFamilyId)}`);
   const outputs = state.outputs.filter((item) => item.family_id === state.selectedFamilyId).slice(0, 4);
   const timeline = data.timeline || [];
+  const followups = data.followups || [];
   $("familyDetail").innerHTML = `
     <section class="profile-pane">
       <h3>${esc(data.family.parent_nickname || data.family.family_id)}</h3>
@@ -880,6 +897,29 @@ async function refreshFamilyDetail() {
       ` : emptyState("暂无画像", "点击右侧“生成画像”，系统会基于聊天记录提炼沟通风格、风险和建议动作。")}
     </section>
     <section>
+      <h3>跟进记录</h3>
+      <form class="compact-form followup-form" onsubmit="addFollowup(event, '${esc(data.family.family_id)}')">
+        <select name="followup_type">
+          <option>电话</option>
+          <option selected>私信</option>
+          <option>群提醒</option>
+          <option>周报</option>
+          <option>补课</option>
+          <option>投诉</option>
+          <option>续报沟通</option>
+        </select>
+        <input name="owner" placeholder="负责人，可空" value="${esc(data.family.coach_name || "")}" />
+        <textarea name="content" placeholder="记录本次跟进内容" required></textarea>
+        <input name="result" placeholder="结果/结论，可空" />
+        <input name="next_action" placeholder="下一步动作，可空" />
+        <select name="status">
+          <option>待跟进</option>
+          <option>已完成</option>
+          <option>需升级</option>
+        </select>
+        <button>记录跟进</button>
+      </form>
+      <div class="followup-list">${followupRecords(followups)}</div>
       <h3>家庭时间线</h3>
       <div class="timeline">${timeline.map(timelineCard).join("") || emptyState("暂无时间线事件", "聊天、打卡、周报和发送日志会统一沉淀到这里。")}</div>
     </section>
@@ -1380,6 +1420,21 @@ async function sendTaskFromChat(id) {
     toast("已发送到当前会话");
     await refreshAll();
     switchTab("webChat");
+  });
+}
+
+async function addFollowup(event, familyId) {
+  event.preventDefault();
+  await withAction("记录跟进", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    await api(`/api/families/${encodeURIComponent(familyId)}/followups`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    event.target.reset();
+    toast("跟进记录已保存");
+    await refreshAll();
   });
 }
 

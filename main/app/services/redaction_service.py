@@ -19,6 +19,8 @@ NAME_KEYS = {
     "coach_name",
     "display_name",
     "username",
+    "owner",
+    "created_by",
 }
 CHILD_KEYS = {
     "child_grade",
@@ -60,6 +62,8 @@ CONTENT_KEYS = {
     "latest_message",
     "last_message",
     "message",
+    "result",
+    "next_action",
 }
 
 

@@ -85,6 +85,23 @@ class CheckinRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+# 跟进记录表，记录电话、私信、群提醒、补课、投诉和续报沟通等人工服务动作。
+class FollowupRecord(Base):
+    __tablename__ = "followup_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(64), index=True)
+    followup_type: Mapped[str] = mapped_column(String(40), default="私信")
+    content: Mapped[str] = mapped_column(Text, default="")
+    result: Mapped[str] = mapped_column(Text, default="")
+    next_action: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(80), default="")
+    status: Mapped[str] = mapped_column(String(30), default="待跟进")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # 周报表，保存 Agent 生成的结构化周报和最终文本。
 class WeeklyReport(Base):
     __tablename__ = "weekly_reports"
