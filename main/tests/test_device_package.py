@@ -52,6 +52,8 @@ class DevicePackageTest(unittest.TestCase):
         self.assertEqual(config["device_id"], "rpa-01")
         self.assertFalse(config["allow_real_send"])
         self.assertTrue(config["dry_run"])
+        self.assertEqual(config["post_send_verify_attempts"], 3)
+        self.assertEqual(config["post_send_verify_retry_interval_seconds"], 1.2)
         self.assertTrue(config["post_send_verify_reopen_conversation"])
         self.assertTrue(config["post_send_verify_compare_before_after"])
         self.assertEqual(config["post_send_verify_recent_count"], 12)

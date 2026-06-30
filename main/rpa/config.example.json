@@ -83,6 +83,8 @@
   "verify_block_on_mismatch": true,
   "verify_sent_message_enabled": true,
   "post_send_verify_wait_seconds": 0.8,
+  "post_send_verify_attempts": 3,
+  "post_send_verify_retry_interval_seconds": 1.2,
   "post_send_verify_reopen_conversation": true,
   "post_send_verify_compare_before_after": true,
   "post_send_verify_recent_count": 12,
