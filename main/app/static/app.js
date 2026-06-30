@@ -372,7 +372,15 @@ function taskReadinessCell(task) {
   const reasons = Array.isArray(readiness.reasons) && readiness.reasons.length
     ? `<p class="muted">${esc(readiness.reasons.join("；")).slice(0, 160)}</p>`
     : "";
-  return `${badge(readiness.label || "未检查", kind)}${reasons}`;
+  const actions = Array.isArray(readiness.actions) ? readiness.actions : [];
+  const buttons = actions.map((action) => {
+    if (action.action !== "queue_conversation_check") return "";
+    const label = action.existing_task_id ? `证明校验中 #${action.existing_task_id}` : (action.label || "刷新会话证明");
+    const disabled = action.available === false ? "disabled" : "";
+    return `<button ${disabled} onclick="queueConversationProof('${esc(action.device_id)}', '${esc(action.target_name)}', '${esc(action.family_id || manualTaskFamilyId(action.target_name))}', '任务发送前刷新证明')">${esc(label)}</button>`;
+  }).filter(Boolean).join("");
+  const actionHtml = buttons ? `<div class="cell-actions">${buttons}</div>` : "";
+  return `${badge(readiness.label || "未检查", kind)}${reasons}${actionHtml}`;
 }
 
 function sendModeSelect(task) {

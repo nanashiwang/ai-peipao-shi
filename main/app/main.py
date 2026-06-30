@@ -1056,6 +1056,46 @@ def device_conversation_recently_verified(db: Session, dev: Device, target_name:
     return not device_conversation_proof_reason(db, dev, target_name, now)
 
 
+def active_conversation_check_task(db: Session, dev: Device, target_name: str) -> SendTask | None:
+    return (
+        db.query(SendTask)
+        .filter(
+            SendTask.device_id == dev.device_id,
+            SendTask.target_name == target_name,
+            SendTask.scene == CONVERSATION_CHECK_SCENE,
+            SendTask.status.in_(["pending", "assigned"]),
+        )
+        .order_by(SendTask.id.desc())
+        .first()
+    )
+
+
+def build_conversation_check_action(
+    db: Session,
+    dev: Device,
+    target_name: str,
+    family_id: str = "",
+    now: datetime | None = None,
+) -> dict | None:
+    clean_target = (target_name or "").strip()
+    if not clean_target or (not dev.allow_any_conversation and clean_target not in device_conversations(dev)):
+        return None
+    proof_reason = device_conversation_proof_reason(db, dev, clean_target, now)
+    if not proof_reason:
+        return None
+    existing_check = active_conversation_check_task(db, dev, clean_target)
+    return {
+        "action": "queue_conversation_check",
+        "label": "刷新会话证明",
+        "device_id": dev.device_id,
+        "target_name": clean_target,
+        "family_id": (family_id or f"WECOM_{clean_target}")[:64],
+        "reason": proof_reason,
+        "existing_task_id": existing_check.id if existing_check else None,
+        "available": existing_check is None,
+    }
+
+
 def device_conversation_proof_summary(db: Session, dev: Device, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     targets = device_conversations(dev)
@@ -1102,14 +1142,15 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
     """给控制端展示任务能否被指定设备稳定执行，不改变调度结果。"""
     now = now or datetime.utcnow()
     reasons: list[str] = []
+    actions: list[dict] = []
     mode = send_log_mode(task)
     status = (task.status or "pending").strip()
     if status == "sent":
-        return {"status": "done", "label": "已发送归档", "reasons": []}
+        return {"status": "done", "label": "已发送归档", "reasons": [], "actions": []}
     if status == "cancelled":
-        return {"status": "done", "label": "已取消", "reasons": []}
+        return {"status": "done", "label": "已取消", "reasons": [], "actions": []}
     if status == "failed":
-        return {"status": "review", "label": "失败待复核", "reasons": [task.last_error or "需要人工复核后重试"]}
+        return {"status": "review", "label": "失败待复核", "reasons": [task.last_error or "需要人工复核后重试"], "actions": []}
     if task.next_retry_at and task.next_retry_at > now:
         reasons.append(f"等待同设备自动重试：{timeline_time(task.next_retry_at)}")
 
@@ -1133,16 +1174,20 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
         if not dev.allow_any_conversation and task.target_name not in device_conversations(dev):
             reasons.append(f"目标「{task.target_name}」不在设备「{dev.device_id}」负责会话内")
         if mode == "real_send":
-            append_reason(reasons, device_conversation_proof_reason(db, dev, task.target_name, now))
+            proof_reason = device_conversation_proof_reason(db, dev, task.target_name, now)
+            append_reason(reasons, proof_reason)
+            proof_action = build_conversation_check_action(db, dev, task.target_name, task.family_id, now)
+            if proof_action:
+                actions.append(proof_action)
     if status == "assigned" and task.scheduled_at and task.scheduled_at < now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS):
         reasons.append("任务已被该设备领取但超时未回写，等待同设备回收重试")
 
     if reasons:
         label = "等待设备就绪" if any("等待" in item or "不在线" in item for item in reasons) else "发送前需处理"
-        return {"status": "blocked" if mode == "real_send" else "warn", "label": label, "reasons": reasons}
+        return {"status": "blocked" if mode == "real_send" else "warn", "label": label, "reasons": reasons, "actions": actions}
     if mode == "real_send":
-        return {"status": "ready", "label": "真实发送条件就绪", "reasons": []}
-    return {"status": "ready", "label": "试运行条件就绪", "reasons": []}
+        return {"status": "ready", "label": "真实发送条件就绪", "reasons": [], "actions": []}
+    return {"status": "ready", "label": "试运行条件就绪", "reasons": [], "actions": []}
 
 
 def requeue_stale_assigned_tasks(
@@ -1244,21 +1289,7 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
     readiness = send_task_readiness(db, task)
     for reason in readiness.get("reasons", []):
         append_reason(reasons, reason)
-    conversation_check_hint = None
-    target_in_device_scope = bool(dev and (dev.allow_any_conversation or target_name in device_conversations(dev)))
-    if mode == "real_send" and dev and target_name and target_in_device_scope:
-        proof_reason = device_conversation_proof_reason(db, dev, target_name)
-        if proof_reason:
-            existing_check = active_conversation_check_task(db, dev, target_name)
-            conversation_check_hint = {
-                "action": "queue_conversation_check",
-                "device_id": dev.device_id,
-                "target_name": target_name,
-                "family_id": (payload.family_id or f"WECOM_{target_name}")[:64],
-                "reason": proof_reason,
-                "existing_task_id": existing_check.id if existing_check else None,
-                "available": existing_check is None,
-            }
+    conversation_check_hint = build_conversation_check_action(db, dev, target_name, payload.family_id) if mode == "real_send" and dev else None
     ok = not reasons and readiness.get("status") == "ready"
     label = "发送预检通过" if ok else (readiness.get("label") or "发送预检未通过")
     return {
@@ -4057,20 +4088,6 @@ def queue_device_conversation_check(
     )
     db.commit()
     return send_task_view(task, request, db)
-
-
-def active_conversation_check_task(db: Session, dev: Device, target_name: str) -> SendTask | None:
-    return (
-        db.query(SendTask)
-        .filter(
-            SendTask.device_id == dev.device_id,
-            SendTask.target_name == target_name,
-            SendTask.scene == CONVERSATION_CHECK_SCENE,
-            SendTask.status.in_(["pending", "assigned"]),
-        )
-        .order_by(SendTask.id.desc())
-        .first()
-    )
 
 
 def create_conversation_check_task(

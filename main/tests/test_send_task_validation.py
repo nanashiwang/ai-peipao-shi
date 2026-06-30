@@ -1054,12 +1054,43 @@ class ClaimTaskGuardTest(unittest.TestCase):
         row = list_send_tasks(db=self.db)[0]
         self.assertEqual(row["send_readiness"]["status"], "blocked")
         self.assertIn("没有成功读取目标", "；".join(row["send_readiness"]["reasons"]))
+        self.assertEqual(row["send_readiness"]["actions"][0]["action"], "queue_conversation_check")
+        self.assertEqual(row["send_readiness"]["actions"][0]["target_name"], "一合学社")
+        self.assertTrue(row["send_readiness"]["actions"][0]["available"])
 
         self.add_conversation_proof()
         row = list_send_tasks(db=self.db)[0]
 
         self.assertEqual(row["send_readiness"]["status"], "ready")
         self.assertEqual(row["send_readiness"]["label"], "真实发送条件就绪")
+        self.assertEqual(row["send_readiness"]["actions"], [])
+
+    def test_task_readiness_check_action_points_to_existing_check_task(self):
+        task = SendTask(
+            family_id="f-ready",
+            target_name="一合学社",
+            scene="real",
+            content="准备度检查",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.add(task)
+        self.db.commit()
+        existing = queue_device_conversation_check(
+            "dev-a",
+            DeviceConversationCheckRequestIn(target_name="一合学社", family_id="WECOM_一合学社"),
+            db=self.db,
+        )
+
+        row = [item for item in list_send_tasks(db=self.db) if item["id"] == task.id][0]
+
+        self.assertEqual(row["send_readiness"]["status"], "blocked")
+        self.assertFalse(row["send_readiness"]["actions"][0]["available"])
+        self.assertEqual(row["send_readiness"]["actions"][0]["existing_task_id"], existing["id"])
 
     def test_preflight_blocks_real_send_before_task_creation_until_ready(self):
         blocked = build_send_task_preflight(
