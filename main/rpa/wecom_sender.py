@@ -1973,6 +1973,25 @@ def reopen_target_for_post_send_verify(window, target: str, config: dict, stage:
         search_conversation(window, target, config)
         add_send_trace(config, f"{stage}已重新进入目标会话校验")
     verify_active_conversation(window, target, config)
+    scroll_chat_to_bottom_for_post_send_verify(window, config, stage)
+
+
+def scroll_chat_to_bottom_for_post_send_verify(window, config: dict, stage: str) -> None:
+    if not config.get("post_send_verify_scroll_to_bottom", True):
+        return
+    try:
+        rect = window.rectangle()
+        rx = float(config.get("post_send_verify_scroll_ratio_x", 0.72))
+        ry = float(config.get("post_send_verify_scroll_ratio_y", 0.70))
+        x = int(rect.left + rx * rect.width())
+        y = int(rect.top + ry * rect.height())
+        wheel_dist = -abs(int(config.get("post_send_verify_scroll_wheel_dist", 6) or 6))
+        ensure_foreground_wecom(window, config)
+        mouse.scroll(coords=(x, y), wheel_dist=wheel_dist)
+        time.sleep(float(config.get("post_send_verify_scroll_wait_seconds", 0.3)))
+        add_send_trace(config, f"{stage}已滚动到底部")
+    except Exception as exc:
+        add_send_trace(config, f"{stage}滚动到底部异常:{exc}")
 
 
 def build_confirmed_verification(
