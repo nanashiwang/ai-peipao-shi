@@ -230,6 +230,8 @@ class HeartbeatIn(BaseModel):
     wecom_ok: str = ""
     detail: str = ""
     conversations: list[str] = []
+    outbox_pending_count: int = 0
+    outbox_last_error: str = ""
 
 
 class RetentionPruneIn(BaseModel):
@@ -970,7 +972,7 @@ def device_online(dev: Device, now: datetime | None = None) -> bool:
 
 
 def device_ready_for_real_send(dev: Device, now: datetime | None = None) -> bool:
-    return bool(dev.allow_real_send and device_online(dev, now) and dev.wecom_ok == "Y")
+    return bool(dev.allow_real_send and device_online(dev, now) and dev.wecom_ok == "Y" and (dev.outbox_pending_count or 0) == 0)
 
 
 def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None) -> dict:
@@ -1001,6 +1003,8 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
             reasons.append(f"设备「{dev.device_id}」企微状态异常：{dev.wecom_ok or '未知'}")
         if mode == "real_send" and not dev.allow_real_send:
             reasons.append(f"设备「{dev.device_id}」真实发送开关未开启")
+        if mode == "real_send" and (dev.outbox_pending_count or 0) > 0:
+            reasons.append(f"设备「{dev.device_id}」还有 {dev.outbox_pending_count} 条发送结果待补传，已暂停领取新真实发送任务")
         if not dev.allow_any_conversation and task.target_name not in device_conversations(dev):
             reasons.append(f"目标「{task.target_name}」不在设备「{dev.device_id}」负责会话内")
     if status == "assigned" and task.scheduled_at and task.scheduled_at < now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS):
@@ -3681,6 +3685,8 @@ def device_view(dev: Device, db: Session) -> dict:
     data["task_counts"] = counts
     data["real_send_policy_label"] = "允许真实发送" if dev.allow_real_send else "仅试运行"
     data["conversation_scope_label"] = "全会话" if dev.allow_any_conversation else "白名单会话"
+    data["outbox_blocked"] = bool((dev.outbox_pending_count or 0) > 0)
+    data["outbox_status_label"] = f"结果待补传 {dev.outbox_pending_count} 条" if data["outbox_blocked"] else "结果已同步"
     return data
 
 
@@ -3838,6 +3844,8 @@ def device_heartbeat(device_id: str, payload: HeartbeatIn, dev: Device = Depends
     dev.status = "online"
     dev.wecom_ok = payload.wecom_ok or dev.wecom_ok
     dev.last_error = payload.detail
+    dev.outbox_pending_count = max(int(payload.outbox_pending_count or 0), 0)
+    dev.outbox_last_error = (payload.outbox_last_error or "")[:500]
     if payload.conversations:
         dev.conversations = json.dumps(payload.conversations, ensure_ascii=False)
     db.commit()

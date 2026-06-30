@@ -85,7 +85,12 @@ def ensure_columns():
             ("renewal_intent", "VARCHAR(40)"),
         ],
         "user_accounts": [("campus_names", "TEXT")],
-        "devices": [("allow_real_send", "BOOLEAN"), ("allow_any_conversation", "BOOLEAN")],
+        "devices": [
+            ("allow_real_send", "BOOLEAN"),
+            ("allow_any_conversation", "BOOLEAN"),
+            ("outbox_pending_count", "INTEGER"),
+            ("outbox_last_error", "TEXT"),
+        ],
     }
     inspector = inspect(engine)
     dialect_name = engine.dialect.name
@@ -115,6 +120,7 @@ def ensure_columns():
                     "renewal_intent": "'未知'",
                     "allow_real_send": "FALSE",
                     "allow_any_conversation": "FALSE",
+                    "outbox_pending_count": "0",
                 }.get(col_name, "''")
                 safe_type = portable_column_type(col_type, dialect_name)
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {safe_type} DEFAULT {default}"))

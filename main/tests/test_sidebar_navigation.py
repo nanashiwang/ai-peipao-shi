@@ -78,6 +78,9 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("allow_any_conversation", js)
         self.assertIn("开启真发", js)
         self.assertIn("开启全会话", js)
+        self.assertIn("deviceOutboxStatus", js)
+        self.assertIn("outbox_pending_count", js)
+        self.assertIn("结果补传", js)
 
     def test_control_auth_page_exposes_login_and_first_admin_registration(self):
         html = Path("app/static/index.html").read_text(encoding="utf-8")

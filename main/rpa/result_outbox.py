@@ -73,6 +73,17 @@ def load_result_record(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def outbox_last_error(config: dict, root: Path) -> str:
+    files = pending_result_files(config, root)
+    if not files:
+        return ""
+    try:
+        record = load_result_record(files[0])
+    except Exception as exc:
+        return f"无法读取结果补传队列：{exc}"
+    return str(record.get("last_error") or "")
+
+
 def mark_result_retry(path: Path, record: dict, error: str) -> None:
     record = {**record}
     record["attempts"] = int(record.get("attempts") or 0) + 1

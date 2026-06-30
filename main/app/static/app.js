@@ -1392,6 +1392,15 @@ function deviceConversationScopeControl(device) {
   `;
 }
 
+function deviceOutboxStatus(device) {
+  const pending = Number(device.outbox_pending_count || 0);
+  if (pending <= 0) {
+    return badge(device.outbox_status_label || "结果已同步", "ok");
+  }
+  const detail = device.outbox_last_error ? `<p class="muted">${esc(device.outbox_last_error)}</p>` : "";
+  return `${badge(device.outbox_status_label || `待补传 ${pending} 条`, "danger")}${detail}`;
+}
+
 // 渲染设备监控列表。
 function renderDevices() {
   $("deviceTable").innerHTML = table([
@@ -1399,6 +1408,7 @@ function renderDevices() {
     { label: "名称", key: "name" },
     { label: "在线", render: (r) => badge(r.online ? "在线" : "离线", r.online ? "ok" : "") },
     { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
+    { label: "结果补传", render: deviceOutboxStatus },
     { label: "真实发送开关", render: deviceRealSendControl },
     { label: "会话范围", render: deviceConversationScopeControl },
     { label: "最后心跳", key: "last_heartbeat" },

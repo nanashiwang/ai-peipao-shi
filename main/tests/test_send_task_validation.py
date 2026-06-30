@@ -14,6 +14,7 @@ from app.db import Base
 from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
     DeviceUpdateIn,
+    HeartbeatIn,
     SendResultIn,
     SendTaskIn,
     SendTaskPreflightIn,
@@ -24,6 +25,7 @@ from app.main import (
     cancel_send_task,
     claim_tasks,
     create_send_task,
+    device_heartbeat,
     list_audit_logs,
     list_send_tasks,
     queue_task_dry_run,
@@ -765,6 +767,54 @@ class ClaimTaskGuardTest(unittest.TestCase):
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
+
+    def test_real_send_claim_waits_until_device_outbox_is_flushed(self):
+        task = SendTask(
+            family_id="f-real-outbox",
+            target_name="一合学社",
+            scene="real",
+            content="补传队列清空后才可领取",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add(task)
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.dev.outbox_pending_count = 1
+        self.dev.outbox_last_error = "network down"
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+        row = list_send_tasks(db=self.db)[0]
+        self.assertEqual(row["send_readiness"]["status"], "blocked")
+        self.assertIn("发送结果待补传", "；".join(row["send_readiness"]["reasons"]))
+
+        self.dev.outbox_pending_count = 0
+        self.db.commit()
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
+
+    def test_heartbeat_persists_outbox_state_for_device_monitoring(self):
+        result = device_heartbeat(
+            "dev-a",
+            HeartbeatIn(
+                wecom_ok="Y",
+                conversations=["一合学社"],
+                outbox_pending_count=2,
+                outbox_last_error="API connection failed",
+            ),
+            dev=self.dev,
+            db=self.db,
+        )
+
+        self.db.refresh(self.dev)
+        self.assertEqual(self.dev.outbox_pending_count, 2)
+        self.assertEqual(self.dev.outbox_last_error, "API connection failed")
+        self.assertTrue(result["outbox_blocked"])
+        self.assertIn("2", result["outbox_status_label"])
 
     def test_task_readiness_explains_real_send_blocks_and_ready_state(self):
         task = SendTask(

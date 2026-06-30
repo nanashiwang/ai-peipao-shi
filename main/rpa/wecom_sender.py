@@ -26,6 +26,7 @@ try:
         enqueue_result,
         load_result_record,
         mark_result_retry,
+        outbox_last_error,
         pending_result_count,
         new_client_result_id,
         pending_result_files,
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
         enqueue_result,
         load_result_record,
         mark_result_retry,
+        outbox_last_error,
         pending_result_count,
         new_client_result_id,
         pending_result_files,
@@ -2090,7 +2092,13 @@ def send_heartbeat(config: dict):
         wecom_ok = "Y" if wins else "N"
     except Exception:
         wecom_ok = "N"
-    payload = {"wecom_ok": wecom_ok, "detail": "", "conversations": watched_conversations(config)}
+    payload = {
+        "wecom_ok": wecom_ok,
+        "detail": "",
+        "conversations": watched_conversations(config),
+        "outbox_pending_count": pending_result_count(config, ROOT) if config.get("result_outbox_enabled", True) else 0,
+        "outbox_last_error": outbox_last_error(config, ROOT) if config.get("result_outbox_enabled", True) else "",
+    }
     try:
         response = request_json(config["api_base_url"], f"/api/devices/{device_id}/heartbeat",
                                 method="POST", payload=payload, extra_headers=device_headers(config))
