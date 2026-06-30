@@ -507,6 +507,39 @@ class SendTaskAuditLogTest(unittest.TestCase):
         actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
         self.assertIn("queue_dry_run", actions)
 
+    def test_coach_can_queue_real_send_task_dry_run_without_edit_permission(self):
+        task = create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="\u4e00\u5408\u5b66\u793e",
+                scene="test",
+                content="\u5148\u8bd5\u8fd0\u884c\u5185\u5bb9",
+                send_mode="real_send",
+                confirm_real_send=True,
+            ),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException):
+            update_send_task(
+                task["id"],
+                SendTaskUpdate(
+                    family_id="f1",
+                    target_name="\u4e00\u5408\u5b66\u793e",
+                    scene="test",
+                    content="\u5148\u8bd5\u8fd0\u884c\u5185\u5bb9",
+                    send_mode="dry_run",
+                    status="pending",
+                ),
+                request=admin_request("coach"),
+                db=self.db,
+            )
+
+        result = queue_task_dry_run(task["id"], request=admin_request("coach"), db=self.db)
+
+        self.assertEqual(result["send_mode"], "dry_run")
+        self.assertEqual(result["status"], "pending")
+
     def test_queue_dry_run_rejects_finished_task(self):
         task = create_send_task(
             SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u8bd5\u8fd0\u884c\u5185\u5bb9"),

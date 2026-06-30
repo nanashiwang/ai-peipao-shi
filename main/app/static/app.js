@@ -1656,17 +1656,23 @@ async function queueTaskDryRun(id) {
   return withAction("企微试运行", async () => {
     const task = state.tasks.find((item) => item.id === id);
     const editor = $(`task-${id}`);
-    await api(`/api/send-tasks/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...task,
-        content: editor?.value || task?.content || "",
-        device_id: $(`task-device-${id}`)?.value || "",
-        send_mode: "dry_run",
-        status: "pending",
-      }),
-    });
+    const nextContent = editor?.value || task?.content || "";
+    const nextDeviceId = $(`task-device-${id}`)?.value || "";
+    const needsContentSave = taskCan(task, "edit") && nextContent !== (task?.content || "");
+    const needsDeviceSave = taskCan(task, "assign_device") && nextDeviceId !== (task?.device_id || "");
+    if (needsContentSave || needsDeviceSave) {
+      await api(`/api/send-tasks/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...task,
+          content: nextContent,
+          device_id: nextDeviceId,
+          send_mode: "dry_run",
+          status: "pending",
+        }),
+      });
+    }
     await api(`/api/send-tasks/${id}/dry-run`, { method: "POST" });
     toast("已加入企微试运行队列；被控端会定位、粘贴并清空，不会真实发送");
     await refreshAll();
