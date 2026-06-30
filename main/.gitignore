@@ -8,6 +8,7 @@ dist/
 coach_mvp.db
 server.log
 server.err.log
+logs/
 .env
 config/ark.json
 config/admin_secret.txt

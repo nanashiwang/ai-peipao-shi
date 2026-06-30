@@ -1038,7 +1038,7 @@ function renderChatOutputs() {
             <textarea id="chat-task-${task.id}" ${taskCan(task, "edit") ? "" : "readonly"}>${esc(task.content)}</textarea>
             <div class="actions left">
               ${taskCan(task, "edit") ? `<button onclick="saveTaskFromChat(${task.id})">保存</button>` : ""}
-              ${taskCan(task, "web_send") ? `<button onclick="sendTaskFromChat(${task.id})">发送</button>` : ""}
+              ${taskCan(task, "web_send") ? `<button onclick="sendTaskFromChat(${task.id})">网页发送</button>` : ""}
               ${taskCan(task, "cancel") ? `<button onclick="cancelTask(${task.id})">取消</button>` : ""}
               ${taskAllowedOperations(task).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
             </div>
@@ -1258,7 +1258,7 @@ function renderTasks() {
   if ($("sendAllBtn")) {
     const canBulkSend = state.tasks.some((task) => taskCan(task, "web_send"));
     $("sendAllBtn").disabled = !canBulkSend;
-    $("sendAllBtn").title = canBulkSend ? "发送全部可网页发送任务" : "当前角色或任务状态不允许批量发送";
+    $("sendAllBtn").title = canBulkSend ? "发送全部可网页发送任务；不经过企微被控端" : "当前角色或任务状态不允许批量发送";
   }
   $("taskTable").innerHTML = table([
     { label: "ID", key: "id" },
@@ -1683,15 +1683,15 @@ async function retryTask(id) {
 
 // 发送任务到网页通讯会话。
 async function sendTask(id) {
-  return withAction("发送任务", async () => {
+  return withAction("网页发送任务", async () => {
     await api(`/api/send-tasks/${id}/web-send`, { method: "POST" });
-    toast("已发送到网页通讯");
+    toast("已发送到网页通讯；不经过企微被控端");
     await refreshAll();
   });
 }
 
 async function sendTaskFromChat(id) {
-  return withAction("发送回复", async () => {
+  return withAction("网页发送回复", async () => {
     const editor = $(`chat-task-${id}`);
     const task = state.tasks.find((item) => item.id === id);
     if (editor && task && editor.value !== task.content) {
@@ -1702,7 +1702,7 @@ async function sendTaskFromChat(id) {
       });
     }
     await api(`/api/send-tasks/${id}/web-send`, { method: "POST" });
-    toast("已发送到当前会话");
+    toast("已发送到当前网页会话；不经过企微被控端");
     await refreshAll();
     switchTab("webChat");
   });
@@ -2085,9 +2085,9 @@ $("taskFromScenesBtn").onclick = async () => {
 
 // 发送所有任务到网页通讯会话。
 $("sendAllBtn").onclick = async () => {
-  await withAction("发送全部任务", async () => {
+  await withAction("网页发送全部任务", async () => {
     const res = await api("/api/send-tasks/web-send-all", { method: "POST" });
-    toast(`已发送 ${res.sent} 个任务${res.skipped ? `，跳过 ${res.skipped} 个` : ""}`);
+    toast(`已网页发送 ${res.sent} 个任务${res.skipped ? `，跳过 ${res.skipped} 个` : ""}；不经过企微被控端`);
     await refreshAll();
   });
 };
