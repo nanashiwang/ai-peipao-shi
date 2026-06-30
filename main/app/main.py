@@ -381,6 +381,60 @@ def operation_role_from_request(request: Request | None) -> str:
     return "admin"
 
 
+def coach_scope_from_request(request: Request | None) -> str:
+    identity = admin_identity_from_request(request)
+    if not identity or identity.role != "coach":
+        return ""
+    return (identity.display_name or identity.username or "").strip()
+
+
+def coach_filter_for_request(request: Request | None, requested_coach: str = "") -> str:
+    return coach_scope_from_request(request) or (requested_coach or "").strip()
+
+
+def scoped_family_query(db: Session, request: Request | None = None):
+    query = db.query(Family)
+    coach_name = coach_scope_from_request(request)
+    if coach_name:
+        query = query.filter(Family.coach_name == coach_name)
+    return query
+
+
+def apply_family_id_scope(query, family_id_column, db: Session, request: Request | None = None):
+    coach_name = coach_scope_from_request(request)
+    if not coach_name:
+        return query
+    scoped_ids = db.query(Family.family_id).filter(Family.coach_name == coach_name)
+    return query.filter(family_id_column.in_(scoped_ids))
+
+
+def ensure_family_access(family: Family | None, request: Request | None) -> None:
+    coach_name = coach_scope_from_request(request)
+    if coach_name and (not family or family.coach_name != coach_name):
+        raise HTTPException(403, "当前陪跑师无权访问该家庭")
+
+
+def ensure_family_id_access(db: Session, family_id: str, request: Request | None) -> None:
+    if not coach_scope_from_request(request):
+        return
+    ensure_family_access(db.query(Family).filter(Family.family_id == family_id).one_or_none(), request)
+
+
+def ensure_task_family_access(db: Session, task: SendTask | None, request: Request | None) -> None:
+    if task:
+        ensure_family_id_access(db, task.family_id, request)
+
+
+def scoped_payload_coach_name(request: Request | None, coach_name: str) -> str:
+    scope = coach_scope_from_request(request)
+    clean = (coach_name or "").strip()
+    if scope:
+        if clean and clean != scope:
+            raise HTTPException(403, "陪跑师只能创建或维护自己负责的家庭")
+        return scope
+    return clean
+
+
 def send_task_view(task: SendTask, request: Request | None = None) -> dict:
     data = as_dict(task)
     data.update(send_task_operation_state(task.status, task.send_mode, operation_role_from_request(request)))
@@ -960,6 +1014,12 @@ def require_family(db: Session, family_id: str) -> Family:
     return family
 
 
+def require_family_for_request(db: Session, family_id: str, request: Request | None) -> Family:
+    family = require_family(db, family_id)
+    ensure_family_access(family, request)
+    return family
+
+
 FOLLOWUP_TYPES = {"电话", "私信", "群提醒", "周报", "补课", "投诉", "续报沟通"}
 FOLLOWUP_STATUSES = {"待跟进", "已完成", "需升级"}
 
@@ -1375,21 +1435,23 @@ def load_sample_data(db: Session = Depends(get_db)):
 # 家庭列表接口，顺带补充每个家庭的消息数。
 @app.get("/api/families")
 def list_families(request: Request = None, db: Session = Depends(get_db)):
-    families = db.query(Family).order_by(Family.family_id).all()
+    families = scoped_family_query(db, request).order_by(Family.family_id).all()
     rows = [{**as_dict(f), "message_count": db.query(RawMessage).filter(RawMessage.family_id == f.family_id).count()} for f in families]
     return maybe_redact_for_request(rows, request)
 
 
 @app.post("/api/families")
-def upsert_family(payload: FamilyIn, db: Session = Depends(get_db)):
+def upsert_family(payload: FamilyIn, request: Request = None, db: Session = Depends(get_db)):
     target_name = payload.parent_nickname.strip()
     if not target_name:
         raise HTTPException(400, "企微会话名不能为空")
     family_id = payload.family_id.strip() or f"WECOM_{target_name}"
+    coach_name = scoped_payload_coach_name(request, payload.coach_name)
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     if not family:
         family = db.query(Family).filter(Family.parent_nickname == target_name).one_or_none()
     if family:
+        ensure_family_access(family, request)
         family.family_id = family.family_id or family_id
         family.parent_nickname = target_name
         family.child_grade = payload.child_grade
@@ -1403,7 +1465,7 @@ def upsert_family(payload: FamilyIn, db: Session = Depends(get_db)):
             family.checkin_rate = payload.checkin_rate
         if payload.next_milestone:
             family.next_milestone = payload.next_milestone
-        family.coach_name = payload.coach_name
+        family.coach_name = coach_name
         family.service_status = payload.service_status
     else:
         family = Family(
@@ -1415,7 +1477,7 @@ def upsert_family(payload: FamilyIn, db: Session = Depends(get_db)):
             pbl_count=payload.pbl_count if payload.pbl_count is not None else 0,
             checkin_rate=payload.checkin_rate,
             next_milestone=payload.next_milestone,
-            coach_name=payload.coach_name,
+            coach_name=coach_name,
             service_status=payload.service_status,
         )
         db.add(family)
@@ -1835,11 +1897,11 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
     }
 
 
-def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None) -> list[dict]:
+def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None, coach_name: str = "") -> list[dict]:
     now = now or datetime.utcnow()
     safe_limit = min(max(limit, 1), 50)
     items: list[dict] = []
-    families = db.query(Family).order_by(Family.family_id).all()
+    families = family_scope_query(db, coach_name).order_by(Family.family_id).all()
     for family in families:
         reasons: list[str] = []
         score = 0
@@ -1924,9 +1986,7 @@ def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = 
 # 单个家庭详情页要的消息、画像和周报都在这里聚合返回。
 @app.get("/api/families/{family_id}")
 def family_detail(family_id: str, timeline_limit: int = 80, request: Request = None, db: Session = Depends(get_db)):
-    family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
-    if not family:
-        raise HTTPException(404, "家庭不存在")
+    family = require_family_for_request(db, family_id, request)
     messages = db.query(RawMessage).filter(RawMessage.family_id == family_id).order_by(RawMessage.message_time).all()
     profile = db.query(ParentProfile).filter(ParentProfile.family_id == family_id).one_or_none()
     reports = db.query(WeeklyReport).filter(WeeklyReport.family_id == family_id).order_by(WeeklyReport.id.desc()).all()
@@ -1944,7 +2004,7 @@ def family_detail(family_id: str, timeline_limit: int = 80, request: Request = N
 
 @app.get("/api/families/{family_id}/timeline")
 def family_timeline(family_id: str, limit: int = 80, request: Request = None, db: Session = Depends(get_db)):
-    require_family(db, family_id)
+    require_family_for_request(db, family_id, request)
     return maybe_redact_for_request(build_family_timeline(db, family_id, limit), request)
 
 
@@ -1952,7 +2012,10 @@ def family_timeline(family_id: str, limit: int = 80, request: Request = None, db
 def list_followups(family_id: str = "", status: str = "", request: Request = None, db: Session = Depends(get_db)):
     query = db.query(FollowupRecord)
     if family_id:
+        require_family_for_request(db, family_id, request)
         query = query.filter(FollowupRecord.family_id == family_id)
+    else:
+        query = apply_family_id_scope(query, FollowupRecord.family_id, db, request)
     if status:
         query = query.filter(FollowupRecord.status == status)
     rows = query.order_by(FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc()).all()
@@ -1961,7 +2024,7 @@ def list_followups(family_id: str = "", status: str = "", request: Request = Non
 
 @app.post("/api/families/{family_id}/followups")
 def create_family_followup(family_id: str, payload: FollowupIn, request: Request = None, db: Session = Depends(get_db)):
-    family = require_family(db, family_id)
+    family = require_family_for_request(db, family_id, request)
     data = clean_followup_payload(payload)
     record = FollowupRecord(family_id=family.family_id, created_by=actor_from_request(request), **data)
     db.add(record)
@@ -1971,17 +2034,17 @@ def create_family_followup(family_id: str, payload: FollowupIn, request: Request
 
 @app.get("/api/workbench/today-priorities")
 def today_priorities(limit: int = 12, request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_today_priorities(db, limit), request)
+    return maybe_redact_for_request(build_today_priorities(db, limit, coach_name=coach_filter_for_request(request)), request)
 
 
 @app.get("/api/workbench/overview")
 def workbench_overview(coach_name: str = "", limit: int = 8, request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_workbench_overview(db, coach_name, limit), request)
+    return maybe_redact_for_request(build_workbench_overview(db, coach_filter_for_request(request, coach_name), limit), request)
 
 
 @app.get("/api/admin/service-quality")
 def admin_service_quality(coach_name: str = "", request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_admin_service_quality_dashboard(db, coach_name), request)
+    return maybe_redact_for_request(build_admin_service_quality_dashboard(db, coach_filter_for_request(request, coach_name)), request)
 
 
 @app.get("/api/agent/evaluations")
@@ -2049,9 +2112,9 @@ def create_family_ai_bundle(db: Session, family_id: str, source: str = "家庭�
 
 # 批量生成所有家庭的周报/画像。
 @app.post("/api/generate/all")
-def generate_all(db: Session = Depends(get_db)):
+def generate_all(request: Request = None, db: Session = Depends(get_db)):
     count = 0
-    for family in db.query(Family).all():
+    for family in scoped_family_query(db, request).all():
         if generate_for_family(db, family.family_id):
             count += 1
     db.commit()
@@ -2060,7 +2123,8 @@ def generate_all(db: Session = Depends(get_db)):
 
 # 单家庭生成接口，前端家庭详情页会直接调用。
 @app.post("/api/families/{family_id}/generate")
-def generate_one(family_id: str, db: Session = Depends(get_db)):
+def generate_one(family_id: str, request: Request = None, db: Session = Depends(get_db)):
+    require_family_for_request(db, family_id, request)
     result = generate_for_family(db, family_id)
     if not result:
         raise HTTPException(404, "没有可生成的有效消息")
@@ -2070,6 +2134,7 @@ def generate_one(family_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/families/{family_id}/ai-bundle")
 def generate_family_ai_bundle(family_id: str, payload: FamilyAIBundleIn | None = None, request: Request = None, db: Session = Depends(get_db)):
+    require_family_for_request(db, family_id, request)
     result = create_family_ai_bundle(db, family_id, (payload or FamilyAIBundleIn()).source)
     db.commit()
     data = {
@@ -2084,7 +2149,10 @@ def generate_family_ai_bundle(family_id: str, payload: FamilyAIBundleIn | None =
 def list_ai_outputs(family_id: str = "", agent_type: str = "", request: Request = None, db: Session = Depends(get_db)):
     query = db.query(AIOutput).order_by(AIOutput.id.desc())
     if family_id:
+        require_family_for_request(db, family_id, request)
         query = query.filter(AIOutput.family_id == family_id)
+    else:
+        query = apply_family_id_scope(query, AIOutput.family_id, db, request)
     if agent_type:
         query = query.filter(AIOutput.agent_type == agent_type)
     return maybe_redact_for_request([as_dict(item) for item in query.limit(200).all()], request)
@@ -2092,10 +2160,11 @@ def list_ai_outputs(family_id: str = "", agent_type: str = "", request: Request 
 
 # 保存人工审核后的 AI 输出。
 @app.put("/api/ai-outputs/{output_id}")
-def update_ai_output(output_id: int, payload: AIOutputUpdate, db: Session = Depends(get_db)):
+def update_ai_output(output_id: int, payload: AIOutputUpdate, request: Request = None, db: Session = Depends(get_db)):
     output = db.get(AIOutput, output_id)
     if not output:
         raise HTTPException(404, "AI输出不存在")
+    ensure_family_id_access(db, output.family_id, request)
     output.edited_output = payload.edited_output
     output.status = payload.status
     output.updated_at = datetime.utcnow()
@@ -2109,6 +2178,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     output = db.get(AIOutput, output_id)
     if not output:
         raise HTTPException(404, "AI输出不存在")
+    ensure_family_id_access(db, output.family_id, request)
     family = db.query(Family).filter(Family.family_id == output.family_id).one_or_none()
     data = payload or AIOutputTaskIn()
     content = data.content.strip() or output.edited_output or output.display_text
@@ -2143,8 +2213,8 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
 # 家庭画像 Agent 接口。
 @app.post("/api/agent/profile")
 @app.post("/agent/profile")
-def run_profile_agent(payload: AgentRequest, db: Session = Depends(get_db)):
-    family = require_family(db, payload.family_id)
+def run_profile_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
+    family = require_family_for_request(db, payload.family_id, request)
     context = build_agent_context(db, payload.family_id)
     result = run_family_profile_agent_service(context)
     output = save_ai_output(db, payload.family_id, "family_profile", payload.source or "生成画像", result)
@@ -2158,8 +2228,8 @@ def run_profile_agent(payload: AgentRequest, db: Session = Depends(get_db)):
 # 周报 Agent 接口。
 @app.post("/api/agent/weekly-report")
 @app.post("/agent/weekly-report")
-def run_weekly_report_agent(payload: AgentRequest, db: Session = Depends(get_db)):
-    family = require_family(db, payload.family_id)
+def run_weekly_report_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
+    family = require_family_for_request(db, payload.family_id, request)
     context = build_agent_context(db, payload.family_id)
     result = run_weekly_report_agent_service(context)
     output = save_ai_output(db, payload.family_id, "weekly_report", payload.source or "生成周报", result)
@@ -2171,8 +2241,8 @@ def run_weekly_report_agent(payload: AgentRequest, db: Session = Depends(get_db)
 # 回复 Agent 接口。
 @app.post("/api/agent/reply")
 @app.post("/agent/reply")
-def run_reply_agent(payload: AgentRequest, db: Session = Depends(get_db)):
-    family = require_family(db, payload.family_id)
+def run_reply_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
+    family = require_family_for_request(db, payload.family_id, request)
     context = build_agent_context(db, payload.family_id)
     result = run_reply_agent_service(context, payload.message, payload.tone)
     output = save_ai_output(db, payload.family_id, "ai_reply", payload.source or "生成回复", result)
@@ -2183,8 +2253,8 @@ def run_reply_agent(payload: AgentRequest, db: Session = Depends(get_db)):
 # 打卡/PBL Agent 接口，同时写入打卡记录。
 @app.post("/api/agent/checkin-pbl")
 @app.post("/agent/checkin-pbl")
-def run_checkin_pbl_agent(payload: AgentRequest, db: Session = Depends(get_db)):
-    family = require_family(db, payload.family_id)
+def run_checkin_pbl_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
+    family = require_family_for_request(db, payload.family_id, request)
     context = build_agent_context(db, payload.family_id)
     result = run_checkin_pbl_agent_service(context)
     output = save_ai_output(db, payload.family_id, "checkin_pbl", payload.source or "识别打卡/PBL", result)
@@ -2312,14 +2382,16 @@ def resolve_rpa_conversation(target_name: str, db: Session = Depends(get_db)):
 # 周报列表接口。
 @app.get("/api/reports")
 def list_reports(request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request([as_dict(r) for r in db.query(WeeklyReport).order_by(WeeklyReport.id.desc()).all()], request)
+    query = apply_family_id_scope(db.query(WeeklyReport), WeeklyReport.family_id, db, request)
+    return maybe_redact_for_request([as_dict(r) for r in query.order_by(WeeklyReport.id.desc()).all()], request)
 
 
 # 一键把未审核周报全部标成已审核。
 @app.post("/api/reports/approve-all")
-def approve_all_reports(db: Session = Depends(get_db)):
+def approve_all_reports(request: Request = None, db: Session = Depends(get_db)):
     count = 0
-    for report in db.query(WeeklyReport).filter(WeeklyReport.status != "approved").all():
+    query = apply_family_id_scope(db.query(WeeklyReport).filter(WeeklyReport.status != "approved"), WeeklyReport.family_id, db, request)
+    for report in query.all():
         report.status = "approved"
         count += 1
     db.commit()
@@ -2328,10 +2400,11 @@ def approve_all_reports(db: Session = Depends(get_db)):
 
 # 单条周报人工更新接口。
 @app.put("/api/reports/{report_id}")
-def update_report(report_id: int, payload: ReportUpdate, db: Session = Depends(get_db)):
+def update_report(report_id: int, payload: ReportUpdate, request: Request = None, db: Session = Depends(get_db)):
     report = db.get(WeeklyReport, report_id)
     if not report:
         raise HTTPException(404, "周报不存在")
+    ensure_family_id_access(db, report.family_id, request)
     report.final_text = payload.final_text
     report.status = payload.status
     db.commit()
@@ -2341,7 +2414,8 @@ def update_report(report_id: int, payload: ReportUpdate, db: Session = Depends(g
 # 家长画像列表接口。
 @app.get("/api/profiles")
 def list_profiles(request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request([as_dict(p) for p in db.query(ParentProfile).order_by(ParentProfile.family_id).all()], request)
+    query = apply_family_id_scope(db.query(ParentProfile), ParentProfile.family_id, db, request)
+    return maybe_redact_for_request([as_dict(p) for p in query.order_by(ParentProfile.family_id).all()], request)
 
 
 # 模板列表接口。
@@ -2384,9 +2458,9 @@ def toggle_template(template_id: int, db: Session = Depends(get_db)):
 
 # 重新扫描所有消息里的打卡关键词，补齐打卡记录。
 @app.post("/api/scan-checkins")
-def scan_checkins(db: Session = Depends(get_db)):
+def scan_checkins(request: Request = None, db: Session = Depends(get_db)):
     created = 0
-    for msg in db.query(RawMessage).all():
+    for msg in apply_family_id_scope(db.query(RawMessage), RawMessage.family_id, db, request).all():
         status = msg.checkin_status or detect_checkin(msg.content)
         if not status:
             continue
@@ -2403,7 +2477,7 @@ def scan_checkins(db: Session = Depends(get_db)):
 @app.post("/api/send-tasks/from-approved-reports")
 def create_tasks_from_reports(request: Request = None, db: Session = Depends(get_db)):
     created = 0
-    reports = db.query(WeeklyReport).filter(WeeklyReport.status == "approved").all()
+    reports = apply_family_id_scope(db.query(WeeklyReport).filter(WeeklyReport.status == "approved"), WeeklyReport.family_id, db, request).all()
     actor = actor_from_request(request)
     for report in reports:
         _, was_created = ensure_weekly_report_send_task(db, report, actor)
@@ -2418,6 +2492,7 @@ def create_task_from_report(report_id: int, request: Request = None, db: Session
     report = db.get(WeeklyReport, report_id)
     if not report:
         raise HTTPException(404, "周报不存在")
+    ensure_family_id_access(db, report.family_id, request)
     task, created = ensure_weekly_report_send_task(db, report, actor_from_request(request))
     db.commit()
     return {"created": created, "report": as_dict(report), "task": as_dict(task)}
@@ -2428,7 +2503,8 @@ def create_task_from_report(report_id: int, request: Request = None, db: Session
 def create_tasks_from_scenes(request: Request = None, db: Session = Depends(get_db)):
     created = 0
     templates = {t.scene: t.content for t in db.query(Template).filter(Template.enabled == "Y").all()}
-    for msg in db.query(RawMessage).order_by(RawMessage.message_time.desc()).limit(200):
+    query = apply_family_id_scope(db.query(RawMessage), RawMessage.family_id, db, request)
+    for msg in query.order_by(RawMessage.message_time.desc()).limit(200):
         scene = detect_scene(msg.content)
         if not scene or scene == "转人工" or scene not in templates:
             continue
@@ -2451,7 +2527,7 @@ def create_tasks_from_scenes(request: Request = None, db: Session = Depends(get_
 # 发送任务列表接口（可选按 status / device_id 过滤，便于看板和调试）。
 @app.get("/api/send-tasks")
 def list_send_tasks(status: str = "", device_id: str = "", request: Request = None, db: Session = Depends(get_db)):
-    query = db.query(SendTask)
+    query = apply_family_id_scope(db.query(SendTask), SendTask.family_id, db, request)
     if status:
         query = query.filter(SendTask.status == status)
     if device_id:
@@ -2463,6 +2539,7 @@ def list_send_tasks(status: str = "", device_id: str = "", request: Request = No
 @app.post("/api/send-tasks")
 def create_send_task(payload: SendTaskIn, request: Request = None, db: Session = Depends(get_db)):
     data = payload.model_dump()
+    ensure_family_id_access(db, data.get("family_id", ""), request)
     data["content"] = validate_send_task_content(data.get("content", ""))
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
     if data.get("device_id"):
@@ -2483,6 +2560,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
     if payload.status not in {"pending", "approved", "assigned", "cancelled", "sent", "failed", "dry_run"}:
         raise HTTPException(400, "status 不合法")
     before = send_task_snapshot(task)
@@ -2534,6 +2612,7 @@ def cancel_send_task(task_id: int, request: Request = None, db: Session = Depend
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
     ensure_task_operation_allowed(task, request, "cancel")
     before = send_task_snapshot(task)
     task.status = "cancelled"
@@ -2548,6 +2627,7 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
     ensure_task_operation_allowed(task, request, "dry_run")
     if task.status != "pending":
         raise HTTPException(400, "只有 pending 状态的任务可以发起试运行")
@@ -2570,6 +2650,7 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
     ensure_task_operation_allowed(task, request, "retry")
     if task.status != "failed":
         raise HTTPException(400, "只有 failed 状态的任务可以重试")
@@ -2595,6 +2676,7 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
     if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
         raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
     screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
@@ -2676,6 +2758,7 @@ def web_send(task_id: int, request: Request = None, db: Session = Depends(get_db
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
     ensure_task_operation_allowed(task, request, "web_send")
     message, log = send_task_to_web_chat(db, task, actor_from_request(request), "web_send")
     db.commit()
@@ -2686,7 +2769,8 @@ def web_send(task_id: int, request: Request = None, db: Session = Depends(get_db
 def web_send_all(request: Request = None, db: Session = Depends(get_db)):
     sent = 0
     skipped = 0
-    for task in db.query(SendTask).filter(SendTask.status == "pending").all():
+    query = apply_family_id_scope(db.query(SendTask).filter(SendTask.status == "pending"), SendTask.family_id, db, request)
+    for task in query.all():
         try:
             ensure_task_operation_allowed(task, request, "web_send")
             send_task_to_web_chat(db, task, actor_from_request(request), "web_send_all")
@@ -2699,7 +2783,8 @@ def web_send_all(request: Request = None, db: Session = Depends(get_db)):
 
 @app.get("/api/send-logs")
 def list_send_logs(request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request([send_log_view(l) for l in db.query(SendLog).order_by(SendLog.id.desc()).all()], request)
+    query = apply_family_id_scope(db.query(SendLog), SendLog.family_id, db, request)
+    return maybe_redact_for_request([send_log_view(l) for l in query.order_by(SendLog.id.desc()).all()], request)
 
 
 @app.get("/api/audit-logs")

@@ -33,7 +33,7 @@ from app.main import (
     validate_send_mode_submit,
     validate_send_task_content,
 )
-from app.models import AuditLog, Device, SendLog, SendTask
+from app.models import AuditLog, Device, Family, SendLog, SendTask
 from app.services.admin_auth import admin_auth_secret, sign_admin_token
 
 
@@ -152,6 +152,11 @@ class RealSendRiskValidationTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:", future=True)
         Base.metadata.create_all(bind=engine)
         self.db = sessionmaker(bind=engine, future=True)()
+        self.db.add_all([
+            Family(family_id="f1", parent_nickname="一合学社", coach_name="coach"),
+            Family(family_id="f2", parent_nickname="一合学社", coach_name="coach"),
+        ])
+        self.db.commit()
         self.now = datetime(2026, 6, 29, 10, 0, 0)
 
     def tearDown(self):
@@ -222,6 +227,11 @@ class SendTaskAuditLogTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:", future=True)
         Base.metadata.create_all(bind=engine)
         self.db = sessionmaker(bind=engine, future=True)()
+        self.db.add_all([
+            Family(family_id="f1", parent_nickname="一合学社", coach_name="coach"),
+            Family(family_id="f2", parent_nickname="一合学社", coach_name="coach"),
+        ])
+        self.db.commit()
 
     def tearDown(self):
         self.db.close()
