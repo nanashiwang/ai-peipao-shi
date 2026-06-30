@@ -200,6 +200,7 @@ class SendResultIn(BaseModel):
     status: str
     detail: str = ""
     device_id: str = ""
+    client_result_id: str = ""
     screenshot_base64: str = ""
     verify_status: str = ""
     verify_detail: str = ""
@@ -3492,6 +3493,15 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     ensure_task_family_access(db, task, request)
     if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
         raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
+    client_result_id = (payload.client_result_id or "").strip()
+    if client_result_id:
+        existing_log = (
+            db.query(SendLog)
+            .filter(SendLog.task_id == task.id, SendLog.client_result_id == client_result_id)
+            .first()
+        )
+        if existing_log:
+            return send_log_view(existing_log)
     screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
     before = send_task_snapshot(task)
     finished_at = datetime.utcnow()
@@ -3531,6 +3541,7 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         send_mode=send_log_mode(task),
         detail=result_detail,
         device_id=payload.device_id or task.device_id,
+        client_result_id=client_result_id,
         screenshot_path=screenshot_path,
         verify_status=verify_status,
         verify_detail=verify_detail,
@@ -3753,6 +3764,7 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
     # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
     add_file(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
     add_file(ROOT / "rpa" / "send_guard.py", "rpa/send_guard.py")
+    add_file(ROOT / "rpa" / "result_outbox.py", "rpa/result_outbox.py")
     add_file(ROOT / "app" / "services" / "ark_client.py", "app/services/ark_client.py")
     add_text("app/__init__.py", "")
     add_text("app/services/__init__.py", "")

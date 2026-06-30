@@ -42,6 +42,7 @@ class DevicePackageTest(unittest.TestCase):
 
         self.assertIn("rpa/wecom_sender.py", names)
         self.assertIn("rpa/send_guard.py", names)
+        self.assertIn("rpa/result_outbox.py", names)
         self.assertIn("watchdog.ps1", names)
         self.assertIn("install_autostart.bat", names)
         self.assertIn("uninstall_autostart.bat", names)
@@ -59,12 +60,16 @@ class DevicePackageTest(unittest.TestCase):
         self.assertEqual(config["post_send_verify_recent_count"], 12)
         self.assertTrue(config["post_send_verify_clipboard_fallback"])
         self.assertTrue(config["post_send_verify_restore_clipboard"])
+        self.assertTrue(config["result_outbox_enabled"])
+        self.assertEqual(config["result_outbox_dir"], "result_outbox")
+        self.assertEqual(config["result_outbox_flush_limit"], 20)
         self.assertIn("设备监控", readme)
         self.assertIn("真实发送开关", readme)
         self.assertEqual(manifest["package_type"], "rpa-client-script")
         self.assertEqual(manifest["device_id"], "rpa-01")
         manifest_paths = {item["path"] for item in manifest["files"]}
         self.assertIn("rpa/config.json", manifest_paths)
+        self.assertIn("rpa/result_outbox.py", manifest_paths)
         self.assertIn("校验接入包.ps1", manifest_paths)
 
 

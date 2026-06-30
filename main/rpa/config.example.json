@@ -106,5 +106,8 @@
   "upload_send_screenshot_statuses": ["sent", "failed", "skipped", "dry_run"],
   "send_screenshot_max_upload_bytes": 5242880,
   "send_screenshot_max_side": 1600,
-  "send_screenshot_jpeg_quality": 70
+  "send_screenshot_jpeg_quality": 70,
+  "result_outbox_enabled": true,
+  "result_outbox_dir": "result_outbox",
+  "result_outbox_flush_limit": 20
 }

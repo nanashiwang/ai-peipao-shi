@@ -948,6 +948,22 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(saved_log.verify_status, "confirmed")
         self.assertEqual(saved_log.verified_at.replace(microsecond=0), verified_at.replace(microsecond=0))
 
+    def test_record_send_result_is_idempotent_by_client_result_id(self):
+        task = self.add_task()
+        payload = SendResultIn(
+            status="sent",
+            detail="REAL_RPA: 已发送",
+            device_id="rpa-01",
+            client_result_id="rpa-01-task-1-result",
+            verify_status="confirmed",
+        )
+
+        first = record_send_result(task.id, payload, db=self.db)
+        second = record_send_result(task.id, payload, db=self.db)
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(self.db.query(SendLog).filter(SendLog.task_id == task.id).count(), 1)
+
     def test_real_send_sent_without_group_verification_is_landed_as_failed(self):
         task = self.add_task()
 

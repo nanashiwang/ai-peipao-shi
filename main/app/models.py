@@ -211,6 +211,7 @@ class SendLog(Base):
     status: Mapped[str] = mapped_column(String(30))
     send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     device_id: Mapped[str] = mapped_column(String(64), default="")
+    client_result_id: Mapped[str] = mapped_column(String(120), default="", index=True)
     screenshot_path: Mapped[str] = mapped_column(Text, default="")
     verify_status: Mapped[str] = mapped_column(String(30), default="")
     verify_detail: Mapped[str] = mapped_column(Text, default="")

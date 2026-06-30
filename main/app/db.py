@@ -72,6 +72,7 @@ def ensure_columns():
         ],
         "send_logs": [
             ("device_id", "VARCHAR(64)"),
+            ("client_result_id", "VARCHAR(120)"),
             ("screenshot_path", "TEXT"),
             ("send_mode", "VARCHAR(20)"),
             ("verify_status", "VARCHAR(30)"),

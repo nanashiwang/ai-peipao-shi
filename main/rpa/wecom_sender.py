@@ -22,6 +22,25 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
 
 try:
+    from rpa.result_outbox import (
+        enqueue_result,
+        load_result_record,
+        mark_result_retry,
+        new_client_result_id,
+        pending_result_files,
+        remove_result_record,
+    )
+except ModuleNotFoundError:
+    from result_outbox import (
+        enqueue_result,
+        load_result_record,
+        mark_result_retry,
+        new_client_result_id,
+        pending_result_files,
+        remove_result_record,
+    )
+
+try:
     from rpa.send_guard import (
         SendGuardError,
         add_send_trace,
@@ -1938,23 +1957,27 @@ def send_task_and_record(task: dict, config: dict):
         status, detail = "failed", str(exc)
     screenshot_base64 = capture_send_screenshot(config, task_id, status)
     verification = verification or {}
-    request_json(config["api_base_url"], f"/api/send-tasks/{task_id}/result", method="POST",
-                 payload={
-                     "status": status,
-                     "detail": detail,
-                     "device_id": config.get("device_id", ""),
-                     "screenshot_base64": screenshot_base64,
-                     "verify_status": verification.get("verify_status", ""),
-                     "verify_detail": verification.get("verify_detail", ""),
-                     "verified_at": verification.get("verified_at"),
-                  },
-                 extra_headers=device_headers(config))
+    payload = {
+        "status": status,
+        "detail": detail,
+        "device_id": config.get("device_id", ""),
+        "screenshot_base64": screenshot_base64,
+        "verify_status": verification.get("verify_status", ""),
+        "verify_detail": verification.get("verify_detail", ""),
+        "verified_at": verification.get("verified_at"),
+        "client_result_id": new_client_result_id(config, task_id),
+    }
+    try:
+        post_send_result(config, task_id, payload)
+    except Exception as exc:
+        queue_send_result(config, task_id, payload, exc)
     print(f"task={task_id} target={task.get('target_name')} mode={task.get('send_mode') or 'config_default'} status={status} detail={detail}")
     return status, detail
 
 
 # 把本轮同步中自动创建的 AI 回复任务继续取出来发送。
 def send_created_reply_tasks(sync_results: list[dict], config: dict):
+    flush_pending_send_results(config)
     created_ids = []
     for result in sync_results:
         task = ((result.get("detail") or {}).get("send_task") or {})
@@ -1992,6 +2015,56 @@ def device_headers(config: dict) -> dict:
     return {"X-Device-Id": device_id, "X-Device-Token": config.get("device_token", "")}
 
 
+def post_send_result(config: dict, task_id: int, payload: dict):
+    return request_json(
+        config["api_base_url"],
+        f"/api/send-tasks/{task_id}/result",
+        method="POST",
+        payload=payload,
+        extra_headers=device_headers(config),
+    )
+
+
+def queue_send_result(config: dict, task_id: int, payload: dict, error: Exception) -> Path | None:
+    if not config.get("result_outbox_enabled", True):
+        return None
+    queued = enqueue_result(config, ROOT, task_id, f"/api/send-tasks/{task_id}/result", payload, str(error))
+    print(f"result_callback_queued task={task_id} file={queued} error={error}")
+    return queued
+
+
+def flush_pending_send_results(config: dict) -> int:
+    if not config.get("result_outbox_enabled", True):
+        return 0
+    try:
+        limit = max(int(config.get("result_outbox_flush_limit", 20) or 20), 1)
+    except (TypeError, ValueError):
+        limit = 20
+    sent = 0
+    for path in pending_result_files(config, ROOT)[:limit]:
+        record = {}
+        try:
+            record = load_result_record(path)
+            request_json(
+                config["api_base_url"],
+                record["path"],
+                method="POST",
+                payload=record["payload"],
+                extra_headers=device_headers(config),
+            )
+            remove_result_record(path)
+            sent += 1
+            print(f"result_callback_flushed task={record.get('task_id')} file={path.name}")
+        except Exception as exc:
+            try:
+                mark_result_retry(path, record, str(exc))
+            except Exception:
+                pass
+            print(f"result_callback_flush_failed file={path.name} error={exc}")
+            break
+    return sent
+
+
 # 向后端上报心跳：在线状态、企微是否可用、本机负责的会话（供后端动态领取过滤）。
 def send_heartbeat(config: dict):
     device_id = config.get("device_id", "")
@@ -2020,6 +2093,7 @@ def run_once(config: dict):
     base_url = config["api_base_url"]
     limit = int(config.get("max_tasks_per_run", 5))
     device_id = config.get("device_id", "")
+    flush_pending_send_results(config)
     if device_id:
         send_heartbeat(config)
         selected = request_json(base_url, f"/api/devices/{device_id}/claim?limit={limit}",
@@ -2083,6 +2157,7 @@ def watch_unread(config: dict, config_path: Path):
     print(f"watch_unread=true interval={interval}s")
     while True:
         try:
+            flush_pending_send_results(config)
             if config.get("auto_reply_in_watch_mode", False):
                 reply_unread_conversations(config, config_path)
             else:
@@ -2100,6 +2175,7 @@ def watch_known(config: dict):
     print(f"watch_known=true interval={interval}s")
     while True:
         try:
+            flush_pending_send_results(config)
             sync_known_conversations(config)
         except KeyboardInterrupt:
             print("已停止监听。")
