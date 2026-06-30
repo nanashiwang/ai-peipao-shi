@@ -41,18 +41,29 @@ def normalize_confirmation_text(text: str) -> str:
 
 
 def sent_content_confirmed(content: str, messages, recent_count: int = 8) -> bool:
+    return sent_content_match_count(content, messages, recent_count) > 0
+
+
+def sent_content_match_count(content: str, messages, recent_count: int = 8) -> int:
     expected = normalize_confirmation_text(content)
     if not expected:
-        return False
+        return 0
     recent_messages = list(messages or [])[-max(int(recent_count or 1), 1):]
+    count = 0
     for message in recent_messages:
         if isinstance(message, dict):
             observed = normalize_confirmation_text(message.get("content", ""))
         else:
             observed = normalize_confirmation_text(message)
         if observed and (expected in observed or observed in expected):
-            return True
-    return False
+            count += 1
+    return count
+
+
+def sent_content_confirmed_after_send(content: str, before_messages, after_messages, recent_count: int = 8) -> bool:
+    if before_messages is None:
+        return sent_content_confirmed(content, after_messages, recent_count)
+    return sent_content_match_count(content, after_messages, recent_count) > sent_content_match_count(content, before_messages, recent_count)
 
 
 def add_send_trace(config: dict, event: str) -> None:

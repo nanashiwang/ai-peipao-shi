@@ -12,7 +12,9 @@ from rpa.send_guard import (
     real_send_enabled,
     real_send_requested,
     search_result_not_found_detail,
+    sent_content_confirmed_after_send,
     sent_content_confirmed,
+    sent_content_match_count,
     should_press_send_hotkey,
     target_in_allowed_conversations,
     target_not_allowed_detail,
@@ -76,6 +78,23 @@ class RpaSendGuardTest(unittest.TestCase):
         messages[0]["content"] = "重复内容"
 
         self.assertFalse(sent_content_confirmed("重复内容", messages, recent_count=8))
+
+    def test_sent_content_confirmation_requires_new_match_when_baseline_exists(self):
+        before = [
+            {"speaker": "我", "content": "测试发送"},
+            {"speaker": "家长", "content": "收到"},
+        ]
+        unchanged = before + [{"speaker": "家长", "content": "再确认一下"}]
+        after = before + [{"speaker": "我", "content": "测试发送"}]
+
+        self.assertEqual(sent_content_match_count("测试发送", before, recent_count=12), 1)
+        self.assertFalse(sent_content_confirmed_after_send("测试发送", before, unchanged, recent_count=12))
+        self.assertTrue(sent_content_confirmed_after_send("测试发送", before, after, recent_count=12))
+
+    def test_sent_content_confirmation_falls_back_without_baseline(self):
+        after = [{"speaker": "我", "content": "测试发送"}]
+
+        self.assertTrue(sent_content_confirmed_after_send("测试发送", None, after, recent_count=12))
 
     def test_real_send_enabled_requires_boolean_true(self):
         self.assertTrue(real_send_enabled({"allow_real_send": True}))

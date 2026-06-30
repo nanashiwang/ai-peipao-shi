@@ -53,6 +53,8 @@ class DevicePackageTest(unittest.TestCase):
         self.assertFalse(config["allow_real_send"])
         self.assertTrue(config["dry_run"])
         self.assertTrue(config["post_send_verify_reopen_conversation"])
+        self.assertTrue(config["post_send_verify_compare_before_after"])
+        self.assertEqual(config["post_send_verify_recent_count"], 12)
         self.assertTrue(config["post_send_verify_clipboard_fallback"])
         self.assertTrue(config["post_send_verify_restore_clipboard"])
         self.assertIn("设备监控", readme)
