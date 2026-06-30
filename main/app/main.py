@@ -1029,12 +1029,29 @@ def requeue_stale_assigned_tasks(
     count = 0
     for stale_task in query.limit(100).all():
         before = send_task_snapshot(stale_task)
-        stale_task.status = "pending"
-        stale_task.next_retry_at = now
-        stale_task.scheduled_at = now
-        stale_task.last_error = f"设备「{stale_task.device_id or '未绑定'}」领取后超时未回写，已恢复为原设备待重试"
-        audit_send_task_change(db, stale_task, "same_device_requeue", actor, "超时 assigned 任务已恢复为原设备重试", before)
-        sync_weekly_report_send_status(db, stale_task, "pending")
+        if send_log_mode(stale_task) == "real_send":
+            stale_task.status = "failed"
+            stale_task.next_retry_at = None
+            stale_task.last_error = (
+                f"设备「{stale_task.device_id or '未绑定'}」领取真实发送任务后超时未回写，发送结果不确定；"
+                "为避免重复真实发送，已转人工复核，请先核对目标会话后再手动重试"
+            )
+            audit_send_task_change(
+                db,
+                stale_task,
+                "real_send_stale_review",
+                actor,
+                "真实发送 assigned 超时未回写，已转人工复核以避免重复发送",
+                before,
+            )
+            sync_weekly_report_send_status(db, stale_task, "failed")
+        else:
+            stale_task.status = "pending"
+            stale_task.next_retry_at = now
+            stale_task.scheduled_at = now
+            stale_task.last_error = f"设备「{stale_task.device_id or '未绑定'}」领取后超时未回写，已恢复为原设备待重试"
+            audit_send_task_change(db, stale_task, "same_device_requeue", actor, "超时 assigned 任务已恢复为原设备重试", before)
+            sync_weekly_report_send_status(db, stale_task, "pending")
         count += 1
     return count
 

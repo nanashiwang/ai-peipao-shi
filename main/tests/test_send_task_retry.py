@@ -93,7 +93,7 @@ class SendTaskRetryTest(unittest.TestCase):
         self.assertEqual(task.device_id, "dev-a")
         self.assertIn("same_device_requeue", {item.action for item in self.db.query(AuditLog).all()})
 
-    def test_task_list_requeues_stale_assigned_without_device_failover(self):
+    def test_task_list_moves_stale_real_send_assigned_to_manual_review(self):
         task = self.add_task(send_mode="real_send")
         task.scheduled_at = datetime.utcnow() - timedelta(minutes=10)
         self.db.commit()
@@ -102,10 +102,24 @@ class SendTaskRetryTest(unittest.TestCase):
 
         self.db.refresh(task)
         self.assertEqual([row["id"] for row in rows], [task.id])
-        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.status, "failed")
         self.assertEqual(task.device_id, "dev-a")
-        self.assertIsNotNone(task.next_retry_at)
-        self.assertIn("same_device_requeue", {item.action for item in self.db.query(AuditLog).all()})
+        self.assertIsNone(task.next_retry_at)
+        self.assertIn("发送结果不确定", task.last_error)
+        self.assertIn("real_send_stale_review", {item.action for item in self.db.query(AuditLog).all()})
+
+    def test_claim_does_not_auto_requeue_stale_real_send_to_avoid_duplicate_send(self):
+        task = self.add_task(send_mode="real_send")
+        task.scheduled_at = datetime.utcnow() - timedelta(minutes=10)
+        self.db.commit()
+
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.db.refresh(task)
+        self.assertEqual(claimed, [])
+        self.assertEqual(task.status, "failed")
+        self.assertIsNone(task.next_retry_at)
+        self.assertIn("real_send_stale_review", {item.action for item in self.db.query(AuditLog).all()})
 
     def test_real_send_failure_goes_to_manual_alert_without_auto_retry(self):
         task = self.add_task(send_mode="real_send")
