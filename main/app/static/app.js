@@ -400,6 +400,25 @@ function deviceSelect(task) {
   return `<select id="task-device-${task.id}" ${disabled}>${options.join("")}</select>`;
 }
 
+function manualTaskFamilyId(target) {
+  const clean = String(target || "").trim().replace(/[^\u4e00-\u9fa5a-zA-Z0-9_-]+/g, "_").slice(0, 48);
+  return `MANUAL_${clean || "TASK"}`.slice(0, 64);
+}
+
+function renderManualTaskForm() {
+  const select = $("manualTaskDevice");
+  if (!select) return;
+  const current = select.value || "";
+  const options = ['<option value="">自动领取（仅试运行）</option>'].concat(
+    state.devices.map((device) => {
+      const health = `${device.online ? "在线" : "离线"} / 企微${device.wecom_ok === "Y" ? "正常" : (device.wecom_ok || "未知")} / ${device.allow_real_send ? "可真发" : "仅试运行"}`;
+      const label = `${device.device_id}${device.name ? ` · ${device.name}` : ""} · ${health}`;
+      return `<option value="${esc(device.device_id)}" ${current === device.device_id ? "selected" : ""}>${esc(label)}</option>`;
+    })
+  );
+  select.innerHTML = options.join("");
+}
+
 // 渲染通用表格，减少重复 HTML 拼接。
 function table(headers, rows) {
   if (!rows.length) return emptyState("暂无表格数据", "当前筛选条件下没有记录。");
@@ -1295,6 +1314,7 @@ function renderCheckins() {
 
 // 渲染任务列表。
 function renderTasks() {
+  renderManualTaskForm();
   if ($("sendAllBtn")) {
     const canBulkSend = state.tasks.some((task) => taskCan(task, "web_send"));
     $("sendAllBtn").disabled = !canBulkSend;
@@ -1912,6 +1932,42 @@ $("templateForm").onsubmit = async (event) => {
     event.target.reset();
     toast("模板已新增");
     await refreshAll();
+  });
+};
+
+// 控制端直接创建企微发送任务，适合群聊/私聊测试和临时通知。
+$("manualTaskForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await withAction("创建企微发送任务", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    const target = (data.target_name || "").trim();
+    const content = (data.content || "").trim();
+    const mode = data.send_mode || "dry_run";
+    const deviceId = (data.device_id || "").trim();
+    if (!target) throw new Error("请填写企微目标群/私聊");
+    if (!content) throw new Error("请填写发送内容");
+    if (mode === "real_send" && !deviceId) throw new Error("真实发送必须选择具体设备，因为每台设备代表一个发送人");
+    if (mode === "real_send") {
+      const ok = window.confirm(`确认创建企微真实发送任务？\n目标：${target}\n设备：${deviceId}\n\n创建后会进入该设备真实发送队列，请确认目标、设备和内容无误。`);
+      if (!ok) return;
+    }
+    await api("/api/send-tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        family_id: (data.family_id || "").trim() || manualTaskFamilyId(target),
+        target_name: target,
+        scene: (data.scene || "").trim() || "控制端手动下发",
+        content,
+        device_id: deviceId,
+        send_mode: mode,
+        confirm_real_send: mode === "real_send",
+      }),
+    });
+    event.target.reset();
+    toast(mode === "real_send" ? "真实发送任务已创建；请看发送准备和群内校验" : "试运行任务已创建");
+    await refreshAll();
+    switchTab("tasks");
   });
 };
 

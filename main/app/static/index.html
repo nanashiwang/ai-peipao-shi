@@ -357,6 +357,20 @@
           <button id="sendAllBtn">网页发送全部</button>
         </div>
       </div>
+      <form id="manualTaskForm" class="template-form">
+        <input name="target_name" placeholder="企微目标群/私聊，如：一合学社、许宝月" required />
+        <input name="family_id" placeholder="家庭/任务编号，可空；不填自动按目标生成" />
+        <input name="scene" placeholder="场景，如：控制端测试" value="控制端手动下发" />
+        <select name="device_id" id="manualTaskDevice">
+          <option value="">自动领取（仅试运行）</option>
+        </select>
+        <select name="send_mode" id="manualTaskMode">
+          <option value="dry_run">企微试运行（不发送）</option>
+          <option value="real_send">企微真实发送</option>
+        </select>
+        <textarea name="content" placeholder="要发送到企微的内容" required></textarea>
+        <button>创建企微发送任务</button>
+      </form>
       <div id="taskTable"></div>
     </section>
 
