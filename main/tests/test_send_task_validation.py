@@ -16,9 +16,11 @@ from app.main import (
     DeviceUpdateIn,
     SendResultIn,
     SendTaskIn,
+    SendTaskPreflightIn,
     SendTaskRealSendIn,
     SendTaskUpdate,
     actor_from_request,
+    build_send_task_preflight,
     cancel_send_task,
     claim_tasks,
     create_send_task,
@@ -789,6 +791,43 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertEqual(row["send_readiness"]["status"], "ready")
         self.assertEqual(row["send_readiness"]["label"], "真实发送条件就绪")
+
+    def test_preflight_blocks_real_send_before_task_creation_until_ready(self):
+        blocked = build_send_task_preflight(
+            self.db,
+            SendTaskPreflightIn(
+                family_id="f-preflight",
+                target_name="一合学社",
+                scene="real",
+                content="预检内容",
+                send_mode="real_send",
+                confirm_real_send=True,
+                device_id="dev-a",
+            ),
+        )
+
+        self.assertFalse(blocked["ok"])
+        self.assertIn("真实发送开关未开启", "；".join(blocked["reasons"]))
+
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+        ready = build_send_task_preflight(
+            self.db,
+            SendTaskPreflightIn(
+                family_id="f-preflight",
+                target_name="一合学社",
+                scene="real",
+                content="预检内容",
+                send_mode="real_send",
+                confirm_real_send=True,
+                device_id="dev-a",
+            ),
+        )
+
+        self.assertTrue(ready["ok"])
+        self.assertEqual(ready["label"], "发送预检通过")
 
     def test_allow_any_conversation_claims_group_or_private_chat_outside_whitelist(self):
         task = SendTask(

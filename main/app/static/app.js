@@ -1947,22 +1947,34 @@ $("manualTaskForm").onsubmit = async (event) => {
     if (!target) throw new Error("请填写企微目标群/私聊");
     if (!content) throw new Error("请填写发送内容");
     if (mode === "real_send" && !deviceId) throw new Error("真实发送必须选择具体设备，因为每台设备代表一个发送人");
+    const payload = {
+      family_id: (data.family_id || "").trim() || manualTaskFamilyId(target),
+      target_name: target,
+      scene: (data.scene || "").trim() || "控制端手动下发",
+      content,
+      device_id: deviceId,
+      send_mode: mode,
+      confirm_real_send: mode === "real_send",
+    };
+    const preflight = await api("/api/send-tasks/preflight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!preflight.ok) {
+      const detail = (preflight.reasons || []).join("\n");
+      if (mode === "real_send") throw new Error(`发送预检未通过：\n${detail}`);
+      const keep = window.confirm(`发送预检提示：\n${detail || preflight.label}\n\n是否仍创建试运行任务？`);
+      if (!keep) return;
+    }
     if (mode === "real_send") {
-      const ok = window.confirm(`确认创建企微真实发送任务？\n目标：${target}\n设备：${deviceId}\n\n创建后会进入该设备真实发送队列，请确认目标、设备和内容无误。`);
+      const ok = window.confirm(`确认创建企微真实发送任务？\n目标：${target}\n设备：${deviceId}\n预检：${preflight.label}\n\n创建后会进入该设备真实发送队列，请确认目标、设备和内容无误。`);
       if (!ok) return;
     }
     await api("/api/send-tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        family_id: (data.family_id || "").trim() || manualTaskFamilyId(target),
-        target_name: target,
-        scene: (data.scene || "").trim() || "控制端手动下发",
-        content,
-        device_id: deviceId,
-        send_mode: mode,
-        confirm_real_send: mode === "real_send",
-      }),
+      body: JSON.stringify(payload),
     });
     event.target.reset();
     toast(mode === "real_send" ? "真实发送任务已创建；请看发送准备和群内校验" : "试运行任务已创建");

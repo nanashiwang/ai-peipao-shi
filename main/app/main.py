@@ -176,6 +176,10 @@ class SendTaskIn(BaseModel):
     confirm_real_send: bool = False
 
 
+class SendTaskPreflightIn(SendTaskIn):
+    family_id: str = ""
+
+
 # 页面手动登记企微会话时使用；parent_nickname 就是企微搜索框里要输入的会话名。
 class FamilyIn(BaseModel):
     family_id: str = ""
@@ -1033,6 +1037,75 @@ def requeue_stale_assigned_tasks(
         sync_weekly_report_send_status(db, stale_task, "pending")
         count += 1
     return count
+
+
+def append_reason(reasons: list[str], detail) -> None:
+    text = str(detail or "").strip()
+    if text and text not in reasons:
+        reasons.append(text)
+
+
+def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request: Request | None = None) -> dict:
+    reasons: list[str] = []
+    target_name = (payload.target_name or "").strip()
+    content = (payload.content or "").strip()
+    device_id = (payload.device_id or "").strip()
+    mode = "dry_run"
+    try:
+        content = validate_send_task_content(content)
+    except HTTPException as exc:
+        append_reason(reasons, exc.detail)
+    try:
+        mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send)
+    except HTTPException as exc:
+        append_reason(reasons, exc.detail)
+        mode = "real_send" if (payload.send_mode or "").strip() == "real_send" else "dry_run"
+    if device_id:
+        try:
+            ensure_new_task_operation_allowed(request, "assign_device")
+        except HTTPException as exc:
+            append_reason(reasons, exc.detail)
+    dev = db.query(Device).filter(Device.device_id == device_id).first() if device_id else None
+    if device_id and not dev:
+        append_reason(reasons, f"指定设备「{device_id}」不存在")
+    if dev and not dev.allow_any_conversation and target_name not in device_conversations(dev):
+        append_reason(reasons, f"目标「{target_name}」不在设备「{dev.device_id}」负责会话内")
+    if mode == "real_send":
+        try:
+            ensure_new_task_operation_allowed(request, "confirm_real_send")
+        except HTTPException as exc:
+            append_reason(reasons, exc.detail)
+        if not device_id:
+            append_reason(reasons, "企微真实发送必须指定发送设备；每台设备代表一个发送人，不能由系统随机派发")
+        if content:
+            try:
+                validate_real_send_risk(db, target_name, content)
+            except HTTPException as exc:
+                append_reason(reasons, exc.detail)
+
+    task = SendTask(
+        family_id=(payload.family_id or "PREFLIGHT")[:64],
+        target_name=target_name,
+        scene=payload.scene or "预检",
+        content=content or payload.content,
+        device_id=device_id,
+        send_mode=mode,
+        status="pending",
+    )
+    readiness = send_task_readiness(db, task)
+    for reason in readiness.get("reasons", []):
+        append_reason(reasons, reason)
+    ok = not reasons and readiness.get("status") == "ready"
+    label = "发送预检通过" if ok else (readiness.get("label") or "发送预检未通过")
+    return {
+        "ok": ok,
+        "label": label,
+        "reasons": reasons,
+        "readiness": readiness,
+        "send_mode": mode,
+        "device_id": device_id,
+        "target_name": target_name,
+    }
 
 
 def weekly_report_send_status(task: SendTask | None) -> str:
@@ -3212,6 +3285,11 @@ def list_send_tasks(status: str = "", device_id: str = "", request: Request = No
     if device_id:
         query = query.filter(SendTask.device_id == device_id)
     return maybe_redact_for_request([send_task_view(t, request, db) for t in query.order_by(SendTask.id.desc()).all()], request)
+
+
+@app.post("/api/send-tasks/preflight")
+def preflight_send_task(payload: SendTaskPreflightIn, request: Request = None, db: Session = Depends(get_db)):
+    return build_send_task_preflight(db, payload, request)
 
 
 # 直接新增一条发送任务。
