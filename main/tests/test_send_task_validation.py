@@ -15,6 +15,8 @@ from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
     DeviceUpdateIn,
     HeartbeatIn,
+    RpaConversationIn,
+    RpaMessageIn,
     SendResultIn,
     SendTaskIn,
     SendTaskPreflightIn,
@@ -32,6 +34,7 @@ from app.main import (
     queue_task_real_send,
     record_send_result,
     resolve_send_screenshot,
+    sync_rpa_conversation,
     update_device,
     update_send_task,
     validate_send_task_execution_guard,
@@ -41,7 +44,7 @@ from app.main import (
     validate_send_mode_submit,
     validate_send_task_content,
 )
-from app.models import AuditLog, Device, Family, SendLog, SendTask
+from app.models import AuditLog, Device, DeviceConversationCheck, Family, SendLog, SendTask
 from app.services.admin_auth import admin_auth_secret, sign_admin_token
 
 
@@ -163,7 +166,15 @@ class RealSendRiskValidationTest(unittest.TestCase):
         self.db.add_all([
             Family(family_id="f1", parent_nickname="一合学社", coach_name="coach"),
             Family(family_id="f2", parent_nickname="一合学社", coach_name="coach"),
-            Device(device_id="rpa-01", token="token", conversations='["一合学社"]'),
+            Device(device_id="rpa-01", token="token", conversations='["一合学社"]', allow_real_send=True, wecom_ok="Y", last_heartbeat=datetime.utcnow()),
+            DeviceConversationCheck(
+                device_id="rpa-01",
+                target_name="一合学社",
+                status="ok",
+                message_count=1,
+                source="企业微信RPA-视觉回读",
+                verified_at=datetime.utcnow(),
+            ),
         ])
         self.db.commit()
         self.now = datetime(2026, 6, 29, 10, 0, 0)
@@ -239,7 +250,15 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.db.add_all([
             Family(family_id="f1", parent_nickname="一合学社", coach_name="coach"),
             Family(family_id="f2", parent_nickname="一合学社", coach_name="coach"),
-            Device(device_id="rpa-01", token="token", conversations='["一合学社"]'),
+            Device(device_id="rpa-01", token="token", conversations='["一合学社"]', allow_real_send=True, wecom_ok="Y", last_heartbeat=datetime.utcnow()),
+            DeviceConversationCheck(
+                device_id="rpa-01",
+                target_name="一合学社",
+                status="ok",
+                message_count=1,
+                source="企业微信RPA-视觉回读",
+                verified_at=datetime.utcnow(),
+            ),
         ])
         self.db.commit()
 
@@ -629,6 +648,19 @@ class ClaimTaskGuardTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
+    def add_conversation_proof(self, device_id: str = "dev-a", target_name: str = "一合学社", verified_at: datetime | None = None):
+        self.db.add(
+            DeviceConversationCheck(
+                device_id=device_id,
+                target_name=target_name,
+                status="ok",
+                message_count=1,
+                source="企业微信RPA-视觉回读",
+                verified_at=verified_at or datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
     def test_claim_marks_stale_task_failed_and_only_returns_recent_task(self):
         stale_time = datetime.utcnow() - timedelta(days=8)
         old_task = SendTask(
@@ -715,6 +747,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.dev.wecom_ok = "Y"
         self.dev.last_heartbeat = datetime.utcnow()
         self.db.commit()
+        self.add_conversation_proof()
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
@@ -764,6 +797,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.dev.wecom_ok = "Y"
         self.db.commit()
+        self.add_conversation_proof()
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
@@ -793,6 +827,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.dev.outbox_pending_count = 0
         self.db.commit()
+        self.add_conversation_proof()
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
@@ -829,6 +864,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.dev.wecom_ok = "Y"
         self.dev.last_heartbeat = datetime.utcnow()
         self.db.commit()
+        self.add_conversation_proof()
 
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
@@ -904,6 +940,58 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertTrue(result["outbox_blocked"])
         self.assertIn("2", result["outbox_status_label"])
 
+    def test_rpa_sync_records_device_conversation_read_proof(self):
+        request = SimpleNamespace(headers={"x-device-id": "dev-a", "x-device-token": "token"}, state=SimpleNamespace())
+
+        result = sync_rpa_conversation(
+            RpaConversationIn(
+                target_name="一合学社",
+                family_id="WECOM_一合学社",
+                messages=[
+                    RpaMessageIn(speaker="我", content="群内可见消息", source="企业微信RPA-视觉回读"),
+                ],
+                auto_generate_reply=False,
+                auto_create_reply_task=False,
+                auto_generate_all_agents=False,
+            ),
+            request=request,
+            db=self.db,
+        )
+
+        proof = self.db.query(DeviceConversationCheck).filter_by(device_id="dev-a", target_name="一合学社").one()
+        self.assertEqual(result["conversation_check"]["status"], "ok")
+        self.assertEqual(proof.message_count, 1)
+        self.assertEqual(proof.source, "企业微信RPA-视觉回读")
+        view = update_device("dev-a", DeviceUpdateIn(), db=self.db)
+        self.assertEqual(view["conversation_proof_count"], 1)
+
+    def test_real_send_claim_waits_for_recent_device_conversation_proof(self):
+        task = SendTask(
+            family_id="f-real-proof",
+            target_name="一合学社",
+            scene="real",
+            content="有可读证明后才真发",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add(task)
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "pending")
+        row = list_send_tasks(db=self.db)[0]
+        self.assertIn("没有成功读取目标", "；".join(row["send_readiness"]["reasons"]))
+
+        self.add_conversation_proof()
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
+
     def test_task_readiness_explains_real_send_blocks_and_ready_state(self):
         task = SendTask(
             family_id="f-ready",
@@ -925,6 +1013,11 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.dev.wecom_ok = "Y"
         self.dev.last_heartbeat = datetime.utcnow()
         self.db.commit()
+        row = list_send_tasks(db=self.db)[0]
+        self.assertEqual(row["send_readiness"]["status"], "blocked")
+        self.assertIn("没有成功读取目标", "；".join(row["send_readiness"]["reasons"]))
+
+        self.add_conversation_proof()
         row = list_send_tasks(db=self.db)[0]
 
         self.assertEqual(row["send_readiness"]["status"], "ready")
@@ -951,6 +1044,23 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.dev.wecom_ok = "Y"
         self.dev.last_heartbeat = datetime.utcnow()
         self.db.commit()
+        ready = build_send_task_preflight(
+            self.db,
+            SendTaskPreflightIn(
+                family_id="f-preflight",
+                target_name="一合学社",
+                scene="real",
+                content="预检内容",
+                send_mode="real_send",
+                confirm_real_send=True,
+                device_id="dev-a",
+            ),
+        )
+
+        self.assertFalse(ready["ok"])
+        self.assertIn("没有成功读取目标", "；".join(ready["reasons"]))
+
+        self.add_conversation_proof()
         ready = build_send_task_preflight(
             self.db,
             SendTaskPreflightIn(

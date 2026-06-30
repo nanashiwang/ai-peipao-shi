@@ -241,6 +241,22 @@ class Device(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+# 设备对具体企微会话的可读证明：真实发送前必须确认“这台电脑能打开并读到这个目标”。
+class DeviceConversationCheck(Base):
+    __tablename__ = "device_conversation_checks"
+    __table_args__ = (UniqueConstraint("device_id", "target_name", name="uq_device_conversation_check"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_name: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ok")
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(80), default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    verified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # 导入去重表，防止同一来源文件被重复导入。
 class ProcessedImport(Base):
     __tablename__ = "processed_imports"

@@ -32,6 +32,7 @@ from app.models import (
     AuditLog,
     CheckinRecord,
     Device,
+    DeviceConversationCheck,
     Family,
     FollowupRecord,
     ParentProfile,
@@ -97,6 +98,7 @@ MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
 SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
+DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS = 24
 WEEKLY_REPORT_SCENE = "周报发送"
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
@@ -561,6 +563,19 @@ def actor_from_request(request: Request | None, fallback: str = "控制端") -> 
     return (actor or fallback)[:120]
 
 
+def device_from_optional_headers(db: Session, request: Request | None) -> Device | None:
+    if request is None:
+        return None
+    device_id = (request.headers.get("x-device-id") or "").strip()
+    if not device_id:
+        return None
+    token = (request.headers.get("x-device-token") or "").strip()
+    dev = db.query(Device).filter(Device.device_id == device_id).first()
+    if not dev or dev.token != token:
+        raise HTTPException(401, "设备未注册或 token 不正确")
+    return dev
+
+
 def audit_json(data: dict | None) -> str:
     return json.dumps(data or {}, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -994,6 +1009,43 @@ def device_ready_for_real_send(dev: Device, now: datetime | None = None) -> bool
     return bool(dev.allow_real_send and device_online(dev, now) and dev.wecom_ok == "Y" and (dev.outbox_pending_count or 0) == 0)
 
 
+def device_conversation_check(db: Session, device_id: str, target_name: str) -> DeviceConversationCheck | None:
+    clean_device_id = (device_id or "").strip()
+    clean_target = (target_name or "").strip()
+    if not clean_device_id or not clean_target:
+        return None
+    return (
+        db.query(DeviceConversationCheck)
+        .filter(DeviceConversationCheck.device_id == clean_device_id, DeviceConversationCheck.target_name == clean_target)
+        .first()
+    )
+
+
+def device_conversation_proof_reason(db: Session, dev: Device, target_name: str, now: datetime | None = None) -> str:
+    now = now or datetime.utcnow()
+    proof = device_conversation_check(db, dev.device_id, target_name)
+    max_age = timedelta(hours=DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS)
+    if not proof:
+        return (
+            f"设备「{dev.device_id}」最近 {DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS} 小时没有成功读取目标「{target_name}」的会话记录；"
+            "请先在该被控端同步/校验目标会话"
+        )
+    if proof.status != "ok":
+        return f"设备「{dev.device_id}」最近读取目标「{target_name}」失败：{proof.last_error or proof.status}"
+    if not proof.verified_at or proof.verified_at < now - max_age:
+        return (
+            f"设备「{dev.device_id}」对目标「{target_name}」的可读证明已过期"
+            f"（最近校验：{timeline_time(proof.verified_at)}），请重新同步/校验"
+        )
+    if (proof.message_count or 0) <= 0:
+        return f"设备「{dev.device_id}」对目标「{target_name}」的最近校验未读到聊天消息，请先确认目标会话可读"
+    return ""
+
+
+def device_conversation_recently_verified(db: Session, dev: Device, target_name: str, now: datetime | None = None) -> bool:
+    return not device_conversation_proof_reason(db, dev, target_name, now)
+
+
 def device_has_inflight_real_send(db: Session, dev: Device, exclude_task_id: int = 0) -> bool:
     query = db.query(SendTask).filter(
         SendTask.device_id == dev.device_id,
@@ -1039,6 +1091,8 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
             reasons.append(f"设备「{dev.device_id}」已有真实发送任务执行中，需等待上一条回写后再领取")
         if not dev.allow_any_conversation and task.target_name not in device_conversations(dev):
             reasons.append(f"目标「{task.target_name}」不在设备「{dev.device_id}」负责会话内")
+        if mode == "real_send":
+            append_reason(reasons, device_conversation_proof_reason(db, dev, task.target_name, now))
     if status == "assigned" and task.scheduled_at and task.scheduled_at < now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS):
         reasons.append("任务已被该设备领取但超时未回写，等待同设备回收重试")
 
@@ -1162,6 +1216,17 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
     }
 
 
+def ensure_real_send_readiness(db: Session, task: SendTask) -> None:
+    if send_log_mode(task) != "real_send":
+        return
+    if (task.status or "pending").strip() != "pending":
+        return
+    readiness = send_task_readiness(db, task)
+    if readiness.get("status") != "ready":
+        detail = "；".join(readiness.get("reasons") or []) or readiness.get("label") or "真实发送条件未就绪"
+        raise HTTPException(400, f"真实发送预检未通过：{detail}")
+
+
 def weekly_report_send_status(task: SendTask | None) -> str:
     if not task:
         return "not_created"
@@ -1254,6 +1319,33 @@ def parse_rpa_time(value: str) -> datetime:
         except ValueError:
             pass
     return datetime.utcnow()
+
+
+def record_device_conversation_check(
+    db: Session,
+    dev: Device | None,
+    target_name: str,
+    status: str,
+    message_count: int = 0,
+    source: str = "",
+    last_error: str = "",
+    verified_at: datetime | None = None,
+) -> DeviceConversationCheck | None:
+    if not dev or not (target_name or "").strip():
+        return None
+    now = verified_at or datetime.utcnow()
+    clean_target = target_name.strip()
+    row = device_conversation_check(db, dev.device_id, clean_target)
+    if not row:
+        row = DeviceConversationCheck(device_id=dev.device_id, target_name=clean_target)
+        db.add(row)
+    row.status = status
+    row.message_count = max(int(message_count or 0), 0)
+    row.source = (source or "")[:80]
+    row.last_error = (last_error or "")[:500]
+    row.verified_at = now
+    row.updated_at = now
+    return row
 
 
 # 系统启动时预置一批默认模板，保证前端初次打开就有可用话术。
@@ -2955,6 +3047,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
         send_mode=send_mode,
         status="pending",
     )
+    ensure_real_send_readiness(db, task)
     output.status = "task_created"
     output.edited_output = content
     output.updated_at = datetime.utcnow()
@@ -3060,6 +3153,7 @@ def run_checkin_pbl_agent(payload: AgentRequest, request: Request = None, db: Se
 # RPA 同步企业微信会话消息，并可选自动生成回复任务。
 @app.post("/api/rpa/conversations/sync")
 def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, db: Session = Depends(get_db)):
+    dev = device_from_optional_headers(db, request)
     family_id = payload.family_id.strip()
     family = None
     if family_id:
@@ -3084,6 +3178,17 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
 
     inserted = 0
     latest_parent_message = payload.latest_message.strip()
+    readable_messages = [msg for msg in payload.messages if (msg.content or "").strip()]
+    proof_source = next((msg.source for msg in readable_messages if (msg.source or "").strip()), "企业微信RPA")
+    conversation_check = record_device_conversation_check(
+        db,
+        dev,
+        payload.target_name,
+        "ok" if readable_messages else "failed",
+        message_count=len(readable_messages),
+        source=proof_source,
+        last_error="" if readable_messages else "同步时未读到聊天消息",
+    )
     for msg in payload.messages:
         content = msg.content.strip()
         if not content:
@@ -3158,6 +3263,7 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
         "family_id": family_id,
         "target_name": payload.target_name,
         "messages_inserted": inserted,
+        "conversation_check": as_dict(conversation_check) if conversation_check else None,
         "ai_output": as_dict(ai_output) if ai_output else None,
         "generated_outputs": [as_dict(item) for item in generated_outputs],
         "send_task": as_dict(task) if task else None,
@@ -3361,6 +3467,7 @@ def create_send_task(payload: SendTaskIn, request: Request = None, db: Session =
         validate_real_send_device_binding(data["device_id"])
         validate_real_send_risk(db, data.get("target_name", ""), data["content"])
     task = SendTask(**data)
+    ensure_real_send_readiness(db, task)
     add_send_task_with_audit(db, task, "create", actor_from_request(request), "控制端手动创建发送任务")
     db.commit()
     return send_task_view(task, request, db)
@@ -3416,6 +3523,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     task.status = next_status
     if task.status == "pending":
         task.scheduled_at = datetime.utcnow()
+    ensure_real_send_readiness(db, task)
     action = "confirm_real_send" if previous_mode != "real_send" and send_mode == "real_send" else "update"
     summary = "确认真实发送" if action == "confirm_real_send" else "更新发送任务"
     audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
@@ -3488,6 +3596,7 @@ def queue_task_real_send(
     task.last_error = ""
     task.next_retry_at = None
     task.scheduled_at = datetime.utcnow()
+    ensure_real_send_readiness(db, task)
     audit_send_task_change(db, task, "confirm_real_send", actor_from_request(request), "控制端确认企微真实发送", before)
     sync_weekly_report_send_status(db, task, "pending")
     db.commit()
@@ -3719,6 +3828,26 @@ def device_view(dev: Device, db: Session) -> dict:
     data["conversation_scope_label"] = "全会话" if dev.allow_any_conversation else "白名单会话"
     data["outbox_blocked"] = bool((dev.outbox_pending_count or 0) > 0)
     data["outbox_status_label"] = f"结果待补传 {dev.outbox_pending_count} 条" if data["outbox_blocked"] else "结果已同步"
+    proof_deadline = datetime.utcnow() - timedelta(hours=DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS)
+    recent_checks = (
+        db.query(DeviceConversationCheck)
+        .filter(
+            DeviceConversationCheck.device_id == dev.device_id,
+            DeviceConversationCheck.status == "ok",
+            DeviceConversationCheck.verified_at >= proof_deadline,
+        )
+        .count()
+    )
+    latest_check = (
+        db.query(DeviceConversationCheck)
+        .filter(DeviceConversationCheck.device_id == dev.device_id)
+        .order_by(DeviceConversationCheck.verified_at.desc())
+        .first()
+    )
+    data["conversation_proof_count"] = recent_checks
+    data["conversation_proof_label"] = f"{recent_checks} 个会话24小时内可读"
+    data["last_conversation_proof_at"] = timeline_time(latest_check.verified_at) if latest_check else ""
+    data["last_conversation_proof_target"] = latest_check.target_name if latest_check else ""
     return data
 
 
@@ -3916,6 +4045,11 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
     candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
     candidates = apply_claim_row_lock(candidates_query, db).all()
+    candidates = [
+        task
+        for task in candidates
+        if send_log_mode(task) != "real_send" or device_conversation_recently_verified(db, dev, task.target_name, now)
+    ]
     real_send_candidate = next((task for task in candidates if send_log_mode(task) == "real_send"), None)
     if real_send_candidate:
         # 真实发送有外部状态，不批量预占任务；一次只派发一条，避免未执行任务进入 assigned。

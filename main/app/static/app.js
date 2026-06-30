@@ -411,7 +411,8 @@ function renderManualTaskForm() {
   const current = select.value || "";
   const options = ['<option value="">自动领取（仅试运行）</option>'].concat(
     state.devices.map((device) => {
-      const health = `${device.online ? "在线" : "离线"} / 企微${device.wecom_ok === "Y" ? "正常" : (device.wecom_ok || "未知")} / ${device.allow_real_send ? "可真发" : "仅试运行"}`;
+      const proof = device.conversation_proof_label || "0 个会话24小时内可读";
+      const health = `${device.online ? "在线" : "离线"} / 企微${device.wecom_ok === "Y" ? "正常" : (device.wecom_ok || "未知")} / ${device.allow_real_send ? "可真发" : "仅试运行"} / ${proof}`;
       const label = `${device.device_id}${device.name ? ` · ${device.name}` : ""} · ${health}`;
       return `<option value="${esc(device.device_id)}" ${current === device.device_id ? "selected" : ""}>${esc(label)}</option>`;
     })
@@ -1401,6 +1402,15 @@ function deviceOutboxStatus(device) {
   return `${badge(device.outbox_status_label || `待补传 ${pending} 条`, "danger")}${detail}`;
 }
 
+function deviceConversationProofStatus(device) {
+  const count = Number(device.conversation_proof_count || 0);
+  const label = device.conversation_proof_label || `${count} 个会话24小时内可读`;
+  const detail = device.last_conversation_proof_target
+    ? `<p class="muted">最近：${esc(device.last_conversation_proof_target)} · ${esc(device.last_conversation_proof_at || "")}</p>`
+    : "";
+  return `${badge(label, count > 0 ? "ok" : "warn")}${detail}`;
+}
+
 // 渲染设备监控列表。
 function renderDevices() {
   $("deviceTable").innerHTML = table([
@@ -1408,6 +1418,7 @@ function renderDevices() {
     { label: "名称", key: "name" },
     { label: "在线", render: (r) => badge(r.online ? "在线" : "离线", r.online ? "ok" : "") },
     { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
+    { label: "会话可读证明", render: deviceConversationProofStatus },
     { label: "结果补传", render: deviceOutboxStatus },
     { label: "真实发送开关", render: deviceRealSendControl },
     { label: "会话范围", render: deviceConversationScopeControl },

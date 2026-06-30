@@ -1736,7 +1736,13 @@ def sync_conversation_to_api(target_name: str, family_id: str, messages: list[di
         "auto_generate_all_agents": bool(config.get("auto_generate_all_agents", True)),
         "latest_message": latest_message,
     }
-    return request_json(config["api_base_url"], "/api/rpa/conversations/sync", method="POST", payload=payload)
+    return request_json(
+        config["api_base_url"],
+        "/api/rpa/conversations/sync",
+        method="POST",
+        payload=payload,
+        extra_headers=device_headers(config),
+    )
 
 
 def sync_target_conversation(config: dict, target: str, family_id: str = "", fields: dict | None = None) -> dict:
