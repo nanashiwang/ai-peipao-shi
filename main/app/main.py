@@ -956,6 +956,9 @@ def validate_real_send_device_binding(device_id: str) -> None:
         raise HTTPException(400, "企微真实发送必须指定发送设备；每台设备代表一个发送人，不能由系统随机派发")
 
 
+CLAIM_TIMEOUT_SECONDS = 300        # assigned 超过这个时间没回写就回收成 pending
+
+
 def device_online(dev: Device, now: datetime | None = None) -> bool:
     now = now or datetime.utcnow()
     return bool(dev.last_heartbeat) and (now - dev.last_heartbeat) <= timedelta(seconds=HEARTBEAT_ONLINE_SECONDS)
@@ -1004,6 +1007,32 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
     if mode == "real_send":
         return {"status": "ready", "label": "真实发送条件就绪", "reasons": []}
     return {"status": "ready", "label": "试运行条件就绪", "reasons": []}
+
+
+def requeue_stale_assigned_tasks(
+    db: Session,
+    now: datetime | None = None,
+    device_id: str = "",
+    request: Request | None = None,
+    actor: str = "控制端维护",
+) -> int:
+    now = now or datetime.utcnow()
+    stale_before = now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
+    query = db.query(SendTask).filter(SendTask.status == "assigned", SendTask.scheduled_at < stale_before)
+    if device_id:
+        query = query.filter(SendTask.device_id == device_id)
+    query = apply_family_id_scope(query, SendTask.family_id, db, request)
+    count = 0
+    for stale_task in query.limit(100).all():
+        before = send_task_snapshot(stale_task)
+        stale_task.status = "pending"
+        stale_task.next_retry_at = now
+        stale_task.scheduled_at = now
+        stale_task.last_error = f"设备「{stale_task.device_id or '未绑定'}」领取后超时未回写，已恢复为原设备待重试"
+        audit_send_task_change(db, stale_task, "same_device_requeue", actor, "超时 assigned 任务已恢复为原设备重试", before)
+        sync_weekly_report_send_status(db, stale_task, "pending")
+        count += 1
+    return count
 
 
 def weekly_report_send_status(task: SendTask | None) -> str:
@@ -3174,6 +3203,9 @@ def create_tasks_from_scenes(request: Request = None, db: Session = Depends(get_
 # 发送任务列表接口（可选按 status / device_id 过滤，便于看板和调试）。
 @app.get("/api/send-tasks")
 def list_send_tasks(status: str = "", device_id: str = "", request: Request = None, db: Session = Depends(get_db)):
+    recovered = requeue_stale_assigned_tasks(db, request=request, actor=actor_from_request(request, "控制端维护"))
+    if recovered:
+        db.commit()
     query = apply_family_id_scope(db.query(SendTask), SendTask.family_id, db, request)
     if status:
         query = query.filter(SendTask.status == status)
@@ -3516,9 +3548,6 @@ def get_send_artifact(filename: str):
 
 # ============ 设备（多被控端总控）============
 HEARTBEAT_ONLINE_SECONDS = 90      # 心跳在这个时间窗内算 online
-CLAIM_TIMEOUT_SECONDS = 300        # assigned 超过这个时间没回写就回收成 pending
-
-
 # 设备鉴权依赖：claim / heartbeat 等设备接口校验 X-Device-Id + X-Device-Token。
 def require_device(
     x_device_id: str = Header(...),
@@ -3716,21 +3745,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     safe_limit = normalize_claim_limit(limit)
     now = datetime.utcnow()
     # 先回收本设备超时未回写的 assigned 任务；设备代表发送人，只能回到同设备重试。
-    stale_before = now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
-    stale_tasks = (
-        db.query(SendTask)
-        .filter(SendTask.device_id == dev.device_id, SendTask.status == "assigned", SendTask.scheduled_at < stale_before)
-        .limit(50)
-        .all()
-    )
-    for stale_task in stale_tasks:
-        before = send_task_snapshot(stale_task)
-        stale_task.status = "pending"
-        stale_task.next_retry_at = now
-        stale_task.scheduled_at = now
-        stale_task.last_error = f"设备「{dev.device_id}」领取后超时未回写，已恢复为本设备待重试"
-        audit_send_task_change(db, stale_task, "same_device_requeue", f"设备:{dev.device_id}", "超时 assigned 任务已恢复为本设备重试", before)
-        sync_weekly_report_send_status(db, stale_task, "pending")
+    requeue_stale_assigned_tasks(db, now=now, device_id=dev.device_id, actor=f"设备:{dev.device_id}")
 
     convs = device_conversations(dev)
     if not convs and not dev.allow_any_conversation:

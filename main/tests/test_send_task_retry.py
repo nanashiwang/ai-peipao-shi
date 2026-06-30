@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import SendResultIn, build_ops_health_dashboard, claim_tasks, record_send_result, retry_failed_task
+from app.main import SendResultIn, build_ops_health_dashboard, claim_tasks, list_send_tasks, record_send_result, retry_failed_task
 from app.models import AuditLog, Device, SendLog, SendTask
 
 
@@ -91,6 +91,20 @@ class SendTaskRetryTest(unittest.TestCase):
         self.db.refresh(task)
         self.assertEqual(task.status, "assigned")
         self.assertEqual(task.device_id, "dev-a")
+        self.assertIn("same_device_requeue", {item.action for item in self.db.query(AuditLog).all()})
+
+    def test_task_list_requeues_stale_assigned_without_device_failover(self):
+        task = self.add_task(send_mode="real_send")
+        task.scheduled_at = datetime.utcnow() - timedelta(minutes=10)
+        self.db.commit()
+
+        rows = list_send_tasks(db=self.db)
+
+        self.db.refresh(task)
+        self.assertEqual([row["id"] for row in rows], [task.id])
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.device_id, "dev-a")
+        self.assertIsNotNone(task.next_retry_at)
         self.assertIn("same_device_requeue", {item.action for item in self.db.query(AuditLog).all()})
 
     def test_real_send_failure_goes_to_manual_alert_without_auto_retry(self):
