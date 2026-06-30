@@ -10,8 +10,10 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 
 ADMIN_ROLES = {"admin", "coach", "readonly"}
@@ -27,7 +29,9 @@ ADMIN_ONLY_PREFIXES = (
 )
 PUBLIC_PATHS = {
     "/health",
+    "/api/admin/auth/status",
     "/api/admin/auth/login",
+    "/api/admin/auth/register",
     "/api/test-chat/login",
 }
 
@@ -56,15 +60,32 @@ def admin_auth_required(env: dict | None = None) -> bool:
         return True
     if explicit in {"0", "false", "no", "off"}:
         return False
-    return str(source.get("APP_ENV", "")).strip().lower() in {"production", "prod"}
+    return str(source.get("APP_ENV", "")).strip().lower() in {"pilot", "staging", "docker", "production", "prod"}
 
 
 def admin_auth_secret(env: dict | None = None) -> str:
     source = env or os.environ
     secret = str(source.get("ADMIN_AUTH_SECRET", "")).strip()
-    if admin_auth_required(source) and not secret:
+    app_env = str(source.get("APP_ENV", "")).strip().lower()
+    if secret:
+        return secret
+    if admin_auth_required(source) and app_env in {"production", "prod"}:
         raise RuntimeError("正式管理端鉴权必须设置 ADMIN_AUTH_SECRET")
-    return secret or "local-dev-admin-secret"
+    if env is not None:
+        return "local-dev-admin-secret"
+    return persisted_dev_secret()
+
+
+def persisted_dev_secret() -> str:
+    path = Path(os.getenv("ADMIN_AUTH_SECRET_FILE", "config/admin_secret.txt"))
+    if path.exists():
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = secrets.token_urlsafe(48)
+    path.write_text(value, encoding="utf-8")
+    return value
 
 
 def _b64(data: bytes) -> str:
@@ -174,7 +195,7 @@ def verify_parent_token(token: str, secret: str, now: int | None = None) -> Pare
 
 def bearer_token(authorization: str) -> str:
     prefix = "Bearer "
-    value = authorization or ""
+    value = authorization if isinstance(authorization, str) else ""
     return value[len(prefix):].strip() if value.startswith(prefix) else ""
 
 

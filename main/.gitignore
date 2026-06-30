@@ -10,6 +10,7 @@ server.log
 server.err.log
 .env
 config/ark.json
+config/admin_secret.txt
 data/send_screenshots/
 rpa/debug_*.png
 rpa/config.json

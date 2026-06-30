@@ -25,7 +25,8 @@ const state = {
   accounts: [],
   conversations: [],
   chatMessages: [],
-  currentUser: JSON.parse(localStorage.getItem("chatUser") || "null"),
+  currentUser: JSON.parse(localStorage.getItem("controlUser") || localStorage.getItem("chatUser") || "null"),
+  authStatus: {},
   selectedCampusName: localStorage.getItem("campusFilter") || "",
   selectedCoachName: localStorage.getItem("coachFilter") || "",
   selectedChatFamilyId: "",
@@ -57,9 +58,39 @@ function currentActor() {
 }
 
 function userRoleBadge(user) {
-  const labels = { admin: "管理员", coach: "陪跑师", readonly: "只读", parent: "家长" };
+  const labels = { admin: "超管", coach: "陪跑师", readonly: "只读", parent: "家长" };
   const kind = user.role === "admin" ? "danger" : user.role === "coach" ? "ok" : user.role === "readonly" ? "warn" : "";
   return badge(labels[user.role] || user.role, kind);
+}
+
+function isControlUser(user = state.currentUser) {
+  return ["admin", "coach", "readonly"].includes(user?.role);
+}
+
+function isAdminUser(user = state.currentUser) {
+  return user?.role === "admin";
+}
+
+function safeApi(path, fallback, options = {}) {
+  return api(path, options).catch(() => fallback);
+}
+
+function saveCurrentUser(user) {
+  state.currentUser = user;
+  if (user) {
+    localStorage.setItem("controlUser", JSON.stringify(user));
+    localStorage.setItem("chatUser", JSON.stringify(user));
+  } else {
+    localStorage.removeItem("controlUser");
+    localStorage.removeItem("chatUser");
+  }
+  renderAuthState();
+}
+
+function logoutCurrentUser() {
+  saveCurrentUser(null);
+  toast("已退出登录");
+  switchTab("auth");
 }
 
 function userCampusText(user) {
@@ -119,6 +150,40 @@ async function withAction(label, fn) {
 // 渲染一个小标签，统一状态样式。
 function badge(text, kind = "") {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
+}
+
+function renderAuthState() {
+  const user = state.currentUser;
+  const status = state.authStatus || {};
+  const authBar = $("authBar");
+  if (authBar) {
+    authBar.innerHTML = user
+      ? `<span>${userRoleBadge(user)} ${esc(user.display_name || user.username)}</span><button onclick="logoutCurrentUser()">退出</button>`
+      : `<button onclick="switchTab('auth')">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
+  }
+  if ($("authHint")) {
+    $("authHint").textContent = status.message || (status.bootstrap_required ? "首次注册账号将自动成为超管" : "请登录控制端账号");
+  }
+  if ($("adminRegisterRole")) {
+    $("adminRegisterRole").disabled = !!status.bootstrap_required;
+    $("adminRegisterRole").value = status.bootstrap_required ? "admin" : ($("adminRegisterRole").value || "coach");
+  }
+  if ($("adminRegisterNote")) {
+    $("adminRegisterNote").textContent = status.bootstrap_required
+      ? "当前系统还没有控制端账号，本次注册将自动成为超管。"
+      : "已有超管后，只有超管登录状态下才能继续创建账号。";
+  }
+  if ($("authCurrentUser")) {
+    $("authCurrentUser").innerHTML = user
+      ? `<strong>当前登录：</strong>${userRoleBadge(user)} ${esc(user.display_name || user.username)}<p class="muted">校区范围：${esc(userCampusText(user) || "全部校区")}</p>`
+      : emptyState("未登录", "请先登录；如果是首次使用，请在右侧注册第一个超管账号。");
+  }
+}
+
+async function refreshAuthStatus() {
+  state.authStatus = await api("/api/admin/auth/status");
+  renderAuthState();
+  return state.authStatus;
 }
 
 function displayValue(value, fallback = "未登记") {
@@ -1311,6 +1376,7 @@ function renderTemplates() {
 
 // 渲染所有内容。
 function renderAll() {
+  renderAuthState();
   renderKpis();
   renderWorkbenchOverview();
   renderServiceQuality();
@@ -1340,6 +1406,7 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     if (isInitialDataEmpty()) renderGlobalLoading();
+    const adminOnly = isAdminUser();
     const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
@@ -1347,20 +1414,20 @@ async function refreshAll() {
       api("/api/templates"),
       api("/api/send-tasks"),
       api("/api/send-logs"),
-      api("/api/audit-logs?entity_type=send_task&limit=200"),
+      adminOnly ? api("/api/audit-logs?entity_type=send_task&limit=200") : Promise.resolve([]),
       api(scopedPath("/api/workbench/today-priorities", { limit: 12 })),
       api(scopedPath("/api/workbench/overview", { limit: 8 }, { includeCoach: true })),
-      api(scopedPath("/api/admin/service-quality")),
+      adminOnly ? api(scopedPath("/api/admin/service-quality")) : Promise.resolve({}),
       api("/api/ai-outputs"),
-      api("/api/test-chat/accounts"),
+      safeApi("/api/test-chat/accounts", []),
       api("/api/test-chat/conversations"),
-      api("/api/devices"),
-      api("/api/ops/health"),
-      api("/api/ops/backups"),
-      api("/api/ops/retention"),
-      api("/api/ark-config").catch(() => ({})),
-      api("/api/import/templates"),
-      api("/api/agent/evaluations/run", { method: "POST" }),
+      adminOnly ? api("/api/devices") : Promise.resolve([]),
+      adminOnly ? api("/api/ops/health") : Promise.resolve({}),
+      adminOnly ? api("/api/ops/backups") : Promise.resolve([]),
+      adminOnly ? api("/api/ops/retention") : Promise.resolve({}),
+      adminOnly ? safeApi("/api/ark-config", {}) : Promise.resolve({}),
+      adminOnly ? api("/api/import/templates") : Promise.resolve([]),
+      adminOnly ? api("/api/agent/evaluations/run", { method: "POST" }) : Promise.resolve({}),
     ]);
     Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
@@ -1837,6 +1904,47 @@ $("wecomForm").onsubmit = async (event) => {
   });
 };
 
+// 控制端登录和首个超管注册。
+$("adminLoginForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await withAction("控制端登录", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    const user = await api("/api/admin/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    saveCurrentUser(user);
+    toast(`已登录：${user.display_name || user.username}`);
+    await refreshAll();
+    switchTab(user.role === "readonly" ? "dashboard" : "tasks");
+  });
+};
+
+$("adminRegisterForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await withAction("注册控制端账号", async () => {
+    const wasBootstrap = !!state.authStatus.bootstrap_required;
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    const user = await api("/api/admin/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    event.target.reset();
+    await refreshAuthStatus();
+    if (wasBootstrap) {
+      saveCurrentUser(user);
+      toast("首个超管账号已创建并登录");
+      await refreshAll();
+      switchTab("dashboard");
+      return;
+    }
+    toast(`账号已创建：${user.display_name || user.username}`);
+    await refreshAll();
+  });
+};
+
 // 网页通讯登录。
 $("loginForm").onsubmit = async (event) => {
   event.preventDefault();
@@ -1847,8 +1955,7 @@ $("loginForm").onsubmit = async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-    state.currentUser = user;
-    localStorage.setItem("chatUser", JSON.stringify(user));
+    saveCurrentUser(user);
     toast(`已登录：${user.display_name}`);
     if (user.role === "parent") {
       await refreshParentDashboard();
@@ -1983,9 +2090,32 @@ window.addEventListener("error", (event) => {
   setActionStatus(`页面错误：${event.message}`, "error");
 });
 
-api("/health").then(() => $("health").textContent = "本地服务正常").catch(() => $("health").textContent = "服务异常");
-if (state.currentUser?.role === "parent") {
-  refreshParentDashboard().then(renderAll).then(() => switchTab("parentDashboard")).catch((err) => toast(`家长看板加载失败：${err.message}`));
-} else {
-  refreshAll().catch((err) => toast(`加载失败：${err.message}`));
+async function bootApp() {
+  api("/health").then(() => $("health").textContent = "本地服务正常").catch(() => $("health").textContent = "服务异常");
+  try {
+    await refreshAuthStatus();
+    if (state.authStatus.auth_required && !state.currentUser) {
+      renderAll();
+      switchTab("auth");
+      return;
+    }
+    if (state.currentUser?.role === "parent") {
+      await refreshParentDashboard();
+      renderAll();
+      switchTab("parentDashboard");
+      return;
+    }
+    await refreshAll();
+  } catch (err) {
+    if (String(err?.message || "").includes("401")) {
+      saveCurrentUser(null);
+      renderAll();
+      switchTab("auth");
+      toast("登录已失效，请重新登录");
+      return;
+    }
+    toast(`加载失败：${err.message}`);
+  }
 }
+
+bootApp();

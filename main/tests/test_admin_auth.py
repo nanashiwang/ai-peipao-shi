@@ -12,8 +12,9 @@ from app.services.admin_auth import (
 
 
 class AdminAuthTest(unittest.TestCase):
-    def test_auth_required_only_when_explicit_or_production(self):
+    def test_auth_required_for_pilot_and_production_unless_explicitly_disabled(self):
         self.assertFalse(admin_auth_required({"APP_ENV": "local"}))
+        self.assertTrue(admin_auth_required({"APP_ENV": "pilot"}))
         self.assertTrue(admin_auth_required({"APP_ENV": "production"}))
         self.assertTrue(admin_auth_required({"ADMIN_AUTH_REQUIRED": "true", "APP_ENV": "local"}))
         self.assertFalse(admin_auth_required({"ADMIN_AUTH_REQUIRED": "false", "APP_ENV": "production"}))
@@ -45,7 +46,9 @@ class AdminAuthTest(unittest.TestCase):
 
     def test_protected_paths_and_role_permissions(self):
         self.assertFalse(path_requires_admin_auth("/health"))
+        self.assertFalse(path_requires_admin_auth("/api/admin/auth/status"))
         self.assertFalse(path_requires_admin_auth("/api/admin/auth/login"))
+        self.assertFalse(path_requires_admin_auth("/api/admin/auth/register"))
         self.assertFalse(path_requires_admin_auth("/api/parent/dashboard"))
         self.assertFalse(path_requires_admin_auth("/api/devices/rpa-01/heartbeat"))
         self.assertTrue(path_requires_admin_auth("/api/send-tasks"))

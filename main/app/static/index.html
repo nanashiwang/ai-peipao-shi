@@ -16,6 +16,7 @@
     <nav aria-label="主导航">
       <div class="nav-group">
         <span class="nav-label">日常工作</span>
+        <button data-tab="auth" data-title="登录注册">登录注册</button>
         <button data-tab="dashboard" data-title="工作台" class="active">工作台</button>
         <button data-tab="parentDashboard" data-title="家长看板">家长看板</button>
         <button data-tab="webChat" data-title="陪跑会话">陪跑会话</button>
@@ -52,6 +53,7 @@
         <span id="actionStatus"></span>
       </div>
       <div class="actions">
+        <div id="authBar" class="auth-bar"></div>
         <label class="file">
           导入 CSV/XLSX
           <input id="fileInput" type="file" accept=".csv,.xlsx,.xlsm" />
@@ -61,6 +63,42 @@
         <button id="scanBtn">识别打卡</button>
       </div>
     </header>
+
+    <!-- 登录注册：控制端统一入口，首个注册账号自动成为超管。 -->
+    <section id="auth" class="panel">
+      <div class="section-head">
+        <h2>控制端登录注册</h2>
+        <span id="authHint" class="muted">正在检查账号状态</span>
+      </div>
+      <div class="auth-grid">
+        <article class="card">
+          <h3>登录控制端</h3>
+          <form id="adminLoginForm" class="compact-form">
+            <input name="username" placeholder="账号" autocomplete="username" required />
+            <input name="password" type="password" placeholder="密码" autocomplete="current-password" required />
+            <button>登录</button>
+          </form>
+          <p class="muted">超管可确认真实发送和管理设备；陪跑师可审核、试运行；只读账号只能查看。</p>
+        </article>
+        <article class="card">
+          <h3>注册/创建账号</h3>
+          <form id="adminRegisterForm" class="compact-form">
+            <input name="username" placeholder="账号" autocomplete="username" required />
+            <input name="password" type="password" placeholder="密码" autocomplete="new-password" required />
+            <input name="display_name" placeholder="显示名，如：怡彤老师" required />
+            <input name="campus_names" placeholder="可访问校区，多个用逗号分隔" />
+            <select name="role" id="adminRegisterRole">
+              <option value="coach">陪跑师</option>
+              <option value="readonly">只读</option>
+              <option value="admin">超管</option>
+            </select>
+            <button>注册/创建</button>
+          </form>
+          <p id="adminRegisterNote" class="muted">如果系统还没有账号，首次注册会自动成为超管。</p>
+        </article>
+      </div>
+      <div id="authCurrentUser" class="login-status"></div>
+    </section>
 
     <!-- 工作台：总览 KPI、待处理事项和最近的 AI 输出。 -->
     <section id="dashboard" class="panel active">

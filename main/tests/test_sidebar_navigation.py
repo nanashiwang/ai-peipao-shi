@@ -61,6 +61,16 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("autoDraftReplies()", html)
         self.assertIn("/api/agent/replies/auto-draft", js)
 
+    def test_control_auth_page_exposes_login_and_first_admin_registration(self):
+        html = Path("app/static/index.html").read_text(encoding="utf-8")
+        js = Path("app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn('data-tab="auth"', html)
+        self.assertIn("控制端登录注册", html)
+        self.assertIn("首次注册会自动成为超管", html)
+        self.assertIn("/api/admin/auth/status", js)
+        self.assertIn("/api/admin/auth/register", js)
+        self.assertIn("/api/admin/auth/login", js)
+
 
 if __name__ == "__main__":
     unittest.main()

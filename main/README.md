@@ -172,7 +172,7 @@ http://127.0.0.1:8000
 - `rpa/wecom_sender.py`：真实企业微信 PC 端 RPA 发送器，使用 pywinauto / pywin32 / pyperclip。
 - `APP_ENV`：`local/pilot/production` 等运行环境；`production` 会强制校验数据库和 ARK 密钥隔离。
 - `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL；正式环境禁止使用 SQLite。
-- `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_CAMPUS_NAMES`：管理端鉴权配置；正式环境默认强制启用，支持管理员、陪跑师、只读角色，首个管理员可选绑定可访问校区。
+- `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_CAMPUS_NAMES`：管理端鉴权配置；Docker 试点和正式环境默认启用。首次打开控制端请进入「登录注册」注册第一个账号，该账号会自动成为超管；后续账号需超管登录后创建。未显式配置 `ADMIN_AUTH_SECRET` 的试点环境会在 `config/admin_secret.txt` 自动生成持久化密钥，正式环境必须显式设置密钥。
 - `ADMIN_RATE_LIMIT_ENABLED` / `ADMIN_API_RATE_LIMIT` / `ADMIN_API_RATE_WINDOW_SECONDS` / `ADMIN_LOGIN_RATE_LIMIT` / `ADMIN_LOGIN_RATE_WINDOW_SECONDS`：管理端登录与控制端 API 限流配置；默认启用，设备心跳、领取任务和 RPA 回写接口不受影响。
 - `SEND_LOG_RETENTION_DAYS` / `SEND_SCREENSHOT_RETENTION_DAYS` / `RUNTIME_LOG_RETENTION_DAYS`：发送日志、截图证据、运行日志的保留天数；控制端可先预览，再显式确认清理。
 
@@ -189,7 +189,7 @@ http://127.0.0.1:8000
 ## 控制端操作分层
 
 - 发送任务接口会返回 `workflow_stage`、`allowed_operations` 和 `operation_warnings`，前端按这些能力渲染按钮。
-- 只读角色只能查看；陪跑师可编辑、审核、试运行和网页测试发送；管理员才可确认企业微信真实发送和调度设备。
+- 只读角色只能查看；陪跑师可编辑、审核、试运行和网页测试发送；超管才可确认企业微信真实发送、调度设备和创建控制端账号。
 - 已发送/已取消等终态任务只能查看，避免历史任务被误改或重复触达。
 - dry-run 发送失败会自动排队重试；真实发送失败或超过重试上限会进入健康告警，需人工复核后手动重试。
 - 多 worker 领取任务时优先使用数据库行锁与 `SKIP LOCKED`，SQLite 本地试点使用状态条件更新兜底，避免同一任务被重复领取。

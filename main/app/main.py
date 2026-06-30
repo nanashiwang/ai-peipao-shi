@@ -5,6 +5,8 @@
 
 import base64
 import binascii
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -359,16 +361,23 @@ def current_retention_policy() -> dict:
 def admin_auth_component() -> dict:
     required = admin_auth_required()
     has_secret = bool(os.getenv("ADMIN_AUTH_SECRET", "").strip())
+    generated_secret = False
     if required and not has_secret:
+        try:
+            admin_auth_secret()
+            generated_secret = True
+        except RuntimeError:
+            generated_secret = False
+    if required and not has_secret and not generated_secret:
         status = "critical"
         detail = "管理端鉴权已启用，但 ADMIN_AUTH_SECRET 未配置"
     elif required:
         status = "ok"
-        detail = "管理端鉴权已启用"
+        detail = "管理端鉴权已启用" if has_secret else "管理端鉴权已启用，试点密钥已自动持久化"
     else:
         status = "ok"
         detail = "管理端鉴权未强制启用，仅适合本地/试点内网"
-    return component_status(status, "管理端鉴权", detail, {"required": required, "secret_configured": has_secret})
+    return component_status(status, "管理端鉴权", detail, {"required": required, "secret_configured": has_secret or generated_secret})
 
 
 def admin_identity_from_request(request: Request | None):
@@ -396,12 +405,12 @@ def maybe_redact_for_request(data, request: Request | None):
 
 
 def operation_role_from_request(request: Request | None) -> str:
+    if request is None:
+        return "admin"
     identity = admin_identity_from_request(request)
     if identity:
         return identity.role
-    if request is not None and bearer_token(request.headers.get("authorization", "")):
-        return "readonly"
-    return "admin"
+    return "readonly"
 
 
 def coach_scope_from_request(request: Request | None) -> str:
@@ -1113,6 +1122,61 @@ def admin_account_payload(account: UserAccount) -> dict:
     return data
 
 
+PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_urlsafe(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
+    return f"{PASSWORD_HASH_PREFIX}${salt}${digest}"
+
+
+def verify_password(stored_password: str, password: str) -> bool:
+    stored = stored_password or ""
+    if stored.startswith(f"{PASSWORD_HASH_PREFIX}$"):
+        try:
+            _, salt, digest = stored.split("$", 2)
+        except ValueError:
+            return False
+        candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
+        return hmac.compare_digest(candidate, digest)
+    return hmac.compare_digest(stored, password)
+
+
+def password_needs_upgrade(stored_password: str) -> bool:
+    return not (stored_password or "").startswith(f"{PASSWORD_HASH_PREFIX}$")
+
+
+def verify_account_password(db: Session, account: UserAccount | None, password: str) -> bool:
+    if not account or not verify_password(account.password, password):
+        return False
+    if password_needs_upgrade(account.password):
+        account.password = hash_password(password)
+        db.flush()
+    return True
+
+
+def admin_account_count(db: Session) -> int:
+    return db.query(UserAccount).filter(UserAccount.role == "admin").count()
+
+
+def control_account_count(db: Session) -> int:
+    return db.query(UserAccount).filter(UserAccount.role.in_(ADMIN_ROLES)).count()
+
+
+def admin_auth_status_payload(db: Session) -> dict:
+    total = admin_account_count(db)
+    return {
+        "auth_required": admin_auth_required(),
+        "bootstrap_required": total == 0,
+        "admin_account_count": total,
+        "control_account_count": control_account_count(db),
+        "roles": ["admin", "coach", "readonly"],
+        "default_first_role": "admin",
+        "message": "首次注册账号将自动成为超管" if total == 0 else "已有超管，后续账号需超管登录后创建",
+    }
+
+
 def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: str = "", coach_name: str = "", campus_name: str = "") -> Family:
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     if family:
@@ -1140,14 +1204,15 @@ def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: st
 
 def ensure_account(db: Session, username: str, password: str, display_name: str, role: str, family_id: str = "", campus_names: str = "") -> UserAccount:
     account = db.query(UserAccount).filter(UserAccount.username == username).one_or_none()
+    hashed = hash_password(password)
     if account:
-        account.password = password
+        account.password = hashed
         account.display_name = display_name
         account.role = role
         account.family_id = family_id
         account.campus_names = campus_names
         return account
-    account = UserAccount(username=username, password=password, display_name=display_name, role=role, family_id=family_id, campus_names=campus_names)
+    account = UserAccount(username=username, password=hashed, display_name=display_name, role=role, family_id=family_id, campus_names=campus_names)
     db.add(account)
     db.flush()
     return account
@@ -1160,8 +1225,6 @@ def seed_bootstrap_admin(db: Session) -> None:
         admin_auth_secret()
     if username and password:
         ensure_account(db, username, password, os.getenv("ADMIN_DISPLAY_NAME", "系统管理员"), "admin", campus_names=os.getenv("ADMIN_CAMPUS_NAMES", ""))
-    if admin_auth_required() and not db.query(UserAccount).filter(UserAccount.role == "admin").first():
-        raise RuntimeError("管理端鉴权已启用，但没有 admin 账号；请设置 ADMIN_USERNAME/ADMIN_PASSWORD 完成首次引导。")
 
 
 def add_chat_message(db: Session, family_id: str, speaker: str, content: str, minutes_offset: int = 0) -> RawMessage:
@@ -1265,7 +1328,7 @@ def register_account(payload: AccountIn, db: Session = Depends(get_db)):
         ensure_family(db, family_id, payload.display_name or username)
     account = UserAccount(
         username=username,
-        password=payload.password,
+        password=hash_password(payload.password),
         display_name=payload.display_name or username,
         role=role,
         campus_names=",".join(normalize_campus_names(payload.campus_names)),
@@ -1279,16 +1342,56 @@ def register_account(payload: AccountIn, db: Session = Depends(get_db)):
 @app.post("/api/test-chat/login")
 def login_account(payload: LoginIn, db: Session = Depends(get_db)):
     account = db.query(UserAccount).filter(UserAccount.username == payload.username.strip()).one_or_none()
-    if not account or account.password != payload.password:
+    if not verify_account_password(db, account, payload.password):
         raise HTTPException(401, "账号或密码错误")
+    db.commit()
+    return admin_account_payload(account)
+
+
+@app.get("/api/admin/auth/status")
+def admin_auth_status(db: Session = Depends(get_db)):
+    return admin_auth_status_payload(db)
+
+
+@app.post("/api/admin/auth/register")
+def admin_register(payload: AccountIn, authorization: str = Header(""), db: Session = Depends(get_db)):
+    username = payload.username.strip()
+    if not username or not payload.password:
+        raise HTTPException(400, "账号和密码不能为空")
+    if db.query(UserAccount).filter(UserAccount.username == username).one_or_none():
+        raise HTTPException(400, "账号已存在")
+
+    is_first_admin = admin_account_count(db) == 0
+    if is_first_admin:
+        role = "admin"
+    else:
+        try:
+            identity = verify_admin_token(bearer_token(authorization), admin_auth_secret())
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(401, "已有超管账号，请先用超管登录后再创建新账号") from exc
+        if identity.role != "admin":
+            raise HTTPException(403, "只有超管可以创建控制端账号")
+        role = payload.role if payload.role in ADMIN_ROLES else "coach"
+
+    account = UserAccount(
+        username=username,
+        password=hash_password(payload.password),
+        display_name=payload.display_name or username,
+        role=role,
+        campus_names=",".join(normalize_campus_names(payload.campus_names)),
+        family_id="",
+    )
+    db.add(account)
+    db.commit()
     return admin_account_payload(account)
 
 
 @app.post("/api/admin/auth/login")
 def admin_login(payload: LoginIn, db: Session = Depends(get_db)):
     account = db.query(UserAccount).filter(UserAccount.username == payload.username.strip()).one_or_none()
-    if not account or account.password != payload.password or account.role not in ADMIN_ROLES:
+    if not account or account.role not in ADMIN_ROLES or not verify_account_password(db, account, payload.password):
         raise HTTPException(401, "管理端账号或密码错误")
+    db.commit()
     return admin_account_payload(account)
 
 
