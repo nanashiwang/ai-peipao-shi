@@ -87,10 +87,16 @@ function saveCurrentUser(user) {
   renderAuthState();
 }
 
+function setAuthGateVisible(visible) {
+  document.body.classList.toggle("auth-only", !!visible);
+  const gate = $("authGate");
+  if (gate) gate.hidden = !visible;
+}
+
 function logoutCurrentUser() {
   saveCurrentUser(null);
   toast("已退出登录");
-  switchTab("auth");
+  setAuthGateVisible(true);
 }
 
 function userCampusText(user) {
@@ -159,7 +165,12 @@ function renderAuthState() {
   if (authBar) {
     authBar.innerHTML = user
       ? `<span>${userRoleBadge(user)} ${esc(user.display_name || user.username)}</span><button onclick="logoutCurrentUser()">退出</button>`
-      : `<button onclick="switchTab('auth')">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
+      : `<button onclick="setAuthGateVisible(true)">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
+  }
+  if ($("authGateStatus")) {
+    $("authGateStatus").textContent = user
+      ? `已登录：${user.display_name || user.username}`
+      : (status.bootstrap_required ? "检测到首次使用，请先注册超管账号" : "请输入控制端账号后进入系统");
   }
   if ($("authHint")) {
     $("authHint").textContent = status.message || (status.bootstrap_required ? "首次注册账号将自动成为超管" : "请登录控制端账号");
@@ -1917,6 +1928,7 @@ $("adminLoginForm").onsubmit = async (event) => {
     saveCurrentUser(user);
     toast(`已登录：${user.display_name || user.username}`);
     await refreshAll();
+    setAuthGateVisible(false);
     switchTab(user.role === "readonly" ? "dashboard" : "tasks");
   });
 };
@@ -1937,6 +1949,7 @@ $("adminRegisterForm").onsubmit = async (event) => {
       saveCurrentUser(user);
       toast("首个超管账号已创建并登录");
       await refreshAll();
+      setAuthGateVisible(false);
       switchTab("dashboard");
       return;
     }
@@ -2095,25 +2108,26 @@ async function bootApp() {
   try {
     await refreshAuthStatus();
     if (state.authStatus.auth_required && !state.currentUser) {
-      renderAll();
-      switchTab("auth");
+      setAuthGateVisible(true);
       return;
     }
     if (state.currentUser?.role === "parent") {
       await refreshParentDashboard();
       renderAll();
+      setAuthGateVisible(false);
       switchTab("parentDashboard");
       return;
     }
     await refreshAll();
+    setAuthGateVisible(false);
   } catch (err) {
     if (String(err?.message || "").includes("401")) {
       saveCurrentUser(null);
-      renderAll();
-      switchTab("auth");
+      setAuthGateVisible(true);
       toast("登录已失效，请重新登录");
       return;
     }
+    setAuthGateVisible(true);
     toast(`加载失败：${err.message}`);
   }
 }
