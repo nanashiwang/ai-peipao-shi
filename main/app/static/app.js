@@ -1428,7 +1428,10 @@ function renderDevices() {
     { label: "已发", render: (r) => r.task_counts?.sent ?? 0 },
     { label: "失败", render: (r) => r.task_counts?.failed ?? 0 },
     { label: "最近错误", key: "last_error" },
-    { label: "只读校验", render: (r) => `<button onclick="requestConversationProof('${esc(r.device_id)}')">刷新会话证明</button>` },
+    { label: "只读校验", render: (r) => `
+      <button onclick="requestConversationProof('${esc(r.device_id)}')">刷新单个</button>
+      <button onclick="requestAllConversationProofs('${esc(r.device_id)}')">巡检全部</button>
+    ` },
     { label: "接入包", render: (r) => `<a class="dl-link" href="/api/devices/${encodeURIComponent(r.device_id)}/package?server_url=${encodeURIComponent(location.origin)}">下载接入包</a>` },
   ], state.devices);
 }
@@ -2095,6 +2098,23 @@ async function requestConversationProof(deviceId) {
       body: JSON.stringify({ target_name: target, family_id: manualTaskFamilyId(target) }),
     });
     toast(`已下发只读校验：${deviceId} -> ${target}；被控端会打开会话并回读，不会发送`);
+    await refreshAll();
+    switchTab("tasks");
+  });
+}
+
+async function requestAllConversationProofs(deviceId) {
+  const device = state.devices.find((item) => item.device_id === deviceId);
+  const count = Number(device?.conversation_count || 0);
+  const ok = window.confirm(`确认让设备 ${deviceId} 巡检全部负责会话？\n会逐个打开群/私聊并读取可见消息，不会粘贴或发送。${count ? `\n预计会话数：${count}` : ""}`);
+  if (!ok) return;
+  await withAction("巡检全部会话证明", async () => {
+    const result = await api(`/api/devices/${encodeURIComponent(deviceId)}/conversation-checks/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    toast(`已下发会话巡检：新增 ${result.queued_count || 0} 个，跳过 ${result.skipped_count || 0} 个；被控端不会发送消息`);
     await refreshAll();
     switchTab("tasks");
   });

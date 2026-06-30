@@ -22,7 +22,7 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -240,6 +240,10 @@ class HeartbeatIn(BaseModel):
 class DeviceConversationCheckRequestIn(BaseModel):
     target_name: str
     family_id: str = ""
+
+
+class DeviceConversationBatchCheckRequestIn(BaseModel):
+    target_names: list[str] = Field(default_factory=list)
 
 
 class RetentionPruneIn(BaseModel):
@@ -4000,8 +4004,40 @@ def queue_device_conversation_check(
     if not target_name:
         raise HTTPException(400, "请填写要校验的群/私聊名称")
     validate_device_conversation_scope(dev, target_name)
+    task = create_conversation_check_task(
+        db,
+        dev,
+        target_name,
+        payload.family_id or f"WECOM_{target_name}",
+        actor_from_request(request),
+    )
+    db.commit()
+    return send_task_view(task, request, db)
+
+
+def active_conversation_check_task(db: Session, dev: Device, target_name: str) -> SendTask | None:
+    return (
+        db.query(SendTask)
+        .filter(
+            SendTask.device_id == dev.device_id,
+            SendTask.target_name == target_name,
+            SendTask.scene == CONVERSATION_CHECK_SCENE,
+            SendTask.status.in_(["pending", "assigned"]),
+        )
+        .order_by(SendTask.id.desc())
+        .first()
+    )
+
+
+def create_conversation_check_task(
+    db: Session,
+    dev: Device,
+    target_name: str,
+    family_id: str,
+    actor: str,
+) -> SendTask:
     task = SendTask(
-        family_id=((payload.family_id or f"WECOM_{target_name}")[:64]),
+        family_id=((family_id or f"WECOM_{target_name}")[:64]),
         target_name=target_name,
         scene=CONVERSATION_CHECK_SCENE,
         content="只读校验：打开目标会话并读取可见消息，不粘贴不发送。",
@@ -4014,11 +4050,50 @@ def queue_device_conversation_check(
         db,
         task,
         "conversation_check",
-        actor_from_request(request),
+        actor,
         f"下发设备「{dev.device_id}」只读校验「{target_name}」",
     )
+    return task
+
+
+@app.post("/api/devices/{device_id}/conversation-checks/batch")
+def queue_device_conversation_checks_batch(
+    device_id: str,
+    payload: DeviceConversationBatchCheckRequestIn | None = None,
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    ensure_new_task_operation_allowed(request, "assign_device")
+    dev = db.query(Device).filter(Device.device_id == device_id).first()
+    if not dev:
+        raise HTTPException(404, "设备不存在")
+    requested_targets = list(payload.target_names if payload else [])
+    targets = [str(item).strip() for item in requested_targets if str(item).strip()]
+    if not targets:
+        targets = device_conversations(dev)
+    seen = set()
+    targets = [target for target in targets if not (target in seen or seen.add(target))]
+    if not targets:
+        raise HTTPException(400, "设备未配置负责会话，无法批量刷新证明")
+    actor = actor_from_request(request)
+    queued = []
+    skipped = []
+    for target_name in targets:
+        validate_device_conversation_scope(dev, target_name)
+        existing = active_conversation_check_task(db, dev, target_name)
+        if existing:
+            skipped.append({"target_name": target_name, "task_id": existing.id, "reason": "已有待执行只读校验"})
+            continue
+        task = create_conversation_check_task(db, dev, target_name, f"WECOM_{target_name}", actor)
+        queued.append(task)
     db.commit()
-    return send_task_view(task, request, db)
+    return {
+        "device_id": dev.device_id,
+        "queued_count": len(queued),
+        "skipped_count": len(skipped),
+        "queued": [send_task_view(task, request, db) for task in queued],
+        "skipped": skipped,
+    }
 
 
 # 修改设备显示名/备注和控制端设备策略。

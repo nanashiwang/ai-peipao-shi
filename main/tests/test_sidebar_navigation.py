@@ -82,7 +82,9 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("outbox_pending_count", js)
         self.assertIn("结果补传", js)
         self.assertIn("requestConversationProof", js)
+        self.assertIn("requestAllConversationProofs", js)
         self.assertIn("/conversation-checks", js)
+        self.assertIn("/conversation-checks/batch", js)
         self.assertIn("conversation_proof_count", js)
 
     def test_control_auth_page_exposes_login_and_first_admin_registration(self):

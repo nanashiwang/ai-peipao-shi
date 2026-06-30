@@ -14,6 +14,7 @@ from app.db import Base
 from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
     DeviceUpdateIn,
+    DeviceConversationBatchCheckRequestIn,
     DeviceConversationCheckRequestIn,
     HeartbeatIn,
     RpaConversationIn,
@@ -32,6 +33,7 @@ from app.main import (
     list_audit_logs,
     list_send_tasks,
     queue_task_dry_run,
+    queue_device_conversation_checks_batch,
     queue_device_conversation_check,
     queue_task_real_send,
     record_send_result,
@@ -1117,6 +1119,44 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in claimed], [task["id"]])
         self.assertEqual(claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
         self.assertEqual(claimed[0]["target_name"], "一合学社")
+
+    def test_control_panel_can_queue_all_conversation_checks_for_device(self):
+        self.dev.conversations = '["一合学社", "测试2群", "一合学社"]'
+        self.db.commit()
+
+        result = queue_device_conversation_checks_batch(
+            "dev-a",
+            DeviceConversationBatchCheckRequestIn(),
+            db=self.db,
+        )
+
+        self.assertEqual(result["queued_count"], 2)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual({task["target_name"] for task in result["queued"]}, {"一合学社", "测试2群"})
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual({item["target_name"] for item in claimed}, {"一合学社", "测试2群"})
+        self.assertTrue(all(item["scene"] == main_module.CONVERSATION_CHECK_SCENE for item in claimed))
+
+    def test_batch_conversation_check_skips_existing_pending_check(self):
+        self.dev.conversations = '["一合学社", "测试2群"]'
+        self.db.commit()
+        existing = queue_device_conversation_check(
+            "dev-a",
+            DeviceConversationCheckRequestIn(target_name="一合学社", family_id="WECOM_一合学社"),
+            db=self.db,
+        )
+
+        result = queue_device_conversation_checks_batch(
+            "dev-a",
+            DeviceConversationBatchCheckRequestIn(),
+            db=self.db,
+        )
+
+        self.assertEqual(result["queued_count"], 1)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["skipped"][0]["task_id"], existing["id"])
+        self.assertEqual(result["queued"][0]["target_name"], "测试2群")
 
     def test_claim_does_not_assign_same_task_twice_across_devices(self):
         task = SendTask(
