@@ -169,6 +169,7 @@ http://127.0.0.1:8000
 - `APP_ENV`：`local/pilot/production` 等运行环境；`production` 会强制校验数据库和 ARK 密钥隔离。
 - `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL；正式环境禁止使用 SQLite。
 - `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD`：管理端鉴权配置；正式环境默认强制启用，支持管理员、陪跑师、只读角色。
+- `ADMIN_RATE_LIMIT_ENABLED` / `ADMIN_API_RATE_LIMIT` / `ADMIN_API_RATE_WINDOW_SECONDS` / `ADMIN_LOGIN_RATE_LIMIT` / `ADMIN_LOGIN_RATE_WINDOW_SECONDS`：管理端登录与控制端 API 限流配置；默认启用，设备心跳、领取任务和 RPA 回写接口不受影响。
 - `SEND_LOG_RETENTION_DAYS` / `SEND_SCREENSHOT_RETENTION_DAYS` / `RUNTIME_LOG_RETENTION_DAYS`：发送日志、截图证据、运行日志的保留天数；控制端可先预览，再显式确认清理。
 
 ## 数据安全与脱敏

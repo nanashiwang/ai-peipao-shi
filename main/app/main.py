@@ -62,6 +62,13 @@ from app.services.admin_auth import (
 )
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
+from app.services.rate_limit import (
+    admin_rate_limit_rule_for_path,
+    admin_rate_limiter,
+    rate_limit_enabled,
+    rate_limit_key_for_request,
+    rate_limit_report,
+)
 from app.services.retention_service import prune_retention, retention_policy_from_env, retention_report
 from app.services.runtime_config import assert_runtime_config_safe, runtime_config_report
 from app.services.scenario import detect_checkin, detect_scene
@@ -97,6 +104,17 @@ app.add_middleware(
 
 @app.middleware("http")
 async def admin_auth_middleware(request: Request, call_next):
+    if rate_limit_enabled():
+        rule = admin_rate_limit_rule_for_path(request.url.path)
+        if rule:
+            client_host = request.client.host if request.client else ""
+            decision = admin_rate_limiter.check(rate_limit_key_for_request(client_host, rule), rule)
+            if not decision.allowed:
+                return JSONResponse(
+                    {"detail": "请求过于频繁，请稍后再试", "retry_after_seconds": decision.retry_after_seconds},
+                    status_code=429,
+                    headers={"Retry-After": str(decision.retry_after_seconds)},
+                )
     if not admin_auth_required() or not path_requires_admin_auth(request.url.path):
         return await call_next(request)
     try:
@@ -3000,6 +3018,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
     components = [
         runtime_config,
         admin_auth_component(),
+        rate_limit_report(),
         component_status("ok", "后端服务", "FastAPI 正常响应", {"mode": runtime_config["metrics"]["app_env"]}),
         component_status(
             "ok" if devices and len(online_devices) == len(devices) else ("warn" if devices else "warn"),
