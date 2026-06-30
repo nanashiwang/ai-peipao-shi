@@ -63,6 +63,7 @@ class DevicePackageTest(unittest.TestCase):
         self.assertTrue(config["result_outbox_enabled"])
         self.assertEqual(config["result_outbox_dir"], "result_outbox")
         self.assertEqual(config["result_outbox_flush_limit"], 20)
+        self.assertTrue(config["result_outbox_block_new_tasks"])
         self.assertIn("设备监控", readme)
         self.assertIn("真实发送开关", readme)
         self.assertEqual(manifest["package_type"], "rpa-client-script")

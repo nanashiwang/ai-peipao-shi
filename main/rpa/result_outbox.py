@@ -61,6 +61,14 @@ def pending_result_files(config: dict, root: Path) -> list[Path]:
     return sorted(path for path in outbox.glob("*.json") if path.is_file())
 
 
+def pending_result_count(config: dict, root: Path) -> int:
+    return len(pending_result_files(config, root))
+
+
+def should_block_new_sends(config: dict, root: Path) -> bool:
+    return bool(config.get("result_outbox_block_new_tasks", True) and pending_result_count(config, root))
+
+
 def load_result_record(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 

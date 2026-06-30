@@ -10,6 +10,7 @@ from rpa.result_outbox import (
     pending_result_files,
     remove_result_record,
     result_outbox_dir,
+    should_block_new_sends,
 )
 
 
@@ -52,6 +53,26 @@ class ResultOutboxTest(unittest.TestCase):
         remove_result_record(path)
 
         self.assertEqual(pending_result_files(config, self.root), [])
+
+    def test_pending_result_blocks_new_sends_by_default(self):
+        config = {"device_id": "dev-a", "result_outbox_dir": "outbox"}
+        path = enqueue_result(config, self.root, 9, "/api/send-tasks/9/result", {"status": "sent"})
+
+        self.assertTrue(should_block_new_sends(config, self.root))
+
+        remove_result_record(path)
+
+        self.assertFalse(should_block_new_sends(config, self.root))
+
+    def test_pending_result_can_disable_blocking_for_diagnostics(self):
+        config = {
+            "device_id": "dev-a",
+            "result_outbox_dir": "outbox",
+            "result_outbox_block_new_tasks": False,
+        }
+        enqueue_result(config, self.root, 9, "/api/send-tasks/9/result", {"status": "sent"})
+
+        self.assertFalse(should_block_new_sends(config, self.root))
 
 
 if __name__ == "__main__":

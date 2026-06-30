@@ -26,18 +26,22 @@ try:
         enqueue_result,
         load_result_record,
         mark_result_retry,
+        pending_result_count,
         new_client_result_id,
         pending_result_files,
         remove_result_record,
+        should_block_new_sends,
     )
 except ModuleNotFoundError:
     from result_outbox import (
         enqueue_result,
         load_result_record,
         mark_result_retry,
+        pending_result_count,
         new_client_result_id,
         pending_result_files,
         remove_result_record,
+        should_block_new_sends,
     )
 
 try:
@@ -1978,6 +1982,8 @@ def send_task_and_record(task: dict, config: dict):
 # 把本轮同步中自动创建的 AI 回复任务继续取出来发送。
 def send_created_reply_tasks(sync_results: list[dict], config: dict):
     flush_pending_send_results(config)
+    if result_outbox_blocks_new_sends(config, "send_created_reply_tasks"):
+        return
     created_ids = []
     for result in sync_results:
         task = ((result.get("detail") or {}).get("send_task") or {})
@@ -2065,6 +2071,14 @@ def flush_pending_send_results(config: dict) -> int:
     return sent
 
 
+def result_outbox_blocks_new_sends(config: dict, context: str) -> bool:
+    if not should_block_new_sends(config, ROOT):
+        return False
+    pending_count = pending_result_count(config, ROOT)
+    print(f"result_outbox_block_new_sends context={context} pending={pending_count}")
+    return True
+
+
 # 向后端上报心跳：在线状态、企微是否可用、本机负责的会话（供后端动态领取过滤）。
 def send_heartbeat(config: dict):
     device_id = config.get("device_id", "")
@@ -2096,6 +2110,9 @@ def run_once(config: dict):
     flush_pending_send_results(config)
     if device_id:
         send_heartbeat(config)
+    if result_outbox_blocks_new_sends(config, "run_once"):
+        return
+    if device_id:
         selected = request_json(base_url, f"/api/devices/{device_id}/claim?limit={limit}",
                                 method="POST", extra_headers=device_headers(config))
         real_policy = selected[0].get("device_allow_real_send") if selected else config.get("server_allow_real_send", "unknown")
