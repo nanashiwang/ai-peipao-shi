@@ -84,6 +84,7 @@ from app.services.send_task_operations import (
     OPERATION_LABELS,
     role_allows_task_operation,
     send_task_operation_state,
+    send_task_workflow_stage,
 )
 from rpa.package_manifest import build_package_manifest
 
@@ -510,14 +511,17 @@ def ensure_task_operation_allowed(task: SendTask, request: Request | None, opera
     role = operation_role_from_request(request)
     if not role_allows_task_operation(task.status, task.send_mode, role, operation):
         label = OPERATION_LABELS.get(operation, operation)
-        raise HTTPException(403, f"当前角色不能执行「{label}」操作")
+        role_label = {"admin": "超管", "coach": "陪跑师", "readonly": "只读"}.get(role, role or "未知")
+        stage = send_task_workflow_stage(task.status, task.send_mode)
+        raise HTTPException(403, f"当前角色或任务状态不能执行「{label}」操作（角色：{role_label}，任务阶段：{stage}）")
 
 
 def ensure_new_task_operation_allowed(request: Request | None, operation: str) -> None:
     role = operation_role_from_request(request)
     if not role_allows_task_operation("pending", "dry_run", role, operation):
         label = OPERATION_LABELS.get(operation, operation)
-        raise HTTPException(403, f"当前角色不能执行「{label}」操作")
+        role_label = {"admin": "超管", "coach": "陪跑师", "readonly": "只读"}.get(role, role or "未知")
+        raise HTTPException(403, f"当前角色不能执行「{label}」操作（角色：{role_label}）")
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
