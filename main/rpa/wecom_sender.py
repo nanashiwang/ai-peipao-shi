@@ -1746,6 +1746,33 @@ def sync_conversation_to_api(target_name: str, family_id: str, messages: list[di
     )
 
 
+def sync_post_send_verification_messages(target_name: str, messages: list[dict], config: dict) -> dict | None:
+    if not config.get("post_send_verify_sync_conversation", True):
+        return None
+    clean_target = (target_name or "").strip()
+    if not clean_target or not messages:
+        return None
+    family_id = (config.get("_current_family_id") or f"WECOM_{clean_target}")[:64]
+    latest = next(
+        (msg.get("content", "") for msg in reversed(messages) if msg.get("speaker") != "我"),
+        messages[-1].get("content", ""),
+    )
+    sync_config = {
+        **config,
+        "auto_generate_ai_reply": False,
+        "auto_create_reply_task": False,
+        "auto_generate_all_agents": False,
+    }
+    try:
+        result = sync_conversation_to_api(clean_target, family_id, messages, sync_config, latest)
+        proof = result.get("conversation_check") or {}
+        add_send_trace(config, f"发送后回读已落库:{len(messages)}条, proof_status={proof.get('status', 'ok')}")
+        return result
+    except Exception as exc:
+        add_send_trace(config, f"发送后回读落库异常:{exc}")
+        return None
+
+
 def sync_target_conversation(config: dict, target: str, family_id: str = "", fields: dict | None = None) -> dict:
     check_api(config)
     window = find_wecom_window(config)
@@ -1894,6 +1921,7 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
         after_count = sent_content_match_count(text, messages, recent_count)
         after_self_count = sent_content_match_count(text, messages, recent_count, speaker="我")
         if sent_content_confirmed_after_send(text, before_messages, messages, recent_count):
+            sync_post_send_verification_messages(target, messages, config)
             detail = (
                 f"VERIFY_CONFIRMED: 目标「{target}」第{attempt}/{attempts}次可见聊天记录回读命中本次内容，"
                 f"message_count={len(messages)}, before_match_count={before_count}, after_match_count={after_count}, "
@@ -1918,6 +1946,7 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             clipboard_after_count = sent_content_match_count(text, clipboard_messages, recent_count)
             clipboard_self_after_count = sent_content_match_count(text, clipboard_messages, recent_count, speaker="我")
             if sent_content_confirmed_after_send(text, before_messages, clipboard_messages, recent_count):
+                sync_post_send_verification_messages(target, clipboard_messages, config)
                 detail = (
                     f"VERIFY_CONFIRMED: 目标「{target}」剪贴板聊天记录回读命中本次内容，"
                     f"attempts={attempts}, message_count={len(clipboard_messages)}, "
@@ -1937,6 +1966,7 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             ark_after_count = sent_content_match_count(text, ark_messages, recent_count)
             ark_self_after_count = sent_content_match_count(text, ark_messages, recent_count, speaker="我")
             if sent_content_confirmed_after_send(text, before_messages, ark_messages, recent_count):
+                sync_post_send_verification_messages(target, ark_messages, config)
                 detail = (
                     f"VERIFY_CONFIRMED: 目标「{target}」视觉OCR聊天记录回读命中本次内容，"
                     f"attempts={attempts}, message_count={len(ark_messages)}, "
@@ -2101,6 +2131,7 @@ def process_task(task: dict, config: dict):
     content = validate_task_content(task.get("content") or "")
     task_config = config_for_task_send_mode(config, mode)
     task_config["_current_target"] = target
+    task_config["_current_family_id"] = task.get("family_id") or f"WECOM_{target}"
     try:
         window = find_wecom_window(task_config)
         search_conversation(window, target, task_config)
