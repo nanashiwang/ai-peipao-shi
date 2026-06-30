@@ -180,6 +180,7 @@ class FamilyIn(BaseModel):
     pbl_count: int | None = None
     checkin_rate: str = ""
     next_milestone: str = ""
+    campus_name: str = ""
     coach_name: str = ""
     service_status: str = "企微待同步"
 
@@ -232,6 +233,7 @@ class RpaConversationIn(BaseModel):
     family_id: str = ""
     parent_nickname: str = ""
     child_grade: str = ""
+    campus_name: str = ""
     coach_name: str = ""
     messages: list[RpaMessageIn]
     auto_generate_reply: bool = True
@@ -1057,13 +1059,15 @@ def admin_account_payload(account: UserAccount) -> dict:
     return data
 
 
-def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: str = "", coach_name: str = "") -> Family:
+def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: str = "", coach_name: str = "", campus_name: str = "") -> Family:
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     if family:
         if parent_name:
             family.parent_nickname = parent_name
         if child_grade:
             family.child_grade = child_grade
+        if campus_name:
+            family.campus_name = campus_name
         if coach_name:
             family.coach_name = coach_name
         return family
@@ -1071,6 +1075,7 @@ def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: st
         family_id=family_id,
         parent_nickname=parent_name,
         child_grade=child_grade,
+        campus_name=campus_name,
         coach_name=coach_name,
         service_status="网页通讯测试",
     )
@@ -1435,8 +1440,12 @@ def load_sample_data(db: Session = Depends(get_db)):
 
 # 家庭列表接口，顺带补充每个家庭的消息数。
 @app.get("/api/families")
-def list_families(request: Request = None, db: Session = Depends(get_db)):
-    families = scoped_family_query(db, request).order_by(Family.family_id).all()
+def list_families(campus_name: str = "", request: Request = None, db: Session = Depends(get_db)):
+    query = scoped_family_query(db, request)
+    clean_campus = (campus_name or "").strip()
+    if clean_campus:
+        query = query.filter(Family.campus_name == clean_campus)
+    families = query.order_by(Family.family_id).all()
     rows = [{**as_dict(f), "message_count": db.query(RawMessage).filter(RawMessage.family_id == f.family_id).count()} for f in families]
     return maybe_redact_for_request(rows, request)
 
@@ -1466,6 +1475,8 @@ def upsert_family(payload: FamilyIn, request: Request = None, db: Session = Depe
             family.checkin_rate = payload.checkin_rate
         if payload.next_milestone:
             family.next_milestone = payload.next_milestone
+        if payload.campus_name:
+            family.campus_name = payload.campus_name
         family.coach_name = coach_name
         family.service_status = payload.service_status
     else:
@@ -1478,6 +1489,7 @@ def upsert_family(payload: FamilyIn, request: Request = None, db: Session = Depe
             pbl_count=payload.pbl_count if payload.pbl_count is not None else 0,
             checkin_rate=payload.checkin_rate,
             next_milestone=payload.next_milestone,
+            campus_name=payload.campus_name,
             coach_name=coach_name,
             service_status=payload.service_status,
         )
@@ -1615,9 +1627,12 @@ def latest_family_message(db: Session, family_id: str) -> RawMessage | None:
     )
 
 
-def family_scope_query(db: Session, coach_name: str = ""):
+def family_scope_query(db: Session, coach_name: str = "", campus_name: str = ""):
     query = db.query(Family).order_by(Family.family_id)
     clean_coach = (coach_name or "").strip()
+    clean_campus = (campus_name or "").strip()
+    if clean_campus:
+        query = query.filter(Family.campus_name == clean_campus)
     if clean_coach:
         query = query.filter(Family.coach_name == clean_coach)
     return query
@@ -1668,15 +1683,16 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
     return "正常", "暂无高优先级异常"
 
 
-def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None = None, family_limit: int = 8) -> dict:
+def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None = None, family_limit: int = 8, campus_name: str = "") -> dict:
     now = now or datetime.utcnow()
     buckets = {stage: [] for stage in SERVICE_FUNNEL_STAGES}
-    for family in family_scope_query(db, coach_name).all():
+    for family in family_scope_query(db, coach_name, campus_name).all():
         stage, reason = infer_family_service_stage(db, family, now)
         last_msg = latest_family_message(db, family.family_id)
         buckets[stage].append({
             "family_id": family.family_id,
             "family_name": family.parent_nickname or family.family_id,
+            "campus_name": family.campus_name,
             "coach_name": family.coach_name,
             "service_status": family.service_status,
             "reason": reason,
@@ -1694,6 +1710,7 @@ def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None
     return {
         "generated_at": timeline_time(now),
         "coach_name": (coach_name or "").strip(),
+        "campus_name": (campus_name or "").strip(),
         "total_families": sum(item["family_count"] for item in stages),
         "stages": stages,
     }
@@ -1703,6 +1720,7 @@ def todo_item(family: Family, reason: str, evidence: str = "", related_id: int =
     return {
         "family_id": family.family_id,
         "family_name": family.parent_nickname or family.family_id,
+        "campus_name": family.campus_name,
         "coach_name": family.coach_name,
         "reason": reason,
         "evidence": evidence or "",
@@ -1711,7 +1729,7 @@ def todo_item(family: Family, reason: str, evidence: str = "", related_id: int =
     }
 
 
-def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None) -> dict:
+def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None, campus_name: str = "") -> dict:
     safe_limit = min(max(limit, 1), 30)
     categories = {
         "pbl_incomplete": {"label": "PBL未完成", "items": []},
@@ -1722,7 +1740,7 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
         "send_failed": {"label": "发送失败", "items": []},
     }
 
-    for family in family_scope_query(db, coach_name).all():
+    for family in family_scope_query(db, coach_name, campus_name).all():
         messages = (
             db.query(RawMessage)
             .filter(RawMessage.family_id == family.family_id)
@@ -1799,19 +1817,20 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
     return {
         "generated_at": timeline_time(now or datetime.utcnow()),
         "coach_name": (coach_name or "").strip(),
+        "campus_name": (campus_name or "").strip(),
         "categories": result,
     }
 
 
-def build_workbench_overview(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None) -> dict:
+def build_workbench_overview(db: Session, coach_name: str = "", limit: int = 8, now: datetime | None = None, campus_name: str = "") -> dict:
     now = now or datetime.utcnow()
     return {
-        "service_funnel": build_service_funnel(db, coach_name, now, limit),
-        "todos": build_workbench_todos(db, coach_name, limit, now),
+        "service_funnel": build_service_funnel(db, coach_name, now, limit, campus_name),
+        "todos": build_workbench_todos(db, coach_name, limit, now, campus_name),
     }
 
 
-def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now: datetime | None = None) -> dict:
+def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now: datetime | None = None, campus_name: str = "") -> dict:
     now = now or datetime.utcnow()
     rows = []
     totals = {
@@ -1827,12 +1846,15 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
         "failed_count": 0,
     }
     grouped: dict[str, list[Family]] = {}
-    for family in family_scope_query(db, coach_name).all():
+    campus_grouped: dict[str, list[Family]] = {}
+    for family in family_scope_query(db, coach_name, campus_name).all():
         grouped.setdefault(family.coach_name or "未分配", []).append(family)
+        campus_grouped.setdefault(family.campus_name or "未分配校区", []).append(family)
 
     for coach, families in sorted(grouped.items()):
         row = {
             "coach_name": coach,
+            "campus_names": sorted({family.campus_name or "未分配校区" for family in families}),
             "family_count": len(families),
             "normal_count": 0,
             "followup_family_count": 0,
@@ -1887,22 +1909,38 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
         rows.append(row)
 
     totals["coach_count"] = len(rows)
+    totals["campus_count"] = len(campus_grouped)
     totals["send_completion_rate"] = round((totals["sent_count"] + totals["dry_run_count"]) / totals["send_log_count"], 4) if totals["send_log_count"] else 0.0
     totals["send_failure_rate"] = round(totals["failed_count"] / totals["send_log_count"], 4) if totals["send_log_count"] else 0.0
     rows.sort(key=lambda item: (-item["risk_family_count"], -item["pending_task_count"], item["coach_name"]))
+    campuses = [
+        {
+            "campus_name": campus,
+            "family_count": len(families),
+            "coach_count": len({family.coach_name or "未分配" for family in families}),
+            "risk_family_count": sum(1 for family in families if infer_family_service_stage(db, family, now)[0] == "风险"),
+            "pending_task_count": sum(
+                db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status.in_(["pending", "assigned"])).count()
+                for family in families
+            ),
+        }
+        for campus, families in sorted(campus_grouped.items())
+    ]
     return {
         "generated_at": timeline_time(now),
         "coach_name": (coach_name or "").strip(),
+        "campus_name": (campus_name or "").strip(),
         "totals": totals,
+        "campuses": campuses,
         "coaches": rows,
     }
 
 
-def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None, coach_name: str = "") -> list[dict]:
+def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = None, coach_name: str = "", campus_name: str = "") -> list[dict]:
     now = now or datetime.utcnow()
     safe_limit = min(max(limit, 1), 50)
     items: list[dict] = []
-    families = family_scope_query(db, coach_name).order_by(Family.family_id).all()
+    families = family_scope_query(db, coach_name, campus_name).order_by(Family.family_id).all()
     for family in families:
         reasons: list[str] = []
         score = 0
@@ -1969,6 +2007,7 @@ def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = 
         items.append({
             "family_id": family.family_id,
             "family_name": family.parent_nickname or family.family_id,
+            "campus_name": family.campus_name,
             "coach_name": family.coach_name,
             "score": score,
             "level": priority_level(score),
@@ -2034,18 +2073,18 @@ def create_family_followup(family_id: str, payload: FollowupIn, request: Request
 
 
 @app.get("/api/workbench/today-priorities")
-def today_priorities(limit: int = 12, request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_today_priorities(db, limit, coach_name=coach_filter_for_request(request)), request)
+def today_priorities(limit: int = 12, campus_name: str = "", request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request(build_today_priorities(db, limit, coach_name=coach_filter_for_request(request), campus_name=campus_name), request)
 
 
 @app.get("/api/workbench/overview")
-def workbench_overview(coach_name: str = "", limit: int = 8, request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_workbench_overview(db, coach_filter_for_request(request, coach_name), limit), request)
+def workbench_overview(coach_name: str = "", campus_name: str = "", limit: int = 8, request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request(build_workbench_overview(db, coach_filter_for_request(request, coach_name), limit, campus_name=campus_name), request)
 
 
 @app.get("/api/admin/service-quality")
-def admin_service_quality(coach_name: str = "", request: Request = None, db: Session = Depends(get_db)):
-    return maybe_redact_for_request(build_admin_service_quality_dashboard(db, coach_filter_for_request(request, coach_name)), request)
+def admin_service_quality(coach_name: str = "", campus_name: str = "", request: Request = None, db: Session = Depends(get_db)):
+    return maybe_redact_for_request(build_admin_service_quality_dashboard(db, coach_filter_for_request(request, coach_name), campus_name=campus_name), request)
 
 
 @app.get("/api/agent/evaluations")
@@ -2279,11 +2318,14 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
             family_id=family_id,
             parent_nickname=payload.parent_nickname or payload.target_name,
             child_grade=payload.child_grade,
+            campus_name=payload.campus_name,
             coach_name=payload.coach_name,
             service_status="企微RPA同步",
         )
         db.add(family)
         db.flush()
+    elif payload.campus_name and not family.campus_name:
+        family.campus_name = payload.campus_name
     family_id = family.family_id
 
     inserted = 0

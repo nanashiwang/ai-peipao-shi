@@ -25,6 +25,7 @@ FIELD_ALIASES = {
     "pbl_count": ["pbl_count", "PBL次数", "PBL 次数"],
     "checkin_rate": ["checkin_rate", "打卡率", "打卡完成率"],
     "next_milestone": ["next_milestone", "下一里程碑", "下个里程碑"],
+    "campus_name": ["campus_name", "校区", "所属校区", "机构校区"],
     "coach_name": ["coach_name", "陪跑师"],
     "service_status": ["service_status", "服务状态"],
     "message_time": ["message_time", "聊天时间", "时间"],
@@ -44,8 +45,8 @@ IMPORT_TEMPLATES = {
         "business_type": "学员信息",
         "description": "用于初始化家庭、学员、陪跑师、课程阶段等基础档案。",
         "required_fields": ["family_id", "parent_nickname", "child_grade", "coach_name"],
-        "optional_fields": ["parent_phone", "child_name", "course_stage", "service_status"],
-        "headers": ["family_id", "parent_nickname", "parent_phone", "child_name", "child_grade", "coach_name", "course_stage", "service_status"],
+        "optional_fields": ["parent_phone", "child_name", "campus_name", "course_stage", "service_status"],
+        "headers": ["family_id", "parent_nickname", "parent_phone", "child_name", "child_grade", "campus_name", "coach_name", "course_stage", "service_status"],
         "sample_rows": [
             {
                 "family_id": "FAM001",
@@ -53,6 +54,7 @@ IMPORT_TEMPLATES = {
                 "parent_phone": "13800138000",
                 "child_name": "林同学",
                 "child_grade": "初一",
+                "campus_name": "重庆南坪校区",
                 "coach_name": "怡彤老师",
                 "course_stage": "S级陪跑第1阶段",
                 "service_status": "服务中",
@@ -67,13 +69,14 @@ IMPORT_TEMPLATES = {
         "business_type": "聊天记录",
         "description": "用于导入企业微信群聊/单聊消息，是画像、周报、回复和待办判断的主数据源。",
         "required_fields": ["family_id", "message_time", "speaker", "content"],
-        "optional_fields": ["parent_nickname", "child_grade", "coach_name", "source", "checkin_status"],
-        "headers": ["family_id", "parent_nickname", "child_grade", "coach_name", "message_time", "speaker", "content", "source", "checkin_status"],
+        "optional_fields": ["parent_nickname", "child_grade", "campus_name", "coach_name", "source", "checkin_status"],
+        "headers": ["family_id", "parent_nickname", "child_grade", "campus_name", "coach_name", "message_time", "speaker", "content", "source", "checkin_status"],
         "sample_rows": [
             {
                 "family_id": "FAM001",
                 "parent_nickname": "林妈妈",
                 "child_grade": "初一",
+                "campus_name": "重庆南坪校区",
                 "coach_name": "怡彤老师",
                 "message_time": "2026-06-30 19:30",
                 "speaker": "林妈妈",
@@ -91,8 +94,8 @@ IMPORT_TEMPLATES = {
         "business_type": "打卡记录",
         "description": "用于单独导入打卡、PBL提交或任务完成证据。",
         "required_fields": ["family_id", "message_time", "checkin_status", "content"],
-        "optional_fields": ["parent_nickname", "source", "coach_name"],
-        "headers": ["family_id", "parent_nickname", "message_time", "checkin_status", "content", "source", "coach_name"],
+        "optional_fields": ["parent_nickname", "source", "campus_name", "coach_name"],
+        "headers": ["family_id", "parent_nickname", "message_time", "checkin_status", "content", "source", "campus_name", "coach_name"],
         "sample_rows": [
             {
                 "family_id": "FAM001",
@@ -101,6 +104,7 @@ IMPORT_TEMPLATES = {
                 "checkin_status": "完成打卡",
                 "content": "数学订正已完成，英语阅读未完成。",
                 "source": "打卡表",
+                "campus_name": "重庆南坪校区",
                 "coach_name": "怡彤老师",
             }
         ],
@@ -113,8 +117,8 @@ IMPORT_TEMPLATES = {
         "business_type": "请假缺课记录",
         "description": "用于登记请假、缺课、补课计划和跟进责任人。",
         "required_fields": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan"],
-        "optional_fields": ["owner", "status", "coach_name"],
-        "headers": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan", "owner", "status", "coach_name"],
+        "optional_fields": ["owner", "status", "campus_name", "coach_name"],
+        "headers": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan", "owner", "status", "campus_name", "coach_name"],
         "sample_rows": [
             {
                 "family_id": "FAM001",
@@ -124,6 +128,7 @@ IMPORT_TEMPLATES = {
                 "makeup_plan": "7月3日补课并同步资料",
                 "owner": "怡彤老师",
                 "status": "待补课",
+                "campus_name": "重庆南坪校区",
                 "coach_name": "怡彤老师",
             }
         ],
@@ -136,13 +141,14 @@ IMPORT_TEMPLATES = {
         "business_type": "课程阶段数据",
         "description": "用于导入课程阶段、Unit进度、PBL次数、打卡率和下一里程碑。",
         "required_fields": ["family_id", "parent_nickname", "course_stage", "unit_progress"],
-        "optional_fields": ["child_grade", "pbl_count", "checkin_rate", "next_milestone", "coach_name"],
-        "headers": ["family_id", "parent_nickname", "child_grade", "course_stage", "unit_progress", "pbl_count", "checkin_rate", "next_milestone", "coach_name"],
+        "optional_fields": ["child_grade", "pbl_count", "checkin_rate", "next_milestone", "campus_name", "coach_name"],
+        "headers": ["family_id", "parent_nickname", "child_grade", "campus_name", "course_stage", "unit_progress", "pbl_count", "checkin_rate", "next_milestone", "coach_name"],
         "sample_rows": [
             {
                 "family_id": "FAM001",
                 "parent_nickname": "林妈妈",
                 "child_grade": "初一",
+                "campus_name": "重庆南坪校区",
                 "course_stage": "S级陪跑第1阶段",
                 "unit_progress": "Unit 3",
                 "pbl_count": "2",
@@ -237,7 +243,7 @@ def _parse_optional_int(value: str) -> tuple[int | None, str]:
 
 
 def _apply_family_fields(family: Family, data: dict) -> None:
-    for field in ("parent_nickname", "child_grade", "coach_name"):
+    for field in ("parent_nickname", "child_grade", "campus_name", "coach_name"):
         value = data.get(field, "")
         if value and not getattr(family, field):
             setattr(family, field, value)
@@ -304,6 +310,7 @@ def validate_import_row(row: dict, row_number: int) -> tuple[dict, list[dict]]:
         "pbl_count": pbl_count if not pbl_issue else None,
         "checkin_rate": _get(row, "checkin_rate"),
         "next_milestone": _get(row, "next_milestone"),
+        "campus_name": _get(row, "campus_name"),
         "coach_name": _get(row, "coach_name"),
         "service_status": _get(row, "service_status"),
         "has_message": has_message,
@@ -382,6 +389,7 @@ def import_rows(db: Session, rows: list[dict]) -> dict:
                 pbl_count=data["pbl_count"] if data["pbl_count"] is not None else 0,
                 checkin_rate=data["checkin_rate"],
                 next_milestone=data["next_milestone"],
+                campus_name=data["campus_name"],
                 coach_name=data["coach_name"],
                 service_status=data["service_status"] or "试点中",
             )

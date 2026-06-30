@@ -50,6 +50,7 @@ class StudentStageProfileTest(unittest.TestCase):
         result = import_rows(self.db, [{
             "family_id": "FAM_STAGE",
             "parent_nickname": "林妈妈",
+            "campus_name": "南坪校区",
             "course_stage": "S级陪跑第2阶段",
             "pbl_count": "两次",
             "checkin_rate": "90%",
@@ -61,6 +62,7 @@ class StudentStageProfileTest(unittest.TestCase):
         self.assertEqual(result["profile_rows"], 1)
         self.assertIn("invalid_pbl_count", issue_codes)
         self.assertEqual(family.pbl_count, 3)
+        self.assertEqual(family.campus_name, "南坪校区")
         self.assertEqual(family.course_stage, "S级陪跑第2阶段")
         self.assertEqual(family.checkin_rate, "90%")
 

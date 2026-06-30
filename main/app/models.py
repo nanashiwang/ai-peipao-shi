@@ -50,6 +50,7 @@ class Family(Base):
     pbl_count: Mapped[int] = mapped_column(Integer, default=0)
     checkin_rate: Mapped[str] = mapped_column(String(40), default="")
     next_milestone: Mapped[str] = mapped_column(Text, default="")
+    campus_name: Mapped[str] = mapped_column(String(80), default="", index=True)
     coach_name: Mapped[str] = mapped_column(String(80), default="")
     service_status: Mapped[str] = mapped_column(String(40), default="试点中")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

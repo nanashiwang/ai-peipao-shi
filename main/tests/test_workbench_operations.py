@@ -19,8 +19,8 @@ class WorkbenchOperationsTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def add_family(self, family_id, name, coach="怡彤老师", status="服务中"):
-        family = Family(family_id=family_id, parent_nickname=name, coach_name=coach, service_status=status)
+    def add_family(self, family_id, name, coach="怡彤老师", status="服务中", campus="南坪校区"):
+        family = Family(family_id=family_id, parent_nickname=name, coach_name=coach, campus_name=campus, service_status=status)
         self.db.add(family)
         self.db.flush()
         return family
@@ -60,6 +60,16 @@ class WorkbenchOperationsTest(unittest.TestCase):
         self.assertEqual(counts["需跟进"], 1)
         self.assertEqual(counts["正常"], 2)
         self.assertEqual(filtered["total_families"], 5)
+
+    def test_service_funnel_supports_campus_filter(self):
+        self.add_family("a", "南坪家庭", campus="南坪校区")
+        self.add_family("b", "观音桥家庭", campus="观音桥校区")
+        self.db.commit()
+
+        filtered = build_service_funnel(self.db, campus_name="观音桥校区", now=self.now)
+
+        self.assertEqual(filtered["campus_name"], "观音桥校区")
+        self.assertEqual(filtered["total_families"], 1)
 
     def test_todo_aggregation_covers_business_backlog_and_coach_filter(self):
         family = self.add_family("f1", "张妈妈")

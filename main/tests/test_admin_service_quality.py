@@ -19,8 +19,8 @@ class AdminServiceQualityDashboardTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def add_family(self, family_id: str, name: str, coach: str):
-        family = Family(family_id=family_id, parent_nickname=name, coach_name=coach, service_status="服务中")
+    def add_family(self, family_id: str, name: str, coach: str, campus: str = "南坪校区"):
+        family = Family(family_id=family_id, parent_nickname=name, coach_name=coach, campus_name=campus, service_status="服务中")
         self.db.add(family)
         self.db.add(RawMessage(family_id=family_id, message_time=self.now, speaker=name, content="今天正常沟通"))
         return family
@@ -45,6 +45,7 @@ class AdminServiceQualityDashboardTest(unittest.TestCase):
         yitong = next(row for row in dashboard["coaches"] if row["coach_name"] == "怡彤老师")
 
         self.assertEqual(totals["coach_count"], 2)
+        self.assertEqual(totals["campus_count"], 1)
         self.assertEqual(totals["family_count"], 3)
         self.assertEqual(totals["risk_family_count"], 1)
         self.assertEqual(totals["pending_task_count"], 1)
@@ -55,8 +56,10 @@ class AdminServiceQualityDashboardTest(unittest.TestCase):
         self.assertEqual(yitong["risk_family_count"], 1)
         self.assertEqual(yitong["followup_family_count"], 1)
         self.assertEqual(yitong["pending_task_count"], 1)
+        self.assertEqual(yitong["campus_names"], ["南坪校区"])
         self.assertAlmostEqual(yitong["send_failure_rate"], 0.5)
         self.assertEqual(yitong["risk_families"][0]["family_id"], "risk")
+        self.assertEqual(dashboard["campuses"][0]["campus_name"], "南坪校区")
 
     def test_dashboard_supports_coach_filter(self):
         self.add_family("a", "A家庭", "怡彤老师")
@@ -68,6 +71,17 @@ class AdminServiceQualityDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard["totals"]["coach_count"], 1)
         self.assertEqual(dashboard["totals"]["family_count"], 1)
         self.assertEqual(dashboard["coaches"][0]["coach_name"], "其他老师")
+
+    def test_dashboard_supports_campus_filter(self):
+        self.add_family("a", "A家庭", "怡彤老师", campus="南坪校区")
+        self.add_family("b", "B家庭", "其他老师", campus="观音桥校区")
+        self.db.commit()
+
+        dashboard = build_admin_service_quality_dashboard(self.db, campus_name="观音桥校区", now=self.now)
+
+        self.assertEqual(dashboard["totals"]["campus_count"], 1)
+        self.assertEqual(dashboard["totals"]["family_count"], 1)
+        self.assertEqual(dashboard["campuses"][0]["campus_name"], "观音桥校区")
 
 
 if __name__ == "__main__":

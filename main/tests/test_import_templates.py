@@ -35,6 +35,7 @@ class ImportTemplateCatalogTest(unittest.TestCase):
             "pbl_count",
             "checkin_rate",
             "next_milestone",
+            "campus_name",
         }.issubset(template["headers"]))
         self.assertEqual(template["template_family"], "course_stage")
 

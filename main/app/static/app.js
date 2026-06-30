@@ -547,12 +547,14 @@ function renderServiceQuality() {
   const totals = state.serviceQuality?.totals || {};
   summaryEl.innerHTML = [
     ["陪跑师", totals.coach_count || 0],
+    ["校区", totals.campus_count || 0],
     ["家庭数", totals.family_count || 0],
     ["风险家庭", totals.risk_family_count || 0],
     ["发送完成率", percent(totals.send_completion_rate)],
   ].map(([label, value]) => `<article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join("");
   tableEl.innerHTML = table([
     { label: "陪跑师", key: "coach_name" },
+    { label: "校区", render: (r) => esc((r.campus_names || []).join("、") || "未分配") },
     { label: "家庭", key: "family_count" },
     { label: "风险/跟进", render: (r) => `${badge(`风险 ${r.risk_family_count}`, r.risk_family_count ? "danger" : "ok")} ${badge(`跟进 ${r.followup_family_count}`, r.followup_family_count ? "warn" : "ok")}` },
     { label: "续报/结课", render: (r) => `${esc(r.renewal_family_count)} / ${esc(r.closed_family_count)}` },
@@ -707,6 +709,7 @@ function renderFamilies() {
     { label: "家庭编号", key: "family_id" },
     { label: "家长", key: "parent_nickname" },
     { label: "年级", key: "child_grade" },
+    { label: "校区", render: (r) => esc(displayValue(r.campus_name, "未分配")) },
     { label: "课程阶段", render: (r) => esc(displayValue(r.course_stage)) },
     { label: "Unit", render: (r) => esc(displayValue(r.unit_progress)) },
     { label: "打卡率", render: (r) => esc(displayValue(r.checkin_rate)) },
@@ -746,7 +749,7 @@ function renderWebChat() {
 function renderChatMessages() {
   const family = state.families.find((item) => item.family_id === state.selectedChatFamilyId);
   $("chatTitle").textContent = family ? family.parent_nickname : "请选择会话";
-  $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.coach_name || "未分配"}` : "";
+  $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.campus_name || "未分配校区"} · ${family.coach_name || "未分配"}` : "";
   if (!state.selectedChatFamilyId) {
     $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧选择一个家庭后，这里会展示聊天上下文。");
     return;
@@ -835,7 +838,7 @@ function renderWecomPage() {
       <div>
         ${badge(family.service_status || "企微待同步")}
         <strong>${esc(family.parent_nickname || family.family_id)}</strong>
-        <p>${esc(family.family_id)} · ${esc(family.child_grade || "未知年级")} · ${esc(family.coach_name || "未填写陪跑师")} · ${esc(family.message_count)} 条消息</p>
+        <p>${esc(family.family_id)} · ${esc(family.child_grade || "未知年级")} · ${esc(family.campus_name || "未分配校区")} · ${esc(family.coach_name || "未填写陪跑师")} · ${esc(family.message_count)} 条消息</p>
       </div>
       <div class="cell-actions">
         <button onclick="previewWecomFamily('${esc(family.family_id)}')">检查</button>
@@ -891,7 +894,7 @@ async function refreshFamilyDetail() {
   $("familyDetail").innerHTML = `
     <section class="profile-pane">
       <h3>${esc(data.family.parent_nickname || data.family.family_id)}</h3>
-      <p class="muted">${esc(data.family.family_id)} · ${esc(data.family.child_grade || "未知年级")} · ${esc(data.family.coach_name || "未分配陪跑师")}</p>
+        <p class="muted">${esc(data.family.family_id)} · ${esc(data.family.child_grade || "未知年级")} · ${esc(data.family.campus_name || "未分配校区")} · ${esc(data.family.coach_name || "未分配陪跑师")}</p>
       ${stageProfile(data.family)}
       ${data.profile ? `
         <dl>

@@ -150,6 +150,7 @@ http://127.0.0.1:8000
 | pbl_count | PBL次数、PBL 次数 |
 | checkin_rate | 打卡率、打卡完成率 |
 | next_milestone | 下一里程碑、下个里程碑 |
+| campus_name | 校区、所属校区、机构校区 |
 | coach_name | 陪跑师 |
 | service_status | 服务状态 |
 | message_time | 聊天时间、时间 |
@@ -179,6 +180,7 @@ http://127.0.0.1:8000
 - 运维排障或外部演示优先使用 `GET /api/ops/redacted-export` 导出脱敏快照，避免直接复制原始聊天和发送内容。
 - SQLite 原始备份会标记为 `raw_sensitive` / `contains_sensitive_data=true`，仍包含家长、孩子、聊天和发送内容，只能由管理员加密保存。
 - 陪跑师角色只返回自己负责的家庭及关联画像、周报、AI 输出、发送任务和发送日志；创建/更新家庭时也会强制绑定到本人，避免跨陪跑师误操作。
+- 家庭档案支持 `campus_name` 校区维度，导入、列表、工作台漏斗和服务质量看板可按校区聚合/过滤，便于多校区试点扩容。
 
 ## 控制端操作分层
 

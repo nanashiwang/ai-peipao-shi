@@ -44,6 +44,7 @@ def ensure_columns():
             ("pbl_count", "INTEGER"),
             ("checkin_rate", "VARCHAR(40)"),
             ("next_milestone", "TEXT"),
+            ("campus_name", "VARCHAR(80)"),
         ],
         "weekly_reports": [
             ("send_task_id", "INTEGER"),
