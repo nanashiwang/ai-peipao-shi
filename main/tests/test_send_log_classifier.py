@@ -31,6 +31,13 @@ class SendLogClassifierTest(unittest.TestCase):
         self.assertEqual(dry_run["send_reason_label"], "试运行完成")
         self.assertEqual(sent["send_reason_label"], "真实发送完成")
 
+    def test_classifies_send_confirm_failure(self):
+        result = classify_send_log("failed", "SEND_CONFIRM_FAILED: 已触发真实发送热键，但未在可见聊天记录回读到本次内容")
+
+        self.assertEqual(result["send_stage"], "发送确认")
+        self.assertEqual(result["send_reason"], "send_confirm_failed")
+        self.assertEqual(result["send_reason_label"], "发送后未确认")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,24 @@ def dry_run_result_detail() -> str:
     return DRY_RUN_RESULT_MESSAGE
 
 
+def normalize_confirmation_text(text: str) -> str:
+    return "".join(str(text or "").split())
+
+
+def sent_content_confirmed(content: str, messages) -> bool:
+    expected = normalize_confirmation_text(content)
+    if not expected:
+        return False
+    for message in messages or []:
+        if isinstance(message, dict):
+            observed = normalize_confirmation_text(message.get("content", ""))
+        else:
+            observed = normalize_confirmation_text(message)
+        if observed and (expected in observed or observed in expected):
+            return True
+    return False
+
+
 def add_send_trace(config: dict, event: str) -> None:
     clean_event = (event or "").strip()
     if not isinstance(config, dict) or not clean_event:

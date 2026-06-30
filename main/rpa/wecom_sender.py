@@ -33,6 +33,7 @@ try:
         real_send_enabled,
         real_send_requested,
         search_result_not_found_detail,
+        sent_content_confirmed,
         should_press_send_hotkey,
         target_in_allowed_conversations,
         target_not_allowed_detail,
@@ -53,6 +54,7 @@ except ModuleNotFoundError:
         real_send_enabled,
         real_send_requested,
         search_result_not_found_detail,
+        sent_content_confirmed,
         should_press_send_hotkey,
         target_in_allowed_conversations,
         target_not_allowed_detail,
@@ -1701,6 +1703,25 @@ def clear_message_input():
     time.sleep(0.1)
 
 
+def confirm_sent_message(window, target: str, text: str, config: dict) -> bool:
+    if not config.get("verify_sent_message_enabled", True):
+        add_send_trace(config, "发送后回读已关闭")
+        return True
+    time.sleep(float(config.get("post_send_verify_wait_seconds", 0.8)))
+    try:
+        ensure_foreground_wecom(window, config)
+        verify_config = {**config, "chat_area_max_ratio_y": config.get("post_send_verify_chat_area_max_ratio_y", 0.84)}
+        messages = extract_visible_chat_messages(window, target, verify_config)
+    except Exception as exc:
+        add_send_trace(config, f"发送后回读异常:{exc}")
+        return False
+    if sent_content_confirmed(text, messages):
+        add_send_trace(config, "发送后消息回读命中")
+        return True
+    add_send_trace(config, "发送后消息回读未命中")
+    return False
+
+
 # 真正发送消息前，先补充签名，再决定是 dry-run 还是回车发送。
 def send_message(window, content: str, config: dict):
     text = content.strip()
@@ -1733,6 +1754,8 @@ def send_message(window, content: str, config: dict):
         ensure_foreground_wecom(window, config)
         hotkey(config.get("send_hotkey", ["enter"]))
         add_send_trace(config, "真实发送热键已触发")
+        if not confirm_sent_message(window, config.get("_current_target", ""), text, config):
+            return "failed", "SEND_CONFIRM_FAILED: 已触发真实发送热键，但未在可见聊天记录回读到本次内容，请人工核对后再重试。"
         return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"
     finally:
         # 无论成功/失败/异常，都取消置顶，避免企微一直压在所有窗口最上层。
@@ -1783,6 +1806,7 @@ def process_task(task: dict, config: dict):
         return "skipped", real_send_block_detail()
     content = validate_task_content(task.get("content") or "")
     task_config = config_for_task_send_mode(config, mode)
+    task_config["_current_target"] = target
     try:
         window = find_wecom_window(task_config)
         search_conversation(window, target, task_config)

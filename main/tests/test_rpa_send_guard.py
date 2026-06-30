@@ -12,6 +12,7 @@ from rpa.send_guard import (
     real_send_enabled,
     real_send_requested,
     search_result_not_found_detail,
+    sent_content_confirmed,
     should_press_send_hotkey,
     target_in_allowed_conversations,
     target_not_allowed_detail,
@@ -63,6 +64,12 @@ class RpaSendGuardTest(unittest.TestCase):
 
         self.assertIn("RPA_TRACE: 会话列表OCR命中；标题OCR命中", detail)
         self.assertEqual(detail_with_send_trace(detail, config), detail)
+
+    def test_sent_content_confirmation_ignores_whitespace(self):
+        messages = [{"speaker": "我", "content": "测试发送\n第一行 第二行"}]
+
+        self.assertTrue(sent_content_confirmed("测试发送 第一行\n第二行", messages))
+        self.assertFalse(sent_content_confirmed("另一条内容", messages))
 
     def test_real_send_enabled_requires_boolean_true(self):
         self.assertTrue(real_send_enabled({"allow_real_send": True}))
