@@ -556,6 +556,20 @@ async function ackParentReport(reportId) {
   });
 }
 
+async function submitParentReportFeedback(reportId) {
+  return withAction("提交周报反馈", async () => {
+    const score = Number($(`parent-feedback-score-${reportId}`)?.value || 5);
+    const note = $(`parent-feedback-note-${reportId}`)?.value || "";
+    await api(`/api/parent/reports/${reportId}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ score, note }),
+    });
+    toast(score <= 2 ? "反馈已提交，陪跑师会优先跟进" : "反馈已提交");
+    await refreshParentDashboard();
+  });
+}
+
 function renderServiceFunnel() {
   const stages = state.workbenchOverview?.service_funnel?.stages || [];
   $("serviceFunnel").innerHTML = stages.length ? stages.map((stage) => `
@@ -653,6 +667,7 @@ function renderParentDashboard() {
     ["PBL 次数", family.pbl_count || 0],
     ["周报状态", report ? displayValue(report.send_status, "已审核") : "待陪跑师审核"],
     ["家长签收", report ? (report.parent_ack_at ? "已签收" : "待签收") : "暂无周报"],
+    ["周报反馈", report ? (report.parent_feedback_score ? `${report.parent_feedback_score}/5` : "待反馈") : "暂无周报"],
   ].map(([label, value]) => `<article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join("");
   contentEl.innerHTML = `
     <section>
@@ -678,6 +693,14 @@ function renderParentDashboard() {
           <pre>${esc(report.final_text || "")}</pre>
           <p class="muted">${report.parent_ack_at ? `已于 ${esc(report.parent_ack_at)} 签收` : "阅读后请点击签收，方便陪跑师确认家长已看到周报。"}</p>
           ${report.parent_ack_at ? "" : `<button onclick="ackParentReport(${report.id})">我已查看周报</button>`}
+          <div class="compact-form">
+            <select id="parent-feedback-score-${report.id}">
+              ${[5, 4, 3, 2, 1].map((score) => `<option value="${score}" ${Number(report.parent_feedback_score || 5) === score ? "selected" : ""}>${score}分 · ${score >= 4 ? "满意" : score === 3 ? "一般" : "需跟进"}</option>`).join("")}
+            </select>
+            <textarea id="parent-feedback-note-${report.id}" placeholder="可选：说说本周周报或服务感受">${esc(report.parent_feedback_note || "")}</textarea>
+            <button onclick="submitParentReportFeedback(${report.id})">${report.parent_feedback_at ? "更新反馈" : "提交反馈"}</button>
+            ${report.parent_feedback_at ? `<p class="muted">已反馈：${esc(report.parent_feedback_score)}/5 · ${esc(report.parent_feedback_at)}</p>` : ""}
+          </div>
         ` : emptyState("周报待审核", "陪跑师审核通过后，家长端才会展示正式周报。")}
       </article>
       <article class="detail-card">
@@ -1106,6 +1129,7 @@ function renderReports() {
           ${badge(r.status, r.status === "approved" ? "ok" : "warn")}
           ${reportSendStatusBadge(r.send_status || "not_created")}
           ${badge(r.parent_ack_at ? "家长已签收" : "家长未签收", r.parent_ack_at ? "ok" : "warn")}
+          ${r.parent_feedback_score ? badge(`反馈${r.parent_feedback_score}/5`, r.parent_feedback_score <= 2 ? "danger" : r.parent_feedback_score === 3 ? "warn" : "ok") : badge("未反馈", "warn")}
           <span class="muted">${esc(r.week_label)}${r.send_task_id ? ` · 任务 #${esc(r.send_task_id)}` : ""}</span>
         </div>
         <button onclick="createReportTask(${r.id})">${r.send_task_id ? "同步发送任务" : "加入发送任务"}</button>

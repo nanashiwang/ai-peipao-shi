@@ -123,6 +123,9 @@ class WeeklyReport(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     parent_ack_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     parent_ack_note: Mapped[str] = mapped_column(Text, default="")
+    parent_feedback_score: Mapped[int] = mapped_column(Integer, default=0)
+    parent_feedback_note: Mapped[str] = mapped_column(Text, default="")
+    parent_feedback_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

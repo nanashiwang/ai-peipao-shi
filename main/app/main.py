@@ -298,6 +298,11 @@ class ParentReportAckIn(BaseModel):
     note: str = ""
 
 
+class ParentReportFeedbackIn(BaseModel):
+    score: int
+    note: str = ""
+
+
 class ChatMessageIn(BaseModel):
     family_id: str
     username: str
@@ -1329,6 +1334,62 @@ def require_parent_account(db: Session, authorization: str):
     return account, identity
 
 
+def sync_parent_report_feedback(db: Session, report: WeeklyReport, score: int, note: str, actor: str) -> bool:
+    if score < 1 or score > 5:
+        raise HTTPException(400, "反馈评分必须在 1 到 5 分之间")
+    clean_note = note.strip()[:300]
+    report.parent_feedback_score = score
+    report.parent_feedback_note = clean_note
+    report.parent_feedback_at = datetime.utcnow()
+
+    profile = db.query(ParentProfile).filter(ParentProfile.family_id == report.family_id).one_or_none()
+    if not profile:
+        profile = ParentProfile(family_id=report.family_id)
+        db.add(profile)
+    profile.satisfaction_level = "低" if score <= 2 else "中" if score == 3 else "高"
+    if score <= 2:
+        signal = f"家长周报反馈低分：{score}分"
+        if signal not in (profile.service_risks or ""):
+            profile.service_risks = "；".join([item for item in [profile.service_risks, signal] if item])
+        action = "主管或陪跑师需复核周报反馈并跟进家长"
+        if action not in (profile.suggested_actions or ""):
+            profile.suggested_actions = "；".join([item for item in [profile.suggested_actions, action] if item])
+
+    followup = (
+        db.query(FollowupRecord)
+        .filter(
+            FollowupRecord.family_id == report.family_id,
+            FollowupRecord.followup_type == "周报",
+            FollowupRecord.content.contains(f"周报#{report.id}"),
+        )
+        .order_by(FollowupRecord.id.desc())
+        .first()
+    )
+    if score <= 2:
+        content = f"家长周报反馈低分：周报#{report.id}，评分 {score}/5。{clean_note}"
+        if followup:
+            followup.content = content
+            followup.status = "需升级"
+            followup.next_action = "24小时内人工回访，确认周报内容或服务体验问题"
+            followup.created_by = actor
+        else:
+            db.add(
+                FollowupRecord(
+                    family_id=report.family_id,
+                    followup_type="周报",
+                    content=content,
+                    status="需升级",
+                    next_action="24小时内人工回访，确认周报内容或服务体验问题",
+                    created_by=actor,
+                )
+            )
+            return True
+    elif followup:
+        followup.status = "已完成"
+        followup.result = f"家长周报反馈已恢复为 {score}/5"
+    return False
+
+
 @app.get("/api/parent/dashboard")
 def parent_dashboard(authorization: str = Header(""), db: Session = Depends(get_db)):
     account, identity = require_parent_account(db, authorization)
@@ -1346,6 +1407,17 @@ def parent_ack_report(report_id: int, payload: ParentReportAckIn | None = None, 
     report.parent_ack_note = note[:200]
     db.commit()
     return {"report": as_dict(report), "ack_by": account.display_name or account.username}
+
+
+@app.post("/api/parent/reports/{report_id}/feedback")
+def parent_feedback_report(report_id: int, payload: ParentReportFeedbackIn, authorization: str = Header(""), db: Session = Depends(get_db)):
+    account, identity = require_parent_account(db, authorization)
+    report = db.get(WeeklyReport, report_id)
+    if not report or report.family_id != identity.family_id or report.status != "approved":
+        raise HTTPException(404, "可反馈周报不存在")
+    created_followup = sync_parent_report_feedback(db, report, payload.score, payload.note, account.display_name or account.username)
+    db.commit()
+    return {"report": as_dict(report), "followup_created": created_followup}
 
 
 @app.get("/api/test-chat/accounts")
@@ -2592,6 +2664,9 @@ def update_report(report_id: int, payload: ReportUpdate, request: Request = None
     if report.final_text != payload.final_text or report.status != payload.status:
         report.parent_ack_at = None
         report.parent_ack_note = ""
+        report.parent_feedback_score = 0
+        report.parent_feedback_note = ""
+        report.parent_feedback_at = None
     report.final_text = payload.final_text
     report.status = payload.status
     db.commit()

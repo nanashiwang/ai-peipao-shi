@@ -52,6 +52,9 @@ def ensure_columns():
             ("sent_at", "DATETIME"),
             ("parent_ack_at", "DATETIME"),
             ("parent_ack_note", "TEXT"),
+            ("parent_feedback_score", "INTEGER"),
+            ("parent_feedback_note", "TEXT"),
+            ("parent_feedback_at", "DATETIME"),
         ],
         "send_tasks": [
             ("device_id", "VARCHAR(64)"),
@@ -85,6 +88,8 @@ def ensure_columns():
                     "send_status": "'not_created'",
                     "sent_at": "NULL",
                     "parent_ack_at": "NULL",
+                    "parent_feedback_score": "0",
+                    "parent_feedback_at": "NULL",
                     "pbl_count": "0",
                     "retry_count": "0",
                     "max_retries": "2",

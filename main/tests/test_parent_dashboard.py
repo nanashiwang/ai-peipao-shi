@@ -6,8 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import ParentReportAckIn, ReportUpdate, admin_auth_secret, parent_ack_report, parent_dashboard, update_report
-from app.models import Family, ParentProfile, RawMessage, UserAccount, WeeklyReport
+from app.main import ParentReportAckIn, ParentReportFeedbackIn, ReportUpdate, admin_auth_secret, parent_ack_report, parent_dashboard, parent_feedback_report, update_report
+from app.models import Family, FollowupRecord, ParentProfile, RawMessage, UserAccount, WeeklyReport
 from app.services.admin_auth import bearer_token, sign_parent_token, verify_parent_token
 
 
@@ -90,11 +90,43 @@ class ParentDashboardTest(unittest.TestCase):
     def test_report_edit_resets_parent_ack(self):
         report = self.db.query(WeeklyReport).filter(WeeklyReport.status == "approved").one()
         parent_ack_report(report.id, ParentReportAckIn(note="已阅读"), authorization=f"Bearer {self.token()}", db=self.db)
+        parent_feedback_report(report.id, ParentReportFeedbackIn(score=5, note="不错"), authorization=f"Bearer {self.token()}", db=self.db)
 
         updated = update_report(report.id, ReportUpdate(final_text="更新后的正式周报", status="approved"), db=self.db)
 
         self.assertIsNone(updated["parent_ack_at"])
         self.assertEqual(updated["parent_ack_note"], "")
+        self.assertEqual(updated["parent_feedback_score"], 0)
+        self.assertEqual(updated["parent_feedback_note"], "")
+        self.assertIsNone(updated["parent_feedback_at"])
+
+    def test_parent_feedback_updates_report_and_escalates_low_score(self):
+        report_id = self.db.query(WeeklyReport).filter(WeeklyReport.status == "approved").one().id
+
+        result = parent_feedback_report(report_id, ParentReportFeedbackIn(score=2, note="建议更具体"), authorization=f"Bearer {self.token()}", db=self.db)
+        dashboard = parent_dashboard(authorization=f"Bearer {self.token()}", db=self.db)
+        profile = self.db.query(ParentProfile).filter(ParentProfile.family_id == "f1").one()
+        followup = self.db.query(FollowupRecord).filter(FollowupRecord.family_id == "f1").one()
+
+        self.assertTrue(result["followup_created"])
+        self.assertEqual(result["report"]["parent_feedback_score"], 2)
+        self.assertEqual(dashboard["weekly_report"]["parent_feedback_note"], "建议更具体")
+        self.assertEqual(profile.satisfaction_level, "低")
+        self.assertEqual(followup.status, "需升级")
+        self.assertIn(f"周报#{report_id}", followup.content)
+
+    def test_parent_feedback_rejects_invalid_score_and_unowned_report(self):
+        report_id = self.db.query(WeeklyReport).filter(WeeklyReport.status == "approved").one().id
+        with self.assertRaises(HTTPException) as bad_score:
+            parent_feedback_report(report_id, ParentReportFeedbackIn(score=6, note="越界"), authorization=f"Bearer {self.token()}", db=self.db)
+        self.assertEqual(bad_score.exception.status_code, 400)
+
+        other = WeeklyReport(family_id="f2", week_label="其他家庭", status="approved", final_text="其他家庭")
+        self.db.add(other)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as other_blocked:
+            parent_feedback_report(other.id, ParentReportFeedbackIn(score=4), authorization=f"Bearer {self.token()}", db=self.db)
+        self.assertEqual(other_blocked.exception.status_code, 404)
 
     def test_parent_dashboard_rejects_mismatched_account(self):
         with self.assertRaises(HTTPException) as blocked:
