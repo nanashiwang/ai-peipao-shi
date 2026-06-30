@@ -9,6 +9,7 @@ server.err.log
 
 # 私密配置（通过 docker-compose 挂载提供，不打进镜像）
 config/ark.json
+config/admin_secret.txt
 rpa/config.json
 
 # 本地临时/调试产物
