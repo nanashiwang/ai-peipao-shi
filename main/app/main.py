@@ -61,6 +61,7 @@ from app.services.admin_auth import (
     verify_admin_token,
 )
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
+from app.services.claim_lock import apply_claim_row_lock, claim_lock_report, normalize_claim_limit
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.rate_limit import (
     admin_rate_limit_rule_for_path,
@@ -524,9 +525,9 @@ def validate_send_mode(send_mode: str) -> str:
     return mode
 
 
-def validate_send_task_execution_guard(task: SendTask, now: datetime | None = None) -> str:
+def validate_send_task_execution_guard(task: SendTask, now: datetime | None = None, reference_time: datetime | None = None) -> str:
     mode = validate_send_mode(task.send_mode)
-    reference_time = task.scheduled_at or task.created_at
+    reference_time = reference_time or task.scheduled_at or task.created_at
     if not reference_time:
         raise HTTPException(400, "任务缺少调度时间，疑似旧任务，请保存后重新审核")
     now = now or datetime.utcnow()
@@ -2875,39 +2876,54 @@ def device_heartbeat(device_id: str, payload: HeartbeatIn, dev: Device = Depends
 def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_device), db: Session = Depends(get_db)):
     if dev.device_id != device_id:
         raise HTTPException(403, "device_id 与鉴权头不一致")
+    safe_limit = normalize_claim_limit(limit)
+    now = datetime.utcnow()
     # 先回收超时未回写的 assigned 任务（设备领了但崩溃），避免任务卡死。
-    stale_before = datetime.utcnow() - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
+    stale_before = now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
     db.query(SendTask).filter(
         SendTask.device_id == dev.device_id,
         SendTask.status == "assigned",
         SendTask.scheduled_at < stale_before,
-    ).update({"status": "pending"})
-    db.commit()
+    ).update({"status": "pending"}, synchronize_session=False)
 
-    try:
-        convs = json.loads(dev.conversations or "[]")
-    except Exception:
-        convs = []
+    convs = device_conversations(dev)
     if not convs:
+        db.commit()
         return []
-    candidates = (
+    candidates_query = (
         db.query(SendTask)
         .filter(SendTask.status == "pending", SendTask.target_name.in_(convs))
         .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
-        .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= datetime.utcnow()))
+        .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
         .order_by(SendTask.id)
-        .limit(limit)
-        .all()
+        .limit(safe_limit)
     )
+    candidates = apply_claim_row_lock(candidates_query, db).all()
     claimed = []
     for task in candidates:
+        # PostgreSQL 用行锁跳过被其他 worker 锁住的任务；SQLite 再用条件更新兜底，确保只会有一个领取者成功。
+        before = send_task_snapshot(task)
+        execution_reference_time = task.scheduled_at or task.created_at
+        assigned_at = datetime.utcnow()
+        updated = (
+            db.query(SendTask)
+            .filter(SendTask.id == task.id, SendTask.status == "pending")
+            .filter(SendTask.target_name.in_(convs))
+            .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
+            .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= assigned_at))
+            .update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": assigned_at}, synchronize_session=False)
+        )
+        if updated != 1:
+            continue
+        task.status = "assigned"
+        task.device_id = dev.device_id
+        task.scheduled_at = assigned_at
         try:
             task.content = validate_send_task_content(task.content)
-            task.send_mode = validate_send_task_execution_guard(task)
+            task.send_mode = validate_send_task_execution_guard(task, reference_time=execution_reference_time)
             if task.send_mode == "real_send":
                 validate_real_send_risk(db, task.target_name, task.content, exclude_task_id=task.id)
         except HTTPException as exc:
-            before = send_task_snapshot(task)
             task.status = "failed"
             db.add(
                 SendLog(
@@ -2923,22 +2939,9 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
             audit_send_task_change(db, task, "send_guard_failed", f"设备:{dev.device_id}", f"发送安全闸门拦截：{exc.detail}", before)
             sync_weekly_report_send_status(db, task, "failed")
             continue
-        # 原子领取：只有仍是 pending 才领得到，避免两台设备抢到同一条。
-        # 同时把 scheduled_at 刷成领取时刻，作为超时回收的判断依据。
-        before = send_task_snapshot(task)
-        assigned_at = datetime.utcnow()
-        updated = (
-            db.query(SendTask)
-            .filter(SendTask.id == task.id, SendTask.status == "pending")
-            .update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": assigned_at})
-        )
-        if updated == 1:
-            task.status = "assigned"
-            task.device_id = dev.device_id
-            task.scheduled_at = assigned_at
-            claimed.append(task)
-            audit_send_task_change(db, task, "assign_device", f"设备:{dev.device_id}", "设备领取发送任务", before)
-            sync_weekly_report_send_status(db, task, "assigned")
+        claimed.append(task)
+        audit_send_task_change(db, task, "assign_device", f"设备:{dev.device_id}", "设备领取发送任务", before)
+        sync_weekly_report_send_status(db, task, "assigned")
     db.commit()
     return [as_dict(db.get(SendTask, t.id)) for t in claimed]
 
@@ -3050,6 +3053,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             f"{retry_waiting_count} 条等待自动重试，{retry_alert_count} 条需人工告警",
             {"retry_waiting": retry_waiting_count, "retry_alert": retry_alert_count},
         ),
+        claim_lock_report(db),
         component_status(
             "ok" if ark.get("configured") else "warn",
             "云端视觉定位",

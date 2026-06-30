@@ -519,7 +519,12 @@ class ClaimTaskGuardTest(unittest.TestCase):
             token="token",
             conversations='["\u4e00\u5408\u5b66\u793e"]',
         )
-        self.db.add(self.dev)
+        self.dev_b = Device(
+            device_id="dev-b",
+            token="token-b",
+            conversations='["\u4e00\u5408\u5b66\u793e"]',
+        )
+        self.db.add_all([self.dev, self.dev_b])
         self.db.commit()
 
     def tearDown(self):
@@ -588,6 +593,27 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(allowed_task.device_id, "dev-a")
         self.assertEqual(outside_task.status, "pending")
         self.assertEqual(outside_task.device_id, "")
+
+    def test_claim_does_not_assign_same_task_twice_across_devices(self):
+        task = SendTask(
+            family_id="f-shared",
+            target_name="一合学社",
+            scene="shared",
+            content="只允许一个被控端领取",
+            send_mode="dry_run",
+            status="pending",
+        )
+        self.db.add(task)
+        self.db.commit()
+
+        first_claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+        second_claimed = claim_tasks("dev-b", limit=5, dev=self.dev_b, db=self.db)
+
+        self.db.refresh(task)
+        self.assertEqual([item["id"] for item in first_claimed], [task.id])
+        self.assertEqual(second_claimed, [])
+        self.assertEqual(task.status, "assigned")
+        self.assertEqual(task.device_id, "dev-a")
 
 
 class SendResultEvidenceTest(unittest.TestCase):
