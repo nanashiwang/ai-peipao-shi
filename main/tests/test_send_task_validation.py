@@ -1041,6 +1041,46 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
 
+    def test_real_send_auto_prepare_respects_failed_check_cooldown(self):
+        task = SendTask(
+            family_id="f-real-proof-cooldown",
+            target_name="一合学社",
+            scene="real",
+            content="证明失败后不要无限切群",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add(task)
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+
+        first_claimed = claim_tasks("dev-a", limit=1, dev=self.dev, db=self.db)
+        self.assertEqual(first_claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        check_task = self.db.get(SendTask, first_claimed[0]["id"])
+        check_task.status = "failed"
+        check_task.last_error = "搜索结果未命中"
+        check_task.scheduled_at = datetime.utcnow()
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-a", limit=1, dev=self.dev, db=self.db), [])
+        check_count = self.db.query(SendTask).filter(
+            SendTask.scene == main_module.CONVERSATION_CHECK_SCENE,
+            SendTask.target_name == "一合学社",
+        ).count()
+        self.assertEqual(check_count, 1)
+        row = [item for item in list_send_tasks(db=self.db) if item["id"] == task.id][0]
+        self.assertIn("自动补证明冷却", "；".join(row["send_readiness"]["reasons"]))
+
+        check_task.scheduled_at = datetime.utcnow() - timedelta(seconds=main_module.CONVERSATION_CHECK_FAILURE_COOLDOWN_SECONDS + 1)
+        self.db.commit()
+        next_claimed = claim_tasks("dev-a", limit=1, dev=self.dev, db=self.db)
+
+        self.assertEqual(next_claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        self.assertNotEqual(next_claimed[0]["id"], first_claimed[0]["id"])
+
     def test_task_readiness_explains_real_send_blocks_and_ready_state(self):
         task = SendTask(
             family_id="f-ready",

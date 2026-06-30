@@ -1009,6 +1009,7 @@ def validate_real_send_device_binding(device_id: str) -> None:
 
 
 CLAIM_TIMEOUT_SECONDS = 300        # assigned 超过这个时间没回写就回收成 pending
+CONVERSATION_CHECK_FAILURE_COOLDOWN_SECONDS = 600
 
 
 def device_online(dev: Device, now: datetime | None = None) -> bool:
@@ -1069,6 +1070,36 @@ def active_conversation_check_task(db: Session, dev: Device, target_name: str) -
         .order_by(SendTask.id.desc())
         .first()
     )
+
+
+def recent_conversation_check_failure_reason(
+    db: Session,
+    dev: Device,
+    target_name: str,
+    now: datetime | None = None,
+) -> str:
+    now = now or datetime.utcnow()
+    cooldown_before = now - timedelta(seconds=CONVERSATION_CHECK_FAILURE_COOLDOWN_SECONDS)
+    failed_task = (
+        db.query(SendTask)
+        .filter(
+            SendTask.device_id == dev.device_id,
+            SendTask.target_name == target_name,
+            SendTask.scene == CONVERSATION_CHECK_SCENE,
+            SendTask.status == "failed",
+            SendTask.scheduled_at >= cooldown_before,
+        )
+        .order_by(SendTask.scheduled_at.desc(), SendTask.id.desc())
+        .first()
+    )
+    if failed_task:
+        retry_at = timeline_time(failed_task.scheduled_at + timedelta(seconds=CONVERSATION_CHECK_FAILURE_COOLDOWN_SECONDS))
+        return f"最近会话只读校验失败，自动补证明冷却至 {retry_at}；可人工复核后手动刷新证明"
+    proof = device_conversation_check(db, dev.device_id, target_name)
+    if proof and proof.status != "ok" and proof.updated_at and proof.updated_at >= cooldown_before:
+        retry_at = timeline_time(proof.updated_at + timedelta(seconds=CONVERSATION_CHECK_FAILURE_COOLDOWN_SECONDS))
+        return f"最近会话读取失败：{proof.last_error or proof.status}；自动补证明冷却至 {retry_at}"
+    return ""
 
 
 def build_conversation_check_action(
@@ -1177,6 +1208,7 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
         if mode == "real_send":
             proof_reason = device_conversation_proof_reason(db, dev, task.target_name, now)
             append_reason(reasons, proof_reason)
+            append_reason(reasons, recent_conversation_check_failure_reason(db, dev, task.target_name, now))
             proof_action = build_conversation_check_action(db, dev, task.target_name, task.family_id, now)
             if proof_action:
                 actions.append(proof_action)
@@ -4147,6 +4179,8 @@ def queue_real_send_missing_proof_checks_for_claim(
         seen_targets.add(target_name)
         proof_reason = device_conversation_proof_reason(db, dev, target_name, now)
         if not proof_reason or active_conversation_check_task(db, dev, target_name):
+            continue
+        if recent_conversation_check_failure_reason(db, dev, target_name, now):
             continue
         queued.append(
             create_conversation_check_task(
