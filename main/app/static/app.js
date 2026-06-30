@@ -1405,10 +1405,16 @@ function deviceOutboxStatus(device) {
 function deviceConversationProofStatus(device) {
   const count = Number(device.conversation_proof_count || 0);
   const label = device.conversation_proof_label || `${count} 个会话24小时内可读`;
+  const ready = device.conversation_proof_ready === true;
+  const total = Number(device.conversation_proof_total || 0);
+  const missingTargets = Array.isArray(device.conversation_proof_missing_targets) ? device.conversation_proof_missing_targets : [];
+  const missing = missingTargets.length
+    ? `<p class="muted">缺失/过期：${esc(missingTargets.slice(0, 5).join("、"))}${missingTargets.length > 5 ? "…" : ""}</p>`
+    : "";
   const detail = device.last_conversation_proof_target
     ? `<p class="muted">最近：${esc(device.last_conversation_proof_target)} · ${esc(device.last_conversation_proof_at || "")}</p>`
     : "";
-  return `${badge(label, count > 0 ? "ok" : "warn")}${detail}`;
+  return `${badge(label, ready ? "ok" : (total ? "warn" : ""))}${missing}${detail}`;
 }
 
 // 渲染设备监控列表。

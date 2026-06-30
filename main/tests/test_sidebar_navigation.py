@@ -86,6 +86,9 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("/conversation-checks", js)
         self.assertIn("/conversation-checks/batch", js)
         self.assertIn("conversation_proof_count", js)
+        self.assertIn("conversation_proof_total", js)
+        self.assertIn("conversation_proof_missing_targets", js)
+        self.assertIn("缺失/过期", js)
 
     def test_control_auth_page_exposes_login_and_first_admin_registration(self):
         html = Path("app/static/index.html").read_text(encoding="utf-8")

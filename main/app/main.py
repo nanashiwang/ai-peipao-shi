@@ -1056,6 +1056,37 @@ def device_conversation_recently_verified(db: Session, dev: Device, target_name:
     return not device_conversation_proof_reason(db, dev, target_name, now)
 
 
+def device_conversation_proof_summary(db: Session, dev: Device, now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    targets = device_conversations(dev)
+    issues = []
+    ready_targets = []
+    for target in targets:
+        reason = device_conversation_proof_reason(db, dev, target, now)
+        if reason:
+            issues.append({"target_name": target, "reason": reason})
+        else:
+            ready_targets.append(target)
+    total = len(targets)
+    ready_count = len(ready_targets)
+    missing_count = len(issues)
+    if total:
+        label = f"{ready_count}/{total} 个负责会话24小时内可读"
+    else:
+        label = "未配置负责会话"
+    return {
+        "total": total,
+        "ready_count": ready_count,
+        "missing_count": missing_count,
+        "ready_targets": ready_targets,
+        "issue_targets": issues,
+        "missing_targets": [item["target_name"] for item in issues],
+        "coverage": round((ready_count / total) * 100, 2) if total else 0.0,
+        "ready": bool(total and missing_count == 0),
+        "label": label,
+    }
+
+
 def device_has_inflight_real_send(db: Session, dev: Device, exclude_task_id: int = 0) -> bool:
     query = db.query(SendTask).filter(
         SendTask.device_id == dev.device_id,
@@ -3838,24 +3869,21 @@ def device_view(dev: Device, db: Session) -> dict:
     data["conversation_scope_label"] = "全会话" if dev.allow_any_conversation else "白名单会话"
     data["outbox_blocked"] = bool((dev.outbox_pending_count or 0) > 0)
     data["outbox_status_label"] = f"结果待补传 {dev.outbox_pending_count} 条" if data["outbox_blocked"] else "结果已同步"
-    proof_deadline = datetime.utcnow() - timedelta(hours=DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS)
-    recent_checks = (
-        db.query(DeviceConversationCheck)
-        .filter(
-            DeviceConversationCheck.device_id == dev.device_id,
-            DeviceConversationCheck.status == "ok",
-            DeviceConversationCheck.verified_at >= proof_deadline,
-        )
-        .count()
-    )
+    proof_summary = device_conversation_proof_summary(db, dev)
     latest_check = (
         db.query(DeviceConversationCheck)
         .filter(DeviceConversationCheck.device_id == dev.device_id)
         .order_by(DeviceConversationCheck.verified_at.desc())
         .first()
     )
-    data["conversation_proof_count"] = recent_checks
-    data["conversation_proof_label"] = f"{recent_checks} 个会话24小时内可读"
+    data["conversation_proof_count"] = proof_summary["ready_count"]
+    data["conversation_proof_total"] = proof_summary["total"]
+    data["conversation_proof_missing_count"] = proof_summary["missing_count"]
+    data["conversation_proof_missing_targets"] = proof_summary["missing_targets"]
+    data["conversation_proof_issue_targets"] = proof_summary["issue_targets"]
+    data["conversation_proof_coverage"] = proof_summary["coverage"]
+    data["conversation_proof_ready"] = proof_summary["ready"]
+    data["conversation_proof_label"] = proof_summary["label"]
     data["last_conversation_proof_at"] = timeline_time(latest_check.verified_at) if latest_check else ""
     data["last_conversation_proof_target"] = latest_check.target_name if latest_check else ""
     return data

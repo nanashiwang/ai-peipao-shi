@@ -968,6 +968,40 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(proof.source, "企业微信RPA-视觉回读")
         view = update_device("dev-a", DeviceUpdateIn(), db=self.db)
         self.assertEqual(view["conversation_proof_count"], 1)
+        self.assertEqual(view["conversation_proof_total"], 1)
+        self.assertTrue(view["conversation_proof_ready"])
+
+    def test_device_view_reports_missing_and_expired_conversation_proofs(self):
+        self.dev.conversations = '["一合学社", "测试2群", "许宝月"]'
+        self.db.add(
+            DeviceConversationCheck(
+                device_id="dev-a",
+                target_name="一合学社",
+                status="ok",
+                message_count=1,
+                source="企业微信RPA-视觉回读",
+                verified_at=datetime.utcnow(),
+            )
+        )
+        self.db.add(
+            DeviceConversationCheck(
+                device_id="dev-a",
+                target_name="测试2群",
+                status="ok",
+                message_count=1,
+                source="企业微信RPA-视觉回读",
+                verified_at=datetime.utcnow() - timedelta(hours=25),
+            )
+        )
+        self.db.commit()
+
+        view = update_device("dev-a", DeviceUpdateIn(), db=self.db)
+
+        self.assertEqual(view["conversation_proof_count"], 1)
+        self.assertEqual(view["conversation_proof_total"], 3)
+        self.assertFalse(view["conversation_proof_ready"])
+        self.assertEqual(set(view["conversation_proof_missing_targets"]), {"测试2群", "许宝月"})
+        self.assertIn("1/3", view["conversation_proof_label"])
 
     def test_real_send_claim_waits_for_recent_device_conversation_proof(self):
         task = SendTask(
