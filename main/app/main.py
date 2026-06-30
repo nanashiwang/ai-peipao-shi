@@ -1308,6 +1308,13 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
             reasons.append(f"设备「{dev.device_id}」企微状态异常：{dev.wecom_ok or '未知'}")
         if mode == "real_send" and not dev.allow_real_send:
             reasons.append(f"设备「{dev.device_id}」真实发送开关未开启")
+            actions.append({
+                "action": "enable_real_send",
+                "label": "开启设备真发",
+                "device_id": dev.device_id,
+                "available": True,
+                "reason": "该目标已绑定此人员设备，但控制端真实发送开关未开启",
+            })
         if mode == "real_send" and (dev.outbox_pending_count or 0) > 0:
             reasons.append(f"设备「{dev.device_id}」还有 {dev.outbox_pending_count} 条发送结果待补传，已暂停领取新真实发送任务")
         if mode == "real_send" and device_has_inflight_real_send(db, dev, exclude_task_id=task.id):

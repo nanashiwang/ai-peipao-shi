@@ -1272,6 +1272,8 @@ class ClaimTaskGuardTest(unittest.TestCase):
         row = list_send_tasks(db=self.db)[0]
         self.assertEqual(row["send_readiness"]["status"], "blocked")
         self.assertIn("真实发送开关未开启", "；".join(row["send_readiness"]["reasons"]))
+        self.assertEqual(row["send_readiness"]["actions"][0]["action"], "enable_real_send")
+        self.assertEqual(row["send_readiness"]["actions"][0]["device_id"], "dev-a")
 
         self.dev.allow_real_send = True
         self.dev.wecom_ok = "Y"

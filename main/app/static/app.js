@@ -389,10 +389,16 @@ function taskReadinessCell(task) {
     : "";
   const actions = Array.isArray(readiness.actions) ? readiness.actions : [];
   const buttons = actions.map((action) => {
-    if (action.action !== "queue_conversation_check") return "";
-    const label = action.existing_task_id ? `证明校验中 #${action.existing_task_id}` : (action.label || "刷新会话证明");
-    const disabled = action.available === false ? "disabled" : "";
-    return `<button ${disabled} onclick="queueConversationProof('${esc(action.device_id)}', '${esc(action.target_name)}', '${esc(action.family_id || manualTaskFamilyId(action.target_name))}', '任务发送前刷新证明')">${esc(label)}</button>`;
+    if (action.action === "queue_conversation_check") {
+      const label = action.existing_task_id ? `证明校验中 #${action.existing_task_id}` : (action.label || "刷新会话证明");
+      const disabled = action.available === false ? "disabled" : "";
+      return `<button ${disabled} onclick="queueConversationProof('${esc(action.device_id)}', '${esc(action.target_name)}', '${esc(action.family_id || manualTaskFamilyId(action.target_name))}', '任务发送前刷新证明')">${esc(label)}</button>`;
+    }
+    if (action.action === "enable_real_send" && isAdminUser()) {
+      const disabled = action.available === false ? "disabled" : "";
+      return `<button class="danger-action" ${disabled} onclick="toggleDeviceRealSend('${esc(action.device_id)}', true)">${esc(action.label || "开启设备真发")}</button>`;
+    }
+    return "";
   }).filter(Boolean).join("");
   const actionHtml = buttons ? `<div class="cell-actions">${buttons}</div>` : "";
   return `${badge(readiness.label || "未检查", kind)}${reasons}${actionHtml}`;
