@@ -67,6 +67,7 @@
       <div class="section-head">
         <h2>服务状态与待办漏斗</h2>
         <div class="actions left">
+          <select id="campusFilter" onchange="setCampusFilter(this.value)" aria-label="筛选校区"></select>
           <select id="coachFilter" onchange="setCoachFilter(this.value)"></select>
           <button onclick="refreshWorkbenchOverview()">刷新漏斗</button>
         </div>
@@ -111,7 +112,8 @@
         <h2>管理端服务质量看板</h2>
         <div class="actions left">
           <span class="muted">按陪跑师统计风险、待办、审核和发送闭环</span>
-          <button onclick="refreshAll()">刷新</button>
+          <select id="adminCampusFilter" onchange="setCampusFilter(this.value)" aria-label="筛选管理看板校区"></select>
+          <button onclick="refreshServiceQuality()">刷新</button>
         </div>
       </div>
       <div id="serviceQualitySummary" class="summary-grid"></div>

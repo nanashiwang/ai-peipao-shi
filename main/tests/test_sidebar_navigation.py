@@ -10,6 +10,7 @@ class SidebarParser(HTMLParser):
         self.nav_tabs = []
         self.nav_titles = []
         self.active_tabs = []
+        self.selects = {}
 
     def handle_starttag(self, tag, attrs):
         data = dict(attrs)
@@ -21,6 +22,8 @@ class SidebarParser(HTMLParser):
             self.nav_titles.append(data.get("data-title", ""))
             if "active" in data.get("class", "").split():
                 self.active_tabs.append(tab)
+        if tag == "select" and data.get("id"):
+            self.selects[data["id"]] = data
 
 
 class SidebarNavigationTest(unittest.TestCase):
@@ -38,6 +41,18 @@ class SidebarNavigationTest(unittest.TestCase):
 
     def test_default_active_tab_matches_default_panel(self):
         self.assertEqual(self.parser.active_tabs, ["dashboard"])
+
+    def test_operations_boards_expose_campus_filters(self):
+        self.assertEqual(self.parser.selects["campusFilter"].get("onchange"), "setCampusFilter(this.value)")
+        self.assertEqual(self.parser.selects["adminCampusFilter"].get("onchange"), "setCampusFilter(this.value)")
+
+    def test_frontend_passes_campus_scope_to_operations_apis(self):
+        js = Path("app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn('localStorage.getItem("campusFilter")', js)
+        self.assertIn('query.set("campus_name", state.selectedCampusName)', js)
+        self.assertIn('scopedPath("/api/workbench/overview", { limit: 8 }, { includeCoach: true })', js)
+        self.assertIn('scopedPath("/api/workbench/today-priorities", { limit: 12 })', js)
+        self.assertIn('scopedPath("/api/admin/service-quality")', js)
 
 
 if __name__ == "__main__":

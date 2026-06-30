@@ -25,6 +25,7 @@ const state = {
   conversations: [],
   chatMessages: [],
   currentUser: JSON.parse(localStorage.getItem("chatUser") || "null"),
+  selectedCampusName: localStorage.getItem("campusFilter") || "",
   selectedCoachName: localStorage.getItem("coachFilter") || "",
   selectedChatFamilyId: "",
   selectedFamilyId: "",
@@ -117,6 +118,17 @@ function displayValue(value, fallback = "未登记") {
   if (value === 0) return "0";
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function scopedPath(path, params = {}, { includeCoach = false, includeCampus = true } = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") query.set(key, value);
+  });
+  if (includeCoach && state.selectedCoachName) query.set("coach_name", state.selectedCoachName);
+  if (includeCampus && state.selectedCampusName) query.set("campus_name", state.selectedCampusName);
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
 }
 
 function stageProfile(family) {
@@ -478,16 +490,44 @@ function renderCoachFilter() {
   el.innerHTML = options.join("");
 }
 
+function renderCampusFilters() {
+  const campuses = [...new Set(state.families.map((family) => (family.campus_name || "").trim()).filter(Boolean))].sort();
+  if (state.selectedCampusName && !campuses.includes(state.selectedCampusName)) campuses.unshift(state.selectedCampusName);
+  const options = ['<option value="">全部校区</option>'].concat(
+    campuses.map((name) => `<option value="${esc(name)}" ${name === state.selectedCampusName ? "selected" : ""}>${esc(name)}</option>`)
+  );
+  ["campusFilter", "adminCampusFilter"].forEach((id) => {
+    const el = $(id);
+    if (el) el.innerHTML = options.join("");
+  });
+}
+
 async function setCoachFilter(coachName) {
   state.selectedCoachName = coachName || "";
   localStorage.setItem("coachFilter", state.selectedCoachName);
   await refreshWorkbenchOverview();
 }
 
+async function setCampusFilter(campusName) {
+  state.selectedCampusName = campusName || "";
+  localStorage.setItem("campusFilter", state.selectedCampusName);
+  renderCampusFilters();
+  await Promise.all([refreshWorkbenchOverview(), refreshTodayPriorities(), refreshServiceQuality()]);
+}
+
 async function refreshWorkbenchOverview() {
-  const suffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
-  state.workbenchOverview = await api(`/api/workbench/overview?limit=8${suffix}`);
+  state.workbenchOverview = await api(scopedPath("/api/workbench/overview", { limit: 8 }, { includeCoach: true }));
   renderWorkbenchOverview();
+}
+
+async function refreshTodayPriorities() {
+  state.todayPriorities = await api(scopedPath("/api/workbench/today-priorities", { limit: 12 }));
+  renderPriorityList();
+}
+
+async function refreshServiceQuality() {
+  state.serviceQuality = await api(scopedPath("/api/admin/service-quality"));
+  renderServiceQuality();
 }
 
 function renderServiceFunnel() {
@@ -531,6 +571,7 @@ function renderTodoBoard() {
 }
 
 function renderWorkbenchOverview() {
+  renderCampusFilters();
   renderCoachFilter();
   renderServiceFunnel();
   renderTodoBoard();
@@ -1182,7 +1223,6 @@ function renderAll() {
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     if (isInitialDataEmpty()) renderGlobalLoading();
-    const coachSuffix = state.selectedCoachName ? `&coach_name=${encodeURIComponent(state.selectedCoachName)}` : "";
     const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
@@ -1191,9 +1231,9 @@ async function refreshAll() {
       api("/api/send-tasks"),
       api("/api/send-logs"),
       api("/api/audit-logs?entity_type=send_task&limit=200"),
-      api("/api/workbench/today-priorities?limit=12"),
-      api(`/api/workbench/overview?limit=8${coachSuffix}`),
-      api("/api/admin/service-quality"),
+      api(scopedPath("/api/workbench/today-priorities", { limit: 12 })),
+      api(scopedPath("/api/workbench/overview", { limit: 8 }, { includeCoach: true })),
+      api(scopedPath("/api/admin/service-quality")),
       api("/api/ai-outputs"),
       api("/api/test-chat/accounts"),
       api("/api/test-chat/conversations"),
