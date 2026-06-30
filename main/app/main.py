@@ -833,6 +833,26 @@ def real_send_verify_detail_has_evidence(detail: str, target_name: str) -> bool:
     return not clean_target or clean_target in clean_detail
 
 
+def real_send_landed_proof_reason(db: Session, task: SendTask, device_id: str) -> str:
+    clean_device_id = (device_id or task.device_id or "").strip()
+    if not clean_device_id:
+        return "缺少设备ID，无法关联本次群内回读落库证明"
+    proof = device_conversation_check(db, clean_device_id, task.target_name)
+    if not proof:
+        return f"设备「{clean_device_id}」没有目标「{task.target_name}」的回读落库证明"
+    if proof.status != "ok":
+        return f"设备「{clean_device_id}」目标「{task.target_name}」回读证明状态为 {proof.status}"
+    if (proof.message_count or 0) <= 0:
+        return f"设备「{clean_device_id}」目标「{task.target_name}」回读证明没有聊天消息"
+    reference_time = task.scheduled_at or task.created_at
+    if reference_time and (not proof.verified_at or proof.verified_at < reference_time):
+        return (
+            f"设备「{clean_device_id}」目标「{task.target_name}」回读证明早于本次任务执行时间"
+            f"（证明时间：{timeline_time(proof.verified_at)}，任务时间：{timeline_time(reference_time)}）"
+        )
+    return ""
+
+
 def normalize_send_verification(payload: SendResultIn, task: SendTask, finished_at: datetime) -> tuple[str, str, datetime | None]:
     mode = send_log_mode(task)
     verify_status = (payload.verify_status or "").strip() or infer_send_verify_status(payload.status, payload.detail, mode)
@@ -3953,6 +3973,15 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     before = send_task_snapshot(task)
     finished_at = datetime.utcnow()
     verify_status, verify_detail, verified_at = normalize_send_verification(payload, task, finished_at)
+    if send_log_mode(task) == "real_send" and payload.status == "sent" and verify_status == "confirmed":
+        proof_reason = real_send_landed_proof_reason(db, task, payload.device_id)
+        if proof_reason:
+            verify_status = "unknown"
+            verify_detail = (
+                "设备上报 confirmed，但服务端未找到本次目标会话回读落库证明；"
+                f"必须实际回到目标群/私聊读取聊天记录并完成落库。原因：{proof_reason}"
+            )
+            verified_at = payload.verified_at
     result_status = payload.status
     result_detail = payload.detail or ""
     if send_log_mode(task) == "real_send" and payload.status == "sent" and verify_status != "confirmed":

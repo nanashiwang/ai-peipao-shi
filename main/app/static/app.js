@@ -2111,6 +2111,19 @@ $("manualTaskForm").onsubmit = async (event) => {
     if (!preflight.ok) {
       const detail = (preflight.reasons || []).join("\n");
       if (mode === "real_send") {
+        const readinessActions = Array.isArray(preflight.readiness?.actions) ? preflight.readiness.actions : [];
+        const enableAction = readinessActions.find((action) => action.action === "enable_real_send" && action.device_id);
+        if (enableAction && isAdminUser()) {
+          const ok = window.confirm(
+            `发送预检未通过：\n${detail}\n\n是否先开启设备 ${enableAction.device_id} 的真实发送开关？\n开启后请重新提交真实发送任务。`
+          );
+          if (ok) {
+            await saveDeviceRealSendPolicy(enableAction.device_id, true);
+            toast("设备真实发送已开启，请重新提交真实发送任务");
+            await refreshAll();
+          }
+          return;
+        }
         const hardReasons = Array.isArray(preflight.hard_reasons) ? preflight.hard_reasons : [];
         if (hardReasons.length) {
           throw new Error(`发送预检未通过：\n${hardReasons.join("\n")}`);
@@ -2163,31 +2176,29 @@ $("deviceForm").onsubmit = async (event) => {
   });
 };
 
+async function saveDeviceRealSendPolicy(deviceId, enabled) {
+  const device = state.devices.find((item) => item.device_id === deviceId) || {};
+  await api(`/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: device.name || "",
+      note: device.note || "",
+      conversations: deviceConversationList(device),
+      allow_real_send: enabled,
+      allow_any_conversation: device.allow_any_conversation === true,
+    }),
+  });
+}
+
 async function toggleDeviceRealSend(deviceId, enabled) {
-  const device = state.devices.find((item) => item.device_id === deviceId);
   const actionText = enabled ? "开启真实发送" : "关闭真实发送";
   if (enabled) {
     const ok = window.confirm(`确认给设备 ${deviceId} 开启真实发送？\n开启后，该设备领取 real_send 任务时会在企业微信真实按发送键。`);
     if (!ok) return;
   }
   await withAction(actionText, async () => {
-    let conversations = [];
-    try {
-      conversations = JSON.parse(device?.conversations || "[]");
-    } catch {
-      conversations = [];
-    }
-    await api(`/api/devices/${encodeURIComponent(deviceId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: device?.name || "",
-        note: device?.note || "",
-        conversations,
-        allow_real_send: enabled,
-        allow_any_conversation: device?.allow_any_conversation === true,
-      }),
-    });
+    await saveDeviceRealSendPolicy(deviceId, enabled);
     toast(enabled ? "设备真实发送已开启" : "设备真实发送已关闭");
     await refreshAll();
   });

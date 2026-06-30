@@ -1336,6 +1336,9 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertFalse(blocked["ok"])
         self.assertIn("真实发送开关未开启", "；".join(blocked["reasons"]))
+        actions = blocked["readiness"]["actions"]
+        self.assertEqual(actions[0]["action"], "enable_real_send")
+        self.assertEqual(actions[0]["device_id"], "dev-a")
 
         self.dev.allow_real_send = True
         self.dev.wecom_ok = "Y"
@@ -1556,6 +1559,21 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.db.commit()
         return task
 
+    def add_landed_conversation_proof(self, task, device_id="rpa-01", status="ok", message_count=3):
+        verified_at = (task.scheduled_at or datetime.utcnow()) + timedelta(seconds=1)
+        proof = DeviceConversationCheck(
+            device_id=device_id,
+            target_name=task.target_name,
+            status=status,
+            message_count=message_count,
+            source="发送后回读",
+            verified_at=verified_at,
+            updated_at=verified_at,
+        )
+        self.db.add(proof)
+        self.db.commit()
+        return proof
+
     def test_record_send_result_stores_server_screenshot(self):
         task = self.add_task()
         payload = SendResultIn(
@@ -1578,6 +1596,7 @@ class SendResultEvidenceTest(unittest.TestCase):
 
     def test_record_send_result_persists_group_verification(self):
         task = self.add_task()
+        self.add_landed_conversation_proof(task)
         verified_at = datetime.utcnow()
 
         log = record_send_result(
@@ -1603,6 +1622,7 @@ class SendResultEvidenceTest(unittest.TestCase):
 
     def test_record_send_result_is_idempotent_by_client_result_id(self):
         task = self.add_task()
+        self.add_landed_conversation_proof(task)
         payload = SendResultIn(
             status="sent",
             detail="REAL_RPA: 已发送",
@@ -1673,6 +1693,27 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["verify_status"], "unknown")
         self.assertIn("缺少目标会话回读命中或落库证据", log["verify_detail"])
+
+    def test_real_send_confirmed_without_server_landed_proof_is_landed_as_failed(self):
+        task = self.add_task()
+
+        log = record_send_result(
+            task.id,
+            SendResultIn(
+                status="sent",
+                detail="REAL_RPA: 已通过企业微信 PC 端发送。",
+                device_id="rpa-01",
+                verify_status="confirmed",
+                verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容，回读已落库 proof_status=ok",
+            ),
+            db=self.db,
+        )
+
+        self.db.refresh(task)
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(log["status"], "failed")
+        self.assertEqual(log["verify_status"], "unknown")
+        self.assertIn("服务端未找到本次目标会话回读落库证明", log["verify_detail"])
 
     def test_manual_verification_can_confirm_after_hotkey_failure_without_requeue(self):
         task = self.add_task()
