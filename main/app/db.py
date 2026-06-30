@@ -36,6 +36,12 @@ def init_db():
 
 
 # create_all 只建新表，不会给已存在的旧表补列。这里为旧库平滑补新增列，避免删库重建。
+def portable_column_type(col_type: str, dialect_name: str) -> str:
+    if dialect_name == "postgresql" and col_type.upper() == "DATETIME":
+        return "TIMESTAMP"
+    return col_type
+
+
 def ensure_columns():
     wanted = {
         "families": [
@@ -73,6 +79,7 @@ def ensure_columns():
         "user_accounts": [("campus_names", "TEXT")],
     }
     inspector = inspect(engine)
+    dialect_name = engine.dialect.name
     tables = set(inspector.get_table_names())
     with engine.begin() as conn:
         for table, cols in wanted.items():
@@ -97,5 +104,6 @@ def ensure_columns():
                     "satisfaction_level": "'未知'",
                     "renewal_intent": "'未知'",
                 }.get(col_name, "''")
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"))
+                safe_type = portable_column_type(col_type, dialect_name)
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {safe_type} DEFAULT {default}"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))
