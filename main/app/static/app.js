@@ -113,6 +113,33 @@ function badge(text, kind = "") {
   return `<span class="badge ${kind}">${esc(text)}</span>`;
 }
 
+function displayValue(value, fallback = "未登记") {
+  if (value === 0) return "0";
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function stageProfile(family) {
+  const items = [
+    ["年级", family.child_grade],
+    ["课程阶段", family.course_stage],
+    ["Unit 进度", family.unit_progress],
+    ["PBL 次数", family.pbl_count],
+    ["打卡完成率", family.checkin_rate],
+    ["下一里程碑", family.next_milestone, "wide"],
+  ];
+  return `
+    <div class="stage-grid">
+      ${items.map(([label, value, wide]) => `
+        <div class="stage-card ${wide || ""}">
+          <span>${esc(label)}</span>
+          <strong>${esc(displayValue(value))}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function statePanel(kind, title, detail = "", actionHtml = "") {
   const labels = { empty: "空状态", loading: "加载中", error: "错误", risk: "风险" };
   return `
@@ -656,6 +683,9 @@ function renderFamilies() {
     { label: "家庭编号", key: "family_id" },
     { label: "家长", key: "parent_nickname" },
     { label: "年级", key: "child_grade" },
+    { label: "课程阶段", render: (r) => esc(displayValue(r.course_stage)) },
+    { label: "Unit", render: (r) => esc(displayValue(r.unit_progress)) },
+    { label: "打卡率", render: (r) => esc(displayValue(r.checkin_rate)) },
     { label: "陪跑师", key: "coach_name" },
     { label: "消息数", key: "message_count" },
     { label: "操作", render: (r) => `
@@ -835,6 +865,7 @@ async function refreshFamilyDetail() {
     <section class="profile-pane">
       <h3>${esc(data.family.parent_nickname || data.family.family_id)}</h3>
       <p class="muted">${esc(data.family.family_id)} · ${esc(data.family.child_grade || "未知年级")} · ${esc(data.family.coach_name || "未分配陪跑师")}</p>
+      ${stageProfile(data.family)}
       ${data.profile ? `
         <dl>
           <dt>沟通风格</dt><dd>${esc(data.profile.communication_style)}</dd>

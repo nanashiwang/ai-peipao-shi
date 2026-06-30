@@ -38,6 +38,13 @@ def init_db():
 # create_all 只建新表，不会给已存在的旧表补列。这里为旧库平滑补新增列，避免删库重建。
 def ensure_columns():
     wanted = {
+        "families": [
+            ("course_stage", "VARCHAR(120)"),
+            ("unit_progress", "VARCHAR(120)"),
+            ("pbl_count", "INTEGER"),
+            ("checkin_rate", "VARCHAR(40)"),
+            ("next_milestone", "TEXT"),
+        ],
         "weekly_reports": [
             ("send_task_id", "INTEGER"),
             ("send_status", "VARCHAR(30)"),
@@ -62,6 +69,7 @@ def ensure_columns():
                     "send_task_id": "0",
                     "send_status": "'not_created'",
                     "sent_at": "NULL",
+                    "pbl_count": "0",
                 }.get(col_name, "''")
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))

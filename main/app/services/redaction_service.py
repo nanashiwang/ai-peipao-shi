@@ -20,7 +20,18 @@ NAME_KEYS = {
     "display_name",
     "username",
 }
-CHILD_KEYS = {"child_grade", "child_name", "student_name", "grade", "student_grade"}
+CHILD_KEYS = {
+    "child_grade",
+    "child_name",
+    "student_name",
+    "grade",
+    "student_grade",
+    "course_stage",
+    "unit_progress",
+    "pbl_count",
+    "checkin_rate",
+    "next_milestone",
+}
 PHONE_KEYS = {"phone", "mobile", "parent_phone", "手机号", "手机", "家长手机号"}
 CONTENT_KEYS = {
     "content",

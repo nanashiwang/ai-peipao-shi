@@ -407,6 +407,45 @@ h3 {
   min-width: 0;
 }
 
+.stage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.stage-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(0, 122, 255, .08), rgba(255, 255, 255, .68)),
+    rgba(255, 255, 255, .62);
+}
+
+.stage-card.wide {
+  grid-column: span 2;
+}
+
+.stage-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stage-card strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .row-card {
   padding: 18px 20px;
   display: flex;
@@ -1241,12 +1280,17 @@ summary {
 
   .kpi-grid,
   .summary-grid,
+  .stage-grid,
   .funnel-list,
   .todo-board,
   .report-grid,
   .template-form,
   .wecom-form {
     grid-template-columns: 1fr;
+  }
+
+  .stage-card.wide {
+    grid-column: auto;
   }
 
   .chat-messages {

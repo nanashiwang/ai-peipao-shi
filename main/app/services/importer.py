@@ -20,7 +20,13 @@ FIELD_ALIASES = {
     "family_id": ["family_id", "家庭编号", "家庭ID"],
     "parent_nickname": ["parent_nickname", "家长昵称"],
     "child_grade": ["child_grade", "孩子年级"],
+    "course_stage": ["course_stage", "课程阶段"],
+    "unit_progress": ["unit_progress", "Unit进度", "Unit 进度", "单元进度"],
+    "pbl_count": ["pbl_count", "PBL次数", "PBL 次数"],
+    "checkin_rate": ["checkin_rate", "打卡率", "打卡完成率"],
+    "next_milestone": ["next_milestone", "下一里程碑", "下个里程碑"],
     "coach_name": ["coach_name", "陪跑师"],
+    "service_status": ["service_status", "服务状态"],
     "message_time": ["message_time", "聊天时间", "时间"],
     "speaker": ["speaker", "说话人"],
     "content": ["content", "消息内容", "内容"],
@@ -218,14 +224,47 @@ def _looks_mojibake(text: str) -> bool:
     return mojibake_hits >= 3
 
 
+def _parse_optional_int(value: str) -> tuple[int | None, str]:
+    if not value:
+        return None, ""
+    text = str(value).strip()
+    if not text:
+        return None, ""
+    match = re.search(r"\d+", text)
+    if not match:
+        return None, "invalid"
+    return int(match.group(0)), ""
+
+
+def _apply_family_fields(family: Family, data: dict) -> None:
+    for field in ("parent_nickname", "child_grade", "coach_name"):
+        value = data.get(field, "")
+        if value and not getattr(family, field):
+            setattr(family, field, value)
+
+    for field in ("course_stage", "unit_progress", "checkin_rate", "next_milestone", "service_status"):
+        value = data.get(field, "")
+        if value:
+            setattr(family, field, value)
+
+    if data.get("pbl_count") is not None:
+        family.pbl_count = data["pbl_count"]
+
+
 def validate_import_row(row: dict, row_number: int) -> tuple[dict, list[dict]]:
     family_id = _get(row, "family_id")
     parent_nickname = _get(row, "parent_nickname")
     content = _get(row, "content")
     speaker = _get(row, "speaker")
-    source = _get(row, "source", "导入")
+    source_raw = _get(row, "source")
+    source = source_raw or "导入"
     parent_phone = _get(row, "parent_phone")
-    parsed_time, time_issue = _parse_time_with_issue(_get(row, "message_time"))
+    message_time_raw = _get(row, "message_time")
+    checkin_status = _get(row, "checkin_status")
+    has_message = bool(content)
+    has_message_markers = has_message or bool(message_time_raw) or bool(speaker) or bool(source_raw) or bool(checkin_status)
+    parsed_time, time_issue = _parse_time_with_issue(message_time_raw) if has_message_markers else (datetime.utcnow(), "")
+    pbl_count, pbl_issue = _parse_optional_int(_get(row, "pbl_count"))
     issues: list[dict] = []
 
     if not family_id:
@@ -237,12 +276,12 @@ def validate_import_row(row: dict, row_number: int) -> tuple[dict, list[dict]]:
         issues.append(_issue(row_number, "parent_nickname", "missing_conversation", "家长昵称/企微会话名为空，已用家庭编号兜底", "warning"))
         parent_nickname = family_id
 
-    if not content:
+    if not content and has_message_markers:
         issues.append(_issue(row_number, "content", "empty_content", "消息内容不能为空"))
-    elif _looks_mojibake(content):
+    elif content and _looks_mojibake(content):
         issues.append(_issue(row_number, "content", "mojibake_content", "消息内容疑似乱码"))
 
-    if not speaker:
+    if has_message and not speaker:
         issues.append(_issue(row_number, "speaker", "missing_speaker", "说话人为空，会影响上下文判断", "warning"))
 
     if time_issue == "missing":
@@ -253,16 +292,26 @@ def validate_import_row(row: dict, row_number: int) -> tuple[dict, list[dict]]:
     if parent_phone and not VALID_MOBILE_RE.fullmatch(parent_phone):
         issues.append(_issue(row_number, "parent_phone", "invalid_phone", "手机号格式不合法", "warning"))
 
+    if pbl_issue:
+        issues.append(_issue(row_number, "pbl_count", "invalid_pbl_count", "PBL次数无法识别，已跳过该字段", "warning"))
+
     return {
         "family_id": family_id,
         "parent_nickname": parent_nickname,
         "child_grade": _get(row, "child_grade"),
+        "course_stage": _get(row, "course_stage"),
+        "unit_progress": _get(row, "unit_progress"),
+        "pbl_count": pbl_count if not pbl_issue else None,
+        "checkin_rate": _get(row, "checkin_rate"),
+        "next_milestone": _get(row, "next_milestone"),
         "coach_name": _get(row, "coach_name"),
+        "service_status": _get(row, "service_status"),
+        "has_message": has_message,
         "message_time": parsed_time,
         "speaker": speaker,
         "content": content,
         "source": source,
-        "checkin_status": _get(row, "checkin_status") or detect_checkin(content),
+        "checkin_status": checkin_status or detect_checkin(content),
     }, issues
 
 
@@ -290,6 +339,7 @@ def import_rows(db: Session, rows: list[dict]) -> dict:
     seen_keys = set()
     issues: list[dict] = []
     imported = 0
+    profile_rows = 0
     skipped = 0
     for index, row in enumerate(rows, start=2):
         data, row_issues = validate_import_row(row, index)
@@ -300,59 +350,68 @@ def import_rows(db: Session, rows: list[dict]) -> dict:
             continue
         family_id = data["family_id"]
         content = data["content"]
-        duplicate_key = (family_id, data["message_time"].isoformat(), data["speaker"], content)
-        if duplicate_key in seen_keys:
-            skipped += 1
-            issues.append(_issue(index, "content", "duplicate_in_file", "同一导入文件中存在重复消息", "warning"))
-            continue
-        seen_keys.add(duplicate_key)
-        exists = (
-            db.query(RawMessage)
-            .filter(
-                RawMessage.family_id == family_id,
-                RawMessage.message_time == data["message_time"],
-                RawMessage.speaker == data["speaker"],
-                RawMessage.content == content,
+        if data["has_message"]:
+            duplicate_key = (family_id, data["message_time"].isoformat(), data["speaker"], content)
+            if duplicate_key in seen_keys:
+                skipped += 1
+                issues.append(_issue(index, "content", "duplicate_in_file", "同一导入文件中存在重复消息", "warning"))
+                continue
+            seen_keys.add(duplicate_key)
+            exists = (
+                db.query(RawMessage)
+                .filter(
+                    RawMessage.family_id == family_id,
+                    RawMessage.message_time == data["message_time"],
+                    RawMessage.speaker == data["speaker"],
+                    RawMessage.content == content,
+                )
+                .first()
             )
-            .first()
-        )
-        if exists:
-            skipped += 1
-            issues.append(_issue(index, "content", "duplicate_existing", "数据库中已存在相同消息，已跳过", "warning"))
-            continue
+            if exists:
+                skipped += 1
+                issues.append(_issue(index, "content", "duplicate_existing", "数据库中已存在相同消息，已跳过", "warning"))
+                continue
         family = family_cache.get(family_id)
         if not family:
             family = Family(
                 family_id=family_id,
                 parent_nickname=data["parent_nickname"],
                 child_grade=data["child_grade"],
+                course_stage=data["course_stage"],
+                unit_progress=data["unit_progress"],
+                pbl_count=data["pbl_count"] if data["pbl_count"] is not None else 0,
+                checkin_rate=data["checkin_rate"],
+                next_milestone=data["next_milestone"],
                 coach_name=data["coach_name"],
+                service_status=data["service_status"] or "试点中",
             )
             db.add(family)
             family_cache[family_id] = family
         else:
-            family.parent_nickname = family.parent_nickname or data["parent_nickname"]
-            family.child_grade = family.child_grade or data["child_grade"]
-            family.coach_name = family.coach_name or data["coach_name"]
+            _apply_family_fields(family, data)
 
-        db.add(
-            RawMessage(
-                family_id=family_id,
-                message_time=data["message_time"],
-                speaker=data["speaker"],
-                content=content,
-                source=data["source"],
-                checkin_status=data["checkin_status"],
-                is_effective="Y" if len(content) >= 2 else "N",
+        if data["has_message"]:
+            db.add(
+                RawMessage(
+                    family_id=family_id,
+                    message_time=data["message_time"],
+                    speaker=data["speaker"],
+                    content=content,
+                    source=data["source"],
+                    checkin_status=data["checkin_status"],
+                    is_effective="Y" if len(content) >= 2 else "N",
+                )
             )
-        )
+            imported += 1
+        else:
+            profile_rows += 1
         issues.extend(row_issues)
         families_seen.add(family_id)
-        imported += 1
     db.commit()
     return {
         "families": len(families_seen),
         "messages": imported,
+        "profile_rows": profile_rows,
         "skipped": skipped,
         "issue_count": len(issues),
         "issues": issues[:MAX_IMPORT_ISSUES],

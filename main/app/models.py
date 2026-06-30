@@ -37,7 +37,7 @@ class UserAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-# 家庭主表，保存家长、年级和陪跑师等基础信息。
+# 家庭主表，保存家长、学员阶段和陪跑师等基础信息。
 class Family(Base):
     __tablename__ = "families"
 
@@ -45,6 +45,11 @@ class Family(Base):
     family_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     parent_nickname: Mapped[str] = mapped_column(String(120), default="")
     child_grade: Mapped[str] = mapped_column(String(80), default="")
+    course_stage: Mapped[str] = mapped_column(String(120), default="")
+    unit_progress: Mapped[str] = mapped_column(String(120), default="")
+    pbl_count: Mapped[int] = mapped_column(Integer, default=0)
+    checkin_rate: Mapped[str] = mapped_column(String(40), default="")
+    next_milestone: Mapped[str] = mapped_column(Text, default="")
     coach_name: Mapped[str] = mapped_column(String(80), default="")
     service_status: Mapped[str] = mapped_column(String(40), default="试点中")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

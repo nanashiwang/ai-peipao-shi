@@ -139,12 +139,20 @@ http://127.0.0.1:8000
 | family_id | 家庭编号、家庭ID |
 | parent_nickname | 家长昵称 |
 | child_grade | 孩子年级 |
+| course_stage | 课程阶段 |
+| unit_progress | Unit进度、Unit 进度、单元进度 |
+| pbl_count | PBL次数、PBL 次数 |
+| checkin_rate | 打卡率、打卡完成率 |
+| next_milestone | 下一里程碑、下个里程碑 |
 | coach_name | 陪跑师 |
+| service_status | 服务状态 |
 | message_time | 聊天时间、时间 |
 | speaker | 说话人 |
 | content | 消息内容、内容 |
 | source | 群/单聊来源、来源 |
 | checkin_status | 打卡状态 |
+
+课程阶段模板可以只导入家庭档案，不必带聊天内容。导入后「家庭详情」会展示年级、课程阶段、Unit 进度、PBL 次数、打卡完成率和下一里程碑；后续聊天记录仍按原规则写入 `raw_messages`。
 
 ## 真实接口替换点
 

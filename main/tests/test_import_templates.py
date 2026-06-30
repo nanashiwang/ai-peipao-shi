@@ -26,6 +26,18 @@ class ImportTemplateCatalogTest(unittest.TestCase):
         self.assertTrue({"family_id", "message_time", "speaker", "content"}.issubset(template["headers"]))
         self.assertEqual(template["template_family"], "chat_messages")
 
+    def test_course_stage_template_contains_stage_profile_fields(self):
+        template = get_import_template("course_stage_v1")
+
+        self.assertTrue({
+            "course_stage",
+            "unit_progress",
+            "pbl_count",
+            "checkin_rate",
+            "next_milestone",
+        }.issubset(template["headers"]))
+        self.assertEqual(template["template_family"], "course_stage")
+
     def test_template_csv_contains_utf8_bom_header_and_sample_row(self):
         raw = import_template_csv_bytes("chat_messages_v1")
 

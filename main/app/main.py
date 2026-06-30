@@ -140,6 +140,11 @@ class FamilyIn(BaseModel):
     family_id: str = ""
     parent_nickname: str
     child_grade: str = ""
+    course_stage: str = ""
+    unit_progress: str = ""
+    pbl_count: int | None = None
+    checkin_rate: str = ""
+    next_milestone: str = ""
     coach_name: str = ""
     service_status: str = "企微待同步"
 
@@ -1279,6 +1284,16 @@ def upsert_family(payload: FamilyIn, db: Session = Depends(get_db)):
         family.family_id = family.family_id or family_id
         family.parent_nickname = target_name
         family.child_grade = payload.child_grade
+        if payload.course_stage:
+            family.course_stage = payload.course_stage
+        if payload.unit_progress:
+            family.unit_progress = payload.unit_progress
+        if payload.pbl_count is not None:
+            family.pbl_count = payload.pbl_count
+        if payload.checkin_rate:
+            family.checkin_rate = payload.checkin_rate
+        if payload.next_milestone:
+            family.next_milestone = payload.next_milestone
         family.coach_name = payload.coach_name
         family.service_status = payload.service_status
     else:
@@ -1286,6 +1301,11 @@ def upsert_family(payload: FamilyIn, db: Session = Depends(get_db)):
             family_id=family_id,
             parent_nickname=target_name,
             child_grade=payload.child_grade,
+            course_stage=payload.course_stage,
+            unit_progress=payload.unit_progress,
+            pbl_count=payload.pbl_count if payload.pbl_count is not None else 0,
+            checkin_rate=payload.checkin_rate,
+            next_milestone=payload.next_milestone,
             coach_name=payload.coach_name,
             service_status=payload.service_status,
         )
