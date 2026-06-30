@@ -1546,10 +1546,18 @@ def extract_chat_messages_by_clipboard(window, conversation: str, config: dict) 
         print("clipboard_extract=disabled: 为避免误复制其他页面，剪贴板读取默认关闭。需要时显式加 --allow-clipboard-copy。")
         return []
     old_clipboard = ""
+    compare_clipboard = ""
     try:
         old_clipboard = pyperclip.paste()
+        compare_clipboard = old_clipboard
     except Exception:
         pass
+    if config.get("clipboard_extract_clear_before_copy", False):
+        compare_clipboard = f"__WECOM_RPA_COPY_SENTINEL_{time.time_ns()}__"
+        try:
+            pyperclip.copy(compare_clipboard)
+        except Exception:
+            compare_clipboard = old_clipboard
     focus_chat_history(window, config)
     ensure_foreground_wecom(window, config)
     keyboard.send_keys("^a")
@@ -1568,7 +1576,7 @@ def extract_chat_messages_by_clipboard(window, conversation: str, config: dict) 
                 pyperclip.copy(old_clipboard)
             except Exception:
                 pass
-    if not copied or copied == old_clipboard:
+    if not copied or copied == compare_clipboard:
         return []
     return normalize_clipboard_lines(copied, conversation, config)
 
@@ -1713,18 +1721,38 @@ def verification_payload(status: str, detail: str, verified: bool = False) -> di
 
 def confirm_sent_message(window, target: str, text: str, config: dict) -> tuple[bool, dict]:
     time.sleep(float(config.get("post_send_verify_wait_seconds", 0.8)))
+    messages = []
+    clipboard_count = None
     try:
         ensure_foreground_wecom(window, config)
         verify_config = {**config, "chat_area_max_ratio_y": config.get("post_send_verify_chat_area_max_ratio_y", 0.84)}
         messages = extract_visible_chat_messages(window, target, verify_config)
     except Exception as exc:
-        add_send_trace(config, f"发送后回读异常:{exc}")
-        return False, verification_payload("failed", f"目标「{target}」发送后回读异常：{exc}", True)
+        add_send_trace(config, f"发送后UIA回读异常:{exc}")
     if sent_content_confirmed(text, messages):
         detail = f"VERIFY_CONFIRMED: 目标「{target}」可见聊天记录回读命中本次内容，message_count={len(messages)}"
         add_send_trace(config, "发送后消息回读命中")
         return True, verification_payload("confirmed", detail, True)
-    detail = f"目标「{target}」可见聊天记录未回读到本次内容，message_count={len(messages)}"
+    if config.get("post_send_verify_clipboard_fallback", True):
+        try:
+            ensure_foreground_wecom(window, config)
+            clipboard_config = {
+                **config,
+                "allow_clipboard_chat_extract": True,
+                "restore_clipboard_after_extract": config.get("post_send_verify_restore_clipboard", True),
+                "clipboard_extract_clear_before_copy": True,
+            }
+            clipboard_messages = extract_chat_messages_by_clipboard(window, target, clipboard_config)
+            clipboard_count = len(clipboard_messages)
+            if sent_content_confirmed(text, clipboard_messages):
+                detail = f"VERIFY_CONFIRMED: 目标「{target}」剪贴板聊天记录回读命中本次内容，message_count={len(clipboard_messages)}"
+                add_send_trace(config, "发送后剪贴板回读命中")
+                return True, verification_payload("confirmed", detail, True)
+            add_send_trace(config, f"发送后剪贴板回读未命中:{len(clipboard_messages)}")
+        except Exception as exc:
+            add_send_trace(config, f"发送后剪贴板回读异常:{exc}")
+    clipboard_note = f"，clipboard_count={clipboard_count}" if clipboard_count is not None else ""
+    detail = f"目标「{target}」聊天记录未回读到本次内容，uia_count={len(messages)}{clipboard_note}"
     add_send_trace(config, "发送后消息回读未命中")
     return False, verification_payload("failed", detail, True)
 
