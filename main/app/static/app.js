@@ -1422,6 +1422,20 @@ async function batchAgent(kind) {
   });
 }
 
+async function autoDraftReplies() {
+  return withAction("自动生成待审回复", async () => {
+    if (!confirm("将为当前可访问家庭批量生成 AI 待审草稿；不会创建发送任务，也不会触发企业微信发送。继续吗？")) return;
+    const result = await api("/api/agent/replies/auto-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tone: "standard", source: "自动回复草稿" }),
+    });
+    toast(`已生成 ${result.created || 0} 条待审回复，跳过 ${result.skipped || 0} 个家庭`);
+    await refreshAll();
+    switchTab("replies");
+  });
+}
+
 // 准备回复。
 function prepareReply(familyId, goTab = true) {
   state.selectedFamilyId = familyId;

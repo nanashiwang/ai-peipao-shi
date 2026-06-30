@@ -54,6 +54,13 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn('scopedPath("/api/workbench/today-priorities", { limit: 12 })', js)
         self.assertIn('scopedPath("/api/admin/service-quality")', js)
 
+    def test_reply_page_exposes_auto_draft_action(self):
+        html = Path("app/static/index.html").read_text(encoding="utf-8")
+        js = Path("app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn("自动生成待审回复", html)
+        self.assertIn("autoDraftReplies()", html)
+        self.assertIn("/api/agent/replies/auto-draft", js)
+
 
 if __name__ == "__main__":
     unittest.main()

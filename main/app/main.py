@@ -264,6 +264,13 @@ class AgentRequest(BaseModel):
     source: str = ""
 
 
+class AutoReplyDraftIn(BaseModel):
+    tone: str = "standard"
+    source: str = "自动回复草稿"
+    skip_recent_hours: int = 24
+    limit: int = 200
+
+
 # AI 输出人工审核时使用的更新结构。
 class AIOutputUpdate(BaseModel):
     edited_output: str
@@ -1179,6 +1186,36 @@ def latest_parent_message(context: dict) -> str:
         if speaker != coach_name and "老师" not in speaker and speaker not in {"我", "陪跑师"}:
             return msg.content
     return context["messages"][-1].content
+
+
+def latest_effective_parent_message(context: dict) -> str:
+    family = context.get("family")
+    coach_name = family.coach_name if family else ""
+    for msg in reversed(context["messages"]):
+        content = (msg.content or "").strip()
+        if not content or msg.is_effective == "N":
+            continue
+        speaker = (msg.speaker or "").strip()
+        if speaker != coach_name and "老师" not in speaker and speaker not in {"我", "陪跑师"}:
+            return content
+    return ""
+
+
+def has_recent_pending_reply_draft(db: Session, family_id: str, hours: int) -> bool:
+    if hours <= 0:
+        return False
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    return (
+        db.query(AIOutput)
+        .filter(
+            AIOutput.family_id == family_id,
+            AIOutput.agent_type == "ai_reply",
+            AIOutput.status == "needs_review",
+            AIOutput.created_at >= cutoff,
+        )
+        .first()
+        is not None
+    )
 
 
 # 启动时初始化数据库并预置模板。
@@ -2526,6 +2563,47 @@ def run_weekly_report_agent(payload: AgentRequest, request: Request = None, db: 
 
 
 # 回复 Agent 接口。
+@app.post("/api/agent/replies/auto-draft")
+def auto_draft_replies(payload: AutoReplyDraftIn | None = None, request: Request = None, db: Session = Depends(get_db)):
+    data = payload or AutoReplyDraftIn()
+    tone = (data.tone or "standard").strip() or "standard"
+    source = (data.source or "自动回复草稿").strip() or "自动回复草稿"
+    safe_limit = min(max(data.limit, 1), 500)
+    skip_recent_hours = max(data.skip_recent_hours, 0)
+    created_outputs: list[tuple[AIOutput, str]] = []
+    skipped_items = []
+
+    families = scoped_family_query(db, request).order_by(Family.family_id).limit(safe_limit).all()
+    for family in families:
+        family_name = family.parent_nickname or family.family_id
+        if has_recent_pending_reply_draft(db, family.family_id, skip_recent_hours):
+            skipped_items.append({"family_id": family.family_id, "family_name": family_name, "reason": "已有近期待审核回复"})
+            continue
+
+        context = build_agent_context(db, family.family_id)
+        message = latest_effective_parent_message(context)
+        if not message:
+            skipped_items.append({"family_id": family.family_id, "family_name": family_name, "reason": "暂无有效家长消息"})
+            continue
+
+        result = run_reply_agent_service(context, message, tone)
+        output = save_ai_output(db, family.family_id, "ai_reply", source, result)
+        created_outputs.append((output, family_name))
+
+    db.commit()
+    outputs = [{**as_dict(output), "family_name": family_name} for output, family_name in created_outputs]
+    return maybe_redact_for_request(
+        {
+            "created": len(outputs),
+            "skipped": len(skipped_items),
+            "outputs": outputs,
+            "skipped_items": skipped_items,
+            "note": "仅生成 AI 待审草稿，不创建发送任务，不触发企业微信发送。",
+        },
+        request,
+    )
+
+
 @app.post("/api/agent/reply")
 @app.post("/agent/reply")
 def run_reply_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
