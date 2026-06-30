@@ -821,6 +821,8 @@ def real_send_verify_detail_has_evidence(detail: str, target_name: str) -> bool:
     clean_detail = (detail or "").strip()
     if "VERIFY_CONFIRMED" not in clean_detail or "回读命中" not in clean_detail:
         return False
+    if "回读已落库" not in clean_detail:
+        return False
     clean_target = (target_name or "").strip()
     return not clean_target or clean_target in clean_detail
 
@@ -839,7 +841,7 @@ def normalize_send_verification(payload: SendResultIn, task: SendTask, finished_
     ):
         return (
             "unknown",
-            "设备上报 confirmed，但缺少目标会话回读命中证据；必须回到目标群/私聊读取聊天记录并上报 VERIFY_CONFIRMED 明细",
+            "设备上报 confirmed，但缺少目标会话回读命中或落库证据；必须回到目标群/私聊读取聊天记录，并上报 VERIFY_CONFIRMED + 回读已落库明细",
             payload.verified_at,
         )
     if verify_status == "confirmed":

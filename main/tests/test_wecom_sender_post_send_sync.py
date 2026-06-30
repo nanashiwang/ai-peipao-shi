@@ -85,6 +85,69 @@ class WecomSenderPostSendSyncTest(unittest.TestCase):
         hotkey.assert_not_called()
         focus_input.assert_not_called()
 
+    def test_confirm_sent_message_reopens_target_and_persists_before_confirming(self):
+        window = object()
+        before = [{"speaker": "家长", "content": "旧消息"}]
+        after = before + [{"speaker": "我", "content": "测试发送", "source": "企业微信RPA"}]
+        config = {
+            "post_send_verify_wait_seconds": 0,
+            "post_send_verify_attempts": 1,
+            "post_send_verify_clipboard_fallback": False,
+            "post_send_verify_ark_fallback": False,
+            "_current_family_id": "WECOM_yihe",
+            "api_base_url": "http://example.invalid",
+        }
+
+        with (
+            patch.object(wecom_sender.time, "sleep"),
+            patch.object(wecom_sender, "ensure_foreground_wecom"),
+            patch.object(wecom_sender, "search_conversation") as search,
+            patch.object(wecom_sender, "verify_active_conversation") as verify_title,
+            patch.object(wecom_sender, "extract_visible_chat_messages", return_value=after),
+            patch.object(
+                wecom_sender,
+                "sync_conversation_to_api",
+                return_value={"messages_inserted": 1, "conversation_check": {"status": "ok", "message_count": 2}},
+            ) as sync,
+        ):
+            confirmed, verification = wecom_sender.confirm_sent_message(window, "一合学社", "测试发送", config, before)
+
+        self.assertTrue(confirmed)
+        self.assertEqual(verification["verify_status"], "confirmed")
+        self.assertIn("VERIFY_CONFIRMED", verification["verify_detail"])
+        self.assertIn("回读已落库", verification["verify_detail"])
+        search.assert_called_once_with(window, "一合学社", config)
+        verify_title.assert_called_once_with(window, "一合学社", config)
+        sync.assert_called_once()
+
+    def test_confirm_sent_message_fails_when_readback_is_not_landed(self):
+        window = object()
+        before = [{"speaker": "家长", "content": "旧消息"}]
+        after = before + [{"speaker": "我", "content": "测试发送", "source": "企业微信RPA"}]
+        config = {
+            "post_send_verify_wait_seconds": 0,
+            "post_send_verify_attempts": 1,
+            "post_send_verify_clipboard_fallback": False,
+            "post_send_verify_ark_fallback": False,
+            "_current_family_id": "WECOM_yihe",
+            "api_base_url": "http://example.invalid",
+        }
+
+        with (
+            patch.object(wecom_sender.time, "sleep"),
+            patch.object(wecom_sender, "ensure_foreground_wecom"),
+            patch.object(wecom_sender, "search_conversation"),
+            patch.object(wecom_sender, "verify_active_conversation"),
+            patch.object(wecom_sender, "extract_visible_chat_messages", return_value=after),
+            patch.object(wecom_sender, "sync_conversation_to_api", side_effect=RuntimeError("api down")),
+        ):
+            confirmed, verification = wecom_sender.confirm_sent_message(window, "一合学社", "测试发送", config, before)
+
+        self.assertFalse(confirmed)
+        self.assertEqual(verification["verify_status"], "failed")
+        self.assertIn("VERIFY_PERSIST_FAILED", verification["verify_detail"])
+        self.assertIn("未成功落库", verification["verify_detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

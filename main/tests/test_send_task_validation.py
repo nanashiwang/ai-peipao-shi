@@ -1513,7 +1513,7 @@ class SendResultEvidenceTest(unittest.TestCase):
                 detail="REAL_RPA: 已通过企业微信 PC 端发送。",
                 device_id="rpa-01",
                 verify_status="confirmed",
-                verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容",
+                verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容，回读已落库 proof_status=ok",
                 verified_at=verified_at,
             ),
             db=self.db,
@@ -1535,7 +1535,7 @@ class SendResultEvidenceTest(unittest.TestCase):
             device_id="rpa-01",
             client_result_id="rpa-01-task-1-result",
             verify_status="confirmed",
-            verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容",
+            verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容，回读已落库 proof_status=ok",
         )
 
         first = record_send_result(task.id, payload, db=self.db)
@@ -1577,7 +1577,28 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(task.status, "failed")
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["verify_status"], "unknown")
-        self.assertIn("缺少目标会话回读命中证据", log["verify_detail"])
+        self.assertIn("缺少目标会话回读命中或落库证据", log["verify_detail"])
+
+    def test_real_send_confirmed_without_landing_evidence_is_landed_as_failed(self):
+        task = self.add_task()
+
+        log = record_send_result(
+            task.id,
+            SendResultIn(
+                status="sent",
+                detail="REAL_RPA: 已通过企业微信 PC 端发送。",
+                device_id="rpa-01",
+                verify_status="confirmed",
+                verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容",
+            ),
+            db=self.db,
+        )
+
+        self.db.refresh(task)
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(log["status"], "failed")
+        self.assertEqual(log["verify_status"], "unknown")
+        self.assertIn("缺少目标会话回读命中或落库证据", log["verify_detail"])
 
     def test_record_send_result_keeps_dry_run_mode(self):
         task = self.add_task()

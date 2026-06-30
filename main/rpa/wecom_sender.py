@@ -1773,6 +1773,25 @@ def sync_post_send_verification_messages(target_name: str, messages: list[dict],
         return None
 
 
+def post_send_verification_landed(target_name: str, messages: list[dict], config: dict) -> tuple[bool, str]:
+    if not config.get("post_send_verify_sync_conversation", True):
+        detail = "发送后回读同步配置已关闭"
+        add_send_trace(config, detail)
+        return False, detail
+    result = sync_post_send_verification_messages(target_name, messages, config)
+    if not isinstance(result, dict):
+        return False, "发送后回读结果未成功落库"
+    proof = result.get("conversation_check")
+    if isinstance(proof, dict):
+        proof_status = str(proof.get("status") or "").strip()
+        if proof_status and proof_status != "ok":
+            return False, f"会话可读证明状态异常 proof_status={proof_status}"
+        message_count = proof.get("message_count", len(messages))
+        return True, f"回读已落库 proof_status={proof_status or 'ok'}, message_count={message_count}"
+    inserted = result.get("messages_inserted")
+    return True, f"回读已落库 messages_inserted={inserted if inserted is not None else 'unknown'}"
+
+
 def sync_target_conversation(config: dict, target: str, family_id: str = "", fields: dict | None = None) -> dict:
     check_api(config)
     window = find_wecom_window(config)
@@ -1887,6 +1906,38 @@ def _post_send_verify_retry_interval(config: dict) -> float:
         return 1.2
 
 
+def reopen_target_for_post_send_verify(window, target: str, config: dict, stage: str) -> None:
+    if not target:
+        return
+    if config.get("post_send_verify_reopen_conversation", True):
+        search_conversation(window, target, config)
+        add_send_trace(config, f"{stage}已重新进入目标会话校验")
+    verify_active_conversation(window, target, config)
+
+
+def build_confirmed_verification(
+    target: str,
+    method: str,
+    messages: list[dict],
+    config: dict,
+    count_detail: str,
+) -> tuple[bool, dict]:
+    landed, landing_detail = post_send_verification_landed(target, messages, config)
+    if not landed:
+        detail = (
+            f"VERIFY_PERSIST_FAILED: 真实发送热键已触发，目标「{target}」{method}回读已命中本次内容，"
+            f"但{landing_detail}；为避免未落库误报，已转人工核对。"
+        )
+        add_send_trace(config, f"发送后{method}回读命中但落库失败")
+        return False, verification_payload("failed", detail, True)
+    detail = (
+        f"VERIFY_CONFIRMED: 目标「{target}」{method}回读命中本次内容，"
+        f"{count_detail}, {landing_detail}"
+    )
+    add_send_trace(config, f"发送后{method}回读命中且结果已落库")
+    return True, verification_payload("confirmed", detail, True)
+
+
 def confirm_sent_message(window, target: str, text: str, config: dict, before_messages=None) -> tuple[bool, dict]:
     time.sleep(float(config.get("post_send_verify_wait_seconds", 0.8)))
     messages = []
@@ -1903,14 +1954,7 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
     for attempt in range(1, attempts + 1):
         try:
             ensure_foreground_wecom(window, config)
-            if target and config.get("post_send_verify_reopen_conversation", True) and attempt == 1:
-                try:
-                    search_conversation(window, target, config)
-                    add_send_trace(config, "发送后已重新进入目标会话校验")
-                except Exception as exc:
-                    add_send_trace(config, f"发送后重新进入目标会话异常:{exc}")
-            if target:
-                verify_active_conversation(window, target, config)
+            reopen_target_for_post_send_verify(window, target, config, f"发送后第{attempt}次")
             verify_config = {**config, "chat_area_max_ratio_y": config.get("post_send_verify_chat_area_max_ratio_y", 0.84)}
             messages = extract_visible_chat_messages(window, target, verify_config)
             last_error = ""
@@ -1921,20 +1965,21 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
         after_count = sent_content_match_count(text, messages, recent_count)
         after_self_count = sent_content_match_count(text, messages, recent_count, speaker="我")
         if sent_content_confirmed_after_send(text, before_messages, messages, recent_count):
-            sync_post_send_verification_messages(target, messages, config)
-            detail = (
-                f"VERIFY_CONFIRMED: 目标「{target}」第{attempt}/{attempts}次可见聊天记录回读命中本次内容，"
+            return build_confirmed_verification(
+                target,
+                f"第{attempt}/{attempts}次可见聊天记录",
+                messages,
+                config,
                 f"message_count={len(messages)}, before_match_count={before_count}, after_match_count={after_count}, "
-                f"self_before_match_count={before_self_count}, self_after_match_count={after_self_count}"
+                f"self_before_match_count={before_self_count}, self_after_match_count={after_self_count}",
             )
-            add_send_trace(config, f"发送后第{attempt}次消息回读命中")
-            return True, verification_payload("confirmed", detail, True)
         add_send_trace(config, f"发送后第{attempt}次消息回读未命中")
         if attempt < attempts and retry_interval:
             time.sleep(retry_interval)
     if config.get("post_send_verify_clipboard_fallback", True):
         try:
             ensure_foreground_wecom(window, config)
+            reopen_target_for_post_send_verify(window, target, config, "发送后剪贴板")
             clipboard_config = {
                 **config,
                 "allow_clipboard_chat_extract": True,
@@ -1946,35 +1991,36 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             clipboard_after_count = sent_content_match_count(text, clipboard_messages, recent_count)
             clipboard_self_after_count = sent_content_match_count(text, clipboard_messages, recent_count, speaker="我")
             if sent_content_confirmed_after_send(text, before_messages, clipboard_messages, recent_count):
-                sync_post_send_verification_messages(target, clipboard_messages, config)
-                detail = (
-                    f"VERIFY_CONFIRMED: 目标「{target}」剪贴板聊天记录回读命中本次内容，"
+                return build_confirmed_verification(
+                    target,
+                    "剪贴板聊天记录",
+                    clipboard_messages,
+                    config,
                     f"attempts={attempts}, message_count={len(clipboard_messages)}, "
                     f"before_match_count={before_count}, after_match_count={clipboard_after_count}, "
-                    f"self_before_match_count={before_self_count}, self_after_match_count={clipboard_self_after_count}"
+                    f"self_before_match_count={before_self_count}, self_after_match_count={clipboard_self_after_count}",
                 )
-                add_send_trace(config, "发送后剪贴板回读命中")
-                return True, verification_payload("confirmed", detail, True)
             add_send_trace(config, f"发送后剪贴板回读未命中:{len(clipboard_messages)}")
         except Exception as exc:
             add_send_trace(config, f"发送后剪贴板回读异常:{exc}")
     if config.get("post_send_verify_ark_fallback", True):
         try:
             ensure_foreground_wecom(window, config)
+            reopen_target_for_post_send_verify(window, target, config, "发送后视觉")
             ark_messages = extract_chat_messages_by_ark(window, target, config)
             ark_count = len(ark_messages)
             ark_after_count = sent_content_match_count(text, ark_messages, recent_count)
             ark_self_after_count = sent_content_match_count(text, ark_messages, recent_count, speaker="我")
             if sent_content_confirmed_after_send(text, before_messages, ark_messages, recent_count):
-                sync_post_send_verification_messages(target, ark_messages, config)
-                detail = (
-                    f"VERIFY_CONFIRMED: 目标「{target}」视觉OCR聊天记录回读命中本次内容，"
+                return build_confirmed_verification(
+                    target,
+                    "视觉OCR聊天记录",
+                    ark_messages,
+                    config,
                     f"attempts={attempts}, message_count={len(ark_messages)}, "
                     f"before_match_count={before_count}, after_match_count={ark_after_count}, "
-                    f"self_before_match_count={before_self_count}, self_after_match_count={ark_self_after_count}"
+                    f"self_before_match_count={before_self_count}, self_after_match_count={ark_self_after_count}",
                 )
-                add_send_trace(config, "发送后视觉回读命中")
-                return True, verification_payload("confirmed", detail, True)
             add_send_trace(config, f"发送后视觉回读未命中:{len(ark_messages)}")
         except Exception as exc:
             add_send_trace(config, f"发送后视觉回读异常:{exc}")
@@ -2054,7 +2100,9 @@ def send_message(window, content: str, config: dict):
         confirmed, verification = confirm_sent_message(window, config.get("_current_target", ""), text, config, before_messages)
         config["_send_verification"] = verification
         if not confirmed:
-            return "failed", "SEND_CONFIRM_FAILED: 已触发真实发送热键，但未在可见聊天记录回读到本次内容，请人工核对后再重试。"
+            verify_detail = (verification or {}).get("verify_detail", "")
+            suffix = f" {verify_detail}" if verify_detail else ""
+            return "failed", f"SEND_CONFIRM_FAILED: 已触发真实发送热键，但未获得目标会话回读落库确认，请人工核对后再重试。{suffix}"
         return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"
     finally:
         # 无论成功/失败/异常，都取消置顶，避免企微一直压在所有窗口最上层。
