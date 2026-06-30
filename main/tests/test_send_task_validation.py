@@ -797,6 +797,49 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
 
+    def test_claim_returns_only_one_real_send_task_per_poll(self):
+        dry_task = SendTask(
+            family_id="f-dry-batch",
+            target_name="一合学社",
+            scene="dry",
+            content="试运行不应与真实发送混批预占",
+            send_mode="dry_run",
+            status="pending",
+        )
+        real_task_1 = SendTask(
+            family_id="f-real-batch-1",
+            target_name="一合学社",
+            scene="real",
+            content="真实发送批次第一条",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        real_task_2 = SendTask(
+            family_id="f-real-batch-2",
+            target_name="一合学社",
+            scene="real",
+            content="真实发送批次第二条",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add_all([dry_task, real_task_1, real_task_2])
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.db.refresh(dry_task)
+        self.db.refresh(real_task_1)
+        self.db.refresh(real_task_2)
+        self.assertEqual([item["id"] for item in claimed], [real_task_1.id])
+        self.assertEqual(real_task_1.status, "assigned")
+        self.assertEqual(dry_task.status, "pending")
+        self.assertEqual(real_task_2.status, "pending")
+
     def test_heartbeat_persists_outbox_state_for_device_monitoring(self):
         result = device_heartbeat(
             "dev-a",

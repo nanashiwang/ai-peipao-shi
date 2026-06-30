@@ -3882,6 +3882,10 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
     candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
     candidates = apply_claim_row_lock(candidates_query, db).all()
+    real_send_candidate = next((task for task in candidates if send_log_mode(task) == "real_send"), None)
+    if real_send_candidate:
+        # 真实发送有外部状态，不批量预占任务；一次只派发一条，避免未执行任务进入 assigned。
+        candidates = [real_send_candidate]
     claimed = []
     for task in candidates:
         # PostgreSQL 用行锁跳过被其他 worker 锁住的任务；SQLite 再用条件更新兜底，确保只会有一个领取者成功。
