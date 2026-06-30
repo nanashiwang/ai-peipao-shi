@@ -40,6 +40,10 @@ class DevicePackageTest(unittest.TestCase):
 
         self.assertIn("rpa/wecom_sender.py", names)
         self.assertIn("rpa/send_guard.py", names)
+        self.assertIn("watchdog.ps1", names)
+        self.assertIn("install_autostart.bat", names)
+        self.assertIn("uninstall_autostart.bat", names)
+        self.assertIn("启动.bat", names)
         self.assertEqual(config["api_base_url"], "https://server.test")
         self.assertEqual(config["device_id"], "rpa-01")
         self.assertFalse(config["allow_real_send"])

@@ -2804,6 +2804,9 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
         for src, arc in [
             (ROOT / "rpa" / "requirements-client.txt", "requirements-client.txt"),
             (ROOT / "rpa" / "templates" / "启动.bat", "启动.bat"),
+            (ROOT / "rpa" / "templates" / "watchdog.ps1", "watchdog.ps1"),
+            (ROOT / "rpa" / "templates" / "install_autostart.bat", "install_autostart.bat"),
+            (ROOT / "rpa" / "templates" / "uninstall_autostart.bat", "uninstall_autostart.bat"),
             (ROOT / "rpa" / "templates" / "使用说明.txt", "使用说明.txt"),
         ]:
             if src.exists():
