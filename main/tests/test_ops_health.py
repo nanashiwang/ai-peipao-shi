@@ -76,6 +76,41 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.assertEqual(self.component(dashboard, "截图证据目录")["metrics"]["file_count"], 1)
         self.assertEqual(self.component(dashboard, "截图证据目录")["metrics"]["total_bytes"], 4)
 
+    def test_health_reports_real_send_group_verification_failures(self):
+        self.db.add_all([
+            SendLog(
+                task_id=1,
+                family_id="f1",
+                target_name="一合学社",
+                status="sent",
+                send_mode="real_send",
+                verify_status="confirmed",
+                detail="VERIFY_CONFIRMED: 目标会话回读命中",
+                sent_at=self.now - timedelta(hours=1),
+            ),
+            SendLog(
+                task_id=2,
+                family_id="f2",
+                target_name="测试2群",
+                status="failed",
+                send_mode="real_send",
+                verify_status="failed",
+                detail="SEND_CONFIRM_FAILED: 未在目标会话回读到本次内容",
+                sent_at=self.now - timedelta(hours=2),
+            ),
+        ])
+        self.db.commit()
+
+        dashboard = build_ops_health_dashboard(self.db, now=self.now)
+        report = self.component(dashboard, "真实发送回读确认")
+
+        self.assertEqual(report["status"], "critical")
+        self.assertEqual(report["metrics"]["real_sent_24h"], 1)
+        self.assertEqual(report["metrics"]["confirmed_24h"], 1)
+        self.assertEqual(report["metrics"]["unconfirmed_sent_24h"], 0)
+        self.assertEqual(report["metrics"]["confirm_failed_24h"], 1)
+        self.assertEqual(report["metrics"]["confirm_rate"], 100.0)
+
     def test_health_ok_when_core_dependencies_are_ready(self):
         self.db.add(Device(device_id="dev-online", token="t1", wecom_ok="Y", last_heartbeat=self.now))
         main_module.ARK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

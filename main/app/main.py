@@ -3947,6 +3947,45 @@ def backup_artifact_stats() -> dict:
     }
 
 
+def real_send_verification_report(db: Session, now: datetime | None = None) -> dict:
+    now = now or datetime.utcnow()
+    since = now - timedelta(hours=24)
+    base = db.query(SendLog).filter(SendLog.send_mode == "real_send", SendLog.sent_at >= since)
+    sent_count = base.filter(SendLog.status == "sent").count()
+    confirmed_count = base.filter(SendLog.status == "sent", SendLog.verify_status == "confirmed").count()
+    unconfirmed_sent_count = base.filter(
+        SendLog.status == "sent",
+        or_(SendLog.verify_status != "confirmed", SendLog.verify_status.is_(None)),
+    ).count()
+    confirm_failed_count = base.filter(
+        or_(
+            SendLog.verify_status.in_(["failed", "unknown"]),
+            SendLog.detail.contains("SEND_CONFIRM_FAILED"),
+        )
+    ).count()
+    status = "critical" if unconfirmed_sent_count or confirm_failed_count else "ok"
+    rate = round((confirmed_count / sent_count) * 100, 2) if sent_count else 100.0
+    detail = (
+        f"近24小时真实发送 {sent_count} 条，回读确认 {confirmed_count} 条，确认率 {rate}%"
+        if sent_count or confirm_failed_count
+        else "近24小时暂无真实发送，回读确认无异常"
+    )
+    if confirm_failed_count:
+        detail += f"，回读失败/未知 {confirm_failed_count} 条"
+    return component_status(
+        status,
+        "真实发送回读确认",
+        detail,
+        {
+            "real_sent_24h": sent_count,
+            "confirmed_24h": confirmed_count,
+            "unconfirmed_sent_24h": unconfirmed_sent_count,
+            "confirm_failed_24h": confirm_failed_count,
+            "confirm_rate": rate,
+        },
+    )
+
+
 def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     devices = db.query(Device).all()
@@ -4000,6 +4039,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             f"{retry_waiting_count} 条等待自动重试，{retry_alert_count} 条需人工告警",
             {"retry_waiting": retry_waiting_count, "retry_alert": retry_alert_count},
         ),
+        real_send_verification_report(db, now),
         claim_lock_report(db),
         component_status(
             "ok" if ark.get("configured") else "warn",

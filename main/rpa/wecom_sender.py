@@ -1725,6 +1725,10 @@ def confirm_sent_message(window, target: str, text: str, config: dict) -> tuple[
     clipboard_count = None
     try:
         ensure_foreground_wecom(window, config)
+        if target and config.get("post_send_verify_reopen_conversation", True):
+            search_conversation(window, target, config)
+            verify_active_conversation(window, target, config)
+            add_send_trace(config, "发送后已重新进入目标会话校验")
         verify_config = {**config, "chat_area_max_ratio_y": config.get("post_send_verify_chat_area_max_ratio_y", 0.84)}
         messages = extract_visible_chat_messages(window, target, verify_config)
     except Exception as exc:
