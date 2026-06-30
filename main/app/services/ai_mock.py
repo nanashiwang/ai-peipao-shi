@@ -49,6 +49,8 @@ def generate_parent_profile(family_id: str, messages: list[RawMessage]) -> dict:
     pain_points = detect_pain_points(contents)
     parent_msgs = [m for m in messages if "家长" in m.speaker or "妈妈" in m.speaker or "爸爸" in m.speaker]
     risk = "退费风险/投诉风险需人工关注" if any("退费" in m.content or "投诉" in m.content for m in messages) else "暂无明显高风险"
+    satisfaction_level = "低" if risk != "暂无明显高风险" else "中高"
+    renewal_intent = "明确关注" if any(word in m.content for m in messages for word in ("续报", "续费", "下一阶段", "继续学")) else "可培育"
     high_freq = len(parent_msgs) >= 5
     communication_style = "高频追问型" if high_freq else "理性规划型"
     trust_level = "B" if len(messages) >= 8 and risk == "暂无明显高风险" else "C"
@@ -58,8 +60,10 @@ def generate_parent_profile(family_id: str, messages: list[RawMessage]) -> dict:
         "trust_trend": "稳定",
         "pain_points": "、".join(pain_points),
         "communication_style": communication_style,
+        "satisfaction_level": satisfaction_level,
         "child_summary": "学习动作已经出现，但稳定性仍需陪跑师用低压力方式持续推动。",
         "service_risks": risk,
+        "renewal_intent": renewal_intent,
         "evidence": _recent_evidence(messages),
         "suggested_actions": "本周建议陪跑师用一句肯定 + 一个具体动作 + 一个复盘时间点沟通。",
     }

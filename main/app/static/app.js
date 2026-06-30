@@ -761,6 +761,8 @@ function renderChatOutputs() {
         <dl>
           <dt>沟通风格</dt><dd>${esc(profile.communication_style || "未识别")}</dd>
           <dt>关注点</dt><dd>${esc(profile.pain_points || "暂无")}</dd>
+          <dt>满意度</dt><dd>${esc(displayValue(profile.satisfaction_level, "未识别"))}</dd>
+          <dt>续报意向</dt><dd>${esc(displayValue(profile.renewal_intent, "未识别"))}</dd>
           <dt>建议动作</dt><dd>${esc(profile.suggested_actions || "暂无")}</dd>
         </dl>
       ` : emptyState("暂无画像", "点击“完整分析”会生成家庭画像。")}
@@ -870,7 +872,9 @@ async function refreshFamilyDetail() {
         <dl>
           <dt>沟通风格</dt><dd>${esc(data.profile.communication_style)}</dd>
           <dt>关注点</dt><dd>${esc(data.profile.pain_points)}</dd>
+          <dt>满意度</dt><dd>${esc(displayValue(data.profile.satisfaction_level, "未识别"))}</dd>
           <dt>风险信号</dt><dd>${esc(data.profile.service_risks)}</dd>
+          <dt>续报意向</dt><dd>${esc(displayValue(data.profile.renewal_intent, "未识别"))}</dd>
           <dt>建议动作</dt><dd>${esc(data.profile.suggested_actions)}</dd>
         </dl>
       ` : emptyState("暂无画像", "点击右侧“生成画像”，系统会基于聊天记录提炼沟通风格、风险和建议动作。")}
@@ -899,6 +903,8 @@ function renderProfiles() {
     { label: "信任", render: (r) => `${badge(r.trust_level || "C")} ${esc(r.trust_trend || "")}` },
     { label: "关注点", key: "pain_points" },
     { label: "沟通风格", key: "communication_style" },
+    { label: "满意度", render: (r) => esc(displayValue(r.satisfaction_level, "未识别")) },
+    { label: "续报意向", render: (r) => esc(displayValue(r.renewal_intent, "未识别")) },
     { label: "孩子状态", key: "child_summary" },
     { label: "风险", render: (r) => (r.service_risks || "").includes("退费") || (r.service_risks || "").includes("投诉") ? `<span class="danger-text">${esc(r.service_risks)}</span>` : esc(r.service_risks) },
     { label: "建议动作", key: "suggested_actions" },

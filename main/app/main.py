@@ -825,8 +825,10 @@ def upsert_parent_profile_from_agent(db: Session, family_id: str, result: dict):
         "trust_trend": "稳定" if raw.get("风险等级") != "高" else "下降",
         "pain_points": join_agent_field(raw.get("家长关注点")),
         "communication_style": raw.get("沟通风格", ""),
+        "satisfaction_level": join_agent_field(raw.get("满意度评级")) or "未知",
         "child_summary": raw.get("学生状态", ""),
         "service_risks": join_agent_field(raw.get("风险信号")),
+        "renewal_intent": join_agent_field(raw.get("续报意向")) or "未知",
         "evidence": join_agent_field(raw.get("使用依据摘要")),
         "suggested_actions": join_agent_field(raw.get("建议跟进动作") or raw.get("推荐下一步动作")),
     }
@@ -1455,6 +1457,7 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
             profile.service_risks if profile else "",
             profile.suggested_actions if profile else "",
             profile.trust_trend if profile else "",
+            profile.renewal_intent if profile else "",
             " ".join(msg.content or "" for msg in recent_messages),
         ]
     )

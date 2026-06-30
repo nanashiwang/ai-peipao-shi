@@ -78,6 +78,23 @@ def _risk_level(messages: list[RawMessage]) -> tuple[str, bool, list[str]]:
     return "低", False, ["暂无明显高风险"]
 
 
+def _renewal_intent(messages: list[RawMessage], risk_level: str) -> str:
+    text = " ".join(msg.content or "" for msg in messages)
+    if any(word in text for word in ("续报", "续费", "下一阶段", "继续学", "后续课程", "报名")):
+        return "明确关注"
+    if risk_level == "高" or any(word in text for word in ("退费", "投诉", "不满意", "没效果")):
+        return "暂不明确"
+    return "可培育"
+
+
+def _satisfaction_level(risk_level: str) -> str:
+    if risk_level == "高":
+        return "低"
+    if risk_level == "中":
+        return "中"
+    return "中高"
+
+
 # 兼容 Ark 返回的单值或列表字段。
 def _safe_list(value) -> list[str]:
     if value is None:
@@ -110,8 +127,10 @@ def _context_payload(context: dict, extra: dict | None = None) -> dict:
             "trust_level": profile.trust_level,
             "pain_points": profile.pain_points,
             "communication_style": profile.communication_style,
+            "satisfaction_level": profile.satisfaction_level,
             "child_summary": profile.child_summary,
             "service_risks": profile.service_risks,
+            "renewal_intent": profile.renewal_intent,
             "suggested_actions": profile.suggested_actions,
         } if profile else None,
         "recent_messages": [
@@ -203,14 +222,14 @@ def run_family_profile_agent(context: dict) -> dict:
     messages = context["messages"]
     family_id = family.family_id if family else ""
     ark_raw = _call_ark_or_none(
-        "你是教育机构陪跑师效率系统的家庭画像Agent。只输出JSON，不要Markdown。字段必须包含：agent,family_id,家长关注点,沟通风格,满意度评级,风险等级,风险信号,学生状态,推荐沟通策略,建议跟进动作,是否需要人工介入,使用依据摘要。",
+        "你是教育机构陪跑师效率系统的家庭画像Agent。只输出JSON，不要Markdown。字段必须包含：agent,family_id,家长关注点,沟通风格,满意度评级,风险等级,风险信号,续报意向,学生状态,推荐沟通策略,建议跟进动作,是否需要人工介入,使用依据摘要。",
         _context_payload(context, {"agent": "family_profile_agent"}),
     )
     if ark_raw and "_ark_error" not in ark_raw:
         display = (
             f"{_family_title(family, family_id)}｜画像\n"
             f"关注点：{_lines(_safe_list(ark_raw.get('家长关注点')))}\n"
-            f"沟通风格：{ark_raw.get('沟通风格', '')}；满意度：{ark_raw.get('满意度评级', '')}；风险：{ark_raw.get('风险等级', '')}\n"
+            f"沟通风格：{ark_raw.get('沟通风格', '')}；满意度：{ark_raw.get('满意度评级', '')}；风险：{ark_raw.get('风险等级', '')}；续报意向：{ark_raw.get('续报意向', '')}\n"
             f"学生状态：{ark_raw.get('学生状态', '')}\n"
             f"建议策略：{ark_raw.get('推荐沟通策略', '')}\n"
             f"建议动作：{_lines(_safe_list(ark_raw.get('建议跟进动作')))}"
@@ -219,6 +238,8 @@ def run_family_profile_agent(context: dict) -> dict:
 
     pain_points = detect_pain_points([msg.content for msg in messages])
     risk_level, need_human, risk_signals = _risk_level(messages)
+    satisfaction_level = _satisfaction_level(risk_level)
+    renewal_intent = _renewal_intent(messages, risk_level)
     checkins = Counter(msg.checkin_status for msg in messages if msg.checkin_status)
     completion_text = "，".join(f"{name}{count}次" for name, count in checkins.items()) or "暂无明确打卡记录"
     parent_messages = [msg for msg in messages if any(word in msg.speaker for word in ["家长", "妈妈", "爸爸"])]
@@ -229,9 +250,10 @@ def run_family_profile_agent(context: dict) -> dict:
         "family_id": family_id,
         "家长关注点": pain_points,
         "沟通风格": communication_style,
-        "满意度评级": "中" if risk_level != "高" else "低",
+        "满意度评级": satisfaction_level,
         "风险等级": risk_level,
         "风险信号": risk_signals,
+        "续报意向": renewal_intent,
         "学生状态": f"近期学习记录：{completion_text}。",
         "推荐沟通策略": strategy,
         "建议跟进动作": ["同步本周完成数据", "约定下次反馈时间", "必要时请主管介入"] if need_human else ["发送阶段反馈", "下周跟进打卡连续性"],
@@ -243,7 +265,7 @@ def run_family_profile_agent(context: dict) -> dict:
     display = (
         f"{_family_title(family, family_id)}｜画像\n"
         f"关注点：{_lines(data['家长关注点'])}\n"
-        f"沟通风格：{data['沟通风格']}；满意度：{data['满意度评级']}；风险：{data['风险等级']}\n"
+        f"沟通风格：{data['沟通风格']}；满意度：{data['满意度评级']}；风险：{data['风险等级']}；续报意向：{data['续报意向']}\n"
         f"学生状态：{data['学生状态']}\n"
         f"建议策略：{data['推荐沟通策略']}\n"
         f"建议动作：{_lines(data['建议跟进动作'])}"

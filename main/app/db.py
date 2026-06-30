@@ -53,6 +53,10 @@ def ensure_columns():
         "send_tasks": [("device_id", "VARCHAR(64)"), ("send_mode", "VARCHAR(20)")],
         "send_logs": [("device_id", "VARCHAR(64)"), ("screenshot_path", "TEXT"), ("send_mode", "VARCHAR(20)")],
         "ai_outputs": [("evidence_json", "TEXT")],
+        "parent_profiles": [
+            ("satisfaction_level", "VARCHAR(20)"),
+            ("renewal_intent", "VARCHAR(40)"),
+        ],
     }
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -70,6 +74,8 @@ def ensure_columns():
                     "send_status": "'not_created'",
                     "sent_at": "NULL",
                     "pbl_count": "0",
+                    "satisfaction_level": "'未知'",
+                    "renewal_intent": "'未知'",
                 }.get(col_name, "''")
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))
