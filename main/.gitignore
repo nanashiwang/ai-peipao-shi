@@ -1,6 +1,10 @@
 .venv/
+.venv-build-rpa/
 __pycache__/
 *.pyc
+build/
+dist/
+*.spec
 coach_mvp.db
 server.log
 server.err.log

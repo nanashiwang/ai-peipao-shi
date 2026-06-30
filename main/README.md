@@ -294,7 +294,23 @@ rpa/config.json
 
 这样 RPA 会同步聊天并生成所有 AI 结果，但不会越过人工审核直接发送。
 
-### 3. 诊断企微窗口和已登记会话
+### 3. 构建签名版 EXE 接入包
+
+脚本包默认仍可用；如试点机器频繁被杀毒拦截，可在 Windows 构建机生成 EXE 版：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File rpa\build_signed_client.ps1 -CertThumbprint "证书指纹"
+```
+
+没有代码签名证书时可先生成未签名包验证流程：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File rpa\build_signed_client.ps1 -SkipSign
+```
+
+构建结果位于 `dist/rpa-client-exe/` 和 `dist/rpa-client-exe.zip`，包内包含 `package_manifest.json` 与 `校验接入包.ps1`。发给被控端前先运行校验脚本；EXE 版启动入口是 `启动EXE.bat`。
+
+### 4. 诊断企微窗口和已登记会话
 
 ```powershell
 .\.venv\Scripts\python.exe rpa\wecom_sender.py --diagnose
@@ -313,7 +329,7 @@ rpa/config.json
 .\.venv\Scripts\python.exe rpa\wecom_sender.py --check-window
 ```
 
-### 4. 直接同步指定会话
+### 5. 直接同步指定会话
 
 ```powershell
 .\.venv\Scripts\python.exe rpa\wecom_sender.py --sync-target "艺博展讯"
@@ -329,7 +345,7 @@ rpa/config.json
 5. 后端写入 `raw_messages`，生成 AI回复、画像、周报、打卡/PBL，保存到前端可见区域。
 6. 如果 `auto_create_reply_task=true`，同时创建待发送任务。
 
-### 5. 同步页面登记的全部会话
+### 6. 同步页面登记的全部会话
 
 ```powershell
 .\.venv\Scripts\python.exe rpa\wecom_sender.py --sync-known
@@ -351,7 +367,7 @@ rpa/config.json
 
 脚本会在每次快捷键前确认前台窗口仍是 `WXWork.exe` 的企业微信窗口；如果焦点跑到浏览器、IDE 或其他页面，会立即停止。
 
-### 6. 审核后发送
+### 7. 审核后发送
 
 进入后台：
 
@@ -367,7 +383,7 @@ http://127.0.0.1:8000
 .\.venv\Scripts\python.exe rpa\wecom_sender.py
 ```
 
-### 7. 自动发送 AI回复任务，仅建议小范围测试
+### 8. 自动发送 AI回复任务，仅建议小范围测试
 
 确认白名单、坐标、会话定位都稳定后，再打开：
 
@@ -386,7 +402,7 @@ http://127.0.0.1:8000
 
 这只会发送本轮未读同步中新建的 AI回复任务，不会批量扫历史 pending 任务。
 
-### 8. 循环监听未读
+### 9. 循环监听未读
 
 ```powershell
 .\.venv\Scripts\python.exe rpa\wecom_sender.py --watch-unread
@@ -402,7 +418,7 @@ http://127.0.0.1:8000
 }
 ```
 
-### 9. 创建一条测试发送任务
+### 10. 创建一条测试发送任务
 
 ```powershell
 .\.venv\Scripts\python.exe rpa\wecom_sender.py --create-test-task --target "艺博展讯" --content "RPA真实发送测试"

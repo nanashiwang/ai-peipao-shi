@@ -80,6 +80,7 @@ from app.services.send_task_operations import (
     role_allows_task_operation,
     send_task_operation_state,
 )
+from rpa.package_manifest import build_package_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
@@ -2891,30 +2892,50 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
         "auto_launch_wecom": False,
     })
 
+    entries: dict[str, bytes] = {}
+
+    def add_file(src: Path, arc: str) -> None:
+        if src.exists():
+            entries[arc] = src.read_bytes()
+
+    def add_text(arc: str, text: str) -> None:
+        entries[arc] = text.encode("utf-8")
+
+    # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
+    add_file(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
+    add_file(ROOT / "rpa" / "send_guard.py", "rpa/send_guard.py")
+    add_file(ROOT / "app" / "services" / "ark_client.py", "app/services/ark_client.py")
+    add_text("app/__init__.py", "")
+    add_text("app/services/__init__.py", "")
+    ark_path = ROOT / "config" / "ark.json"
+    if ark_path.exists():
+        add_file(ark_path, "config/ark.json")
+    # 注入的设备专属配置
+    add_text("rpa/config.json", json.dumps(client_cfg, ensure_ascii=False, indent=2))
+    # 启动脚本 / 依赖 / 说明 / 完整性校验
+    for src, arc in [
+        (ROOT / "rpa" / "requirements-client.txt", "requirements-client.txt"),
+        (ROOT / "rpa" / "templates" / "启动.bat", "启动.bat"),
+        (ROOT / "rpa" / "templates" / "watchdog.ps1", "watchdog.ps1"),
+        (ROOT / "rpa" / "templates" / "install_autostart.bat", "install_autostart.bat"),
+        (ROOT / "rpa" / "templates" / "uninstall_autostart.bat", "uninstall_autostart.bat"),
+        (ROOT / "rpa" / "templates" / "校验接入包.ps1", "校验接入包.ps1"),
+        (ROOT / "rpa" / "templates" / "使用说明.txt", "使用说明.txt"),
+    ]:
+        add_file(src, arc)
+    add_text(
+        "package_manifest.json",
+        json.dumps(
+            build_package_manifest(entries, package_type="rpa-client-script", device_id=dev.device_id),
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
-        zf.write(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
-        zf.write(ROOT / "rpa" / "send_guard.py", "rpa/send_guard.py")
-        zf.write(ROOT / "app" / "services" / "ark_client.py", "app/services/ark_client.py")
-        zf.writestr("app/__init__.py", "")
-        zf.writestr("app/services/__init__.py", "")
-        ark_path = ROOT / "config" / "ark.json"
-        if ark_path.exists():
-            zf.write(ark_path, "config/ark.json")
-        # 注入的设备专属配置
-        zf.writestr("rpa/config.json", json.dumps(client_cfg, ensure_ascii=False, indent=2))
-        # 启动脚本 / 依赖 / 说明
-        for src, arc in [
-            (ROOT / "rpa" / "requirements-client.txt", "requirements-client.txt"),
-            (ROOT / "rpa" / "templates" / "启动.bat", "启动.bat"),
-            (ROOT / "rpa" / "templates" / "watchdog.ps1", "watchdog.ps1"),
-            (ROOT / "rpa" / "templates" / "install_autostart.bat", "install_autostart.bat"),
-            (ROOT / "rpa" / "templates" / "uninstall_autostart.bat", "uninstall_autostart.bat"),
-            (ROOT / "rpa" / "templates" / "使用说明.txt", "使用说明.txt"),
-        ]:
-            if src.exists():
-                zf.write(src, arc)
+        for arc, data in entries.items():
+            zf.writestr(arc, data)
     buf.seek(0)
     return StreamingResponse(
         buf,
