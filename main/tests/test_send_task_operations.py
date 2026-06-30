@@ -22,6 +22,12 @@ class SendTaskOperationsTest(unittest.TestCase):
         self.assertIn("dry_run", state["allowed_operations"])
         self.assertNotIn("confirm_real_send", state["allowed_operations"])
 
+    def test_admin_can_confirm_real_send_after_dry_run(self):
+        state = send_task_operation_state("dry_run", "dry_run", "admin")
+
+        self.assertIn("confirm_real_send", state["allowed_operations"])
+        self.assertFalse(role_allows_task_operation("dry_run", "dry_run", "coach", "confirm_real_send"))
+
     def test_real_send_task_is_admin_only_for_editing(self):
         self.assertFalse(role_allows_task_operation("pending", "real_send", "coach", "edit"))
         self.assertFalse(role_allows_task_operation("pending", "real_send", "coach", "web_send"))

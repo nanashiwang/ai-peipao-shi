@@ -15,6 +15,7 @@ from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
     SendResultIn,
     SendTaskIn,
+    SendTaskRealSendIn,
     SendTaskUpdate,
     actor_from_request,
     cancel_send_task,
@@ -23,6 +24,7 @@ from app.main import (
     list_audit_logs,
     list_send_tasks,
     queue_task_dry_run,
+    queue_task_real_send,
     record_send_result,
     resolve_send_screenshot,
     update_send_task,
@@ -459,6 +461,47 @@ class SendTaskAuditLogTest(unittest.TestCase):
             db=self.db,
         )
 
+        actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
+        self.assertIn("confirm_real_send", actions)
+
+    def test_update_real_send_from_dry_run_requeues_pending(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u8bd5\u8fd0\u884c\u540e\u4fdd\u5b58\u771f\u53d1"),
+            db=self.db,
+        )
+        saved = self.db.get(SendTask, task["id"])
+        saved.status = "dry_run"
+        self.db.commit()
+
+        result = update_send_task(
+            task["id"],
+            SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u8bd5\u8fd0\u884c\u540e\u4fdd\u5b58\u771f\u53d1", status="dry_run"),
+            request=admin_request("admin"),
+            db=self.db,
+        )
+
+        self.assertEqual(result["send_mode"], "real_send")
+        self.assertEqual(result["status"], "pending")
+
+    def test_queue_real_send_after_dry_run_completion(self):
+        task = create_send_task(
+            SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u8bd5\u8fd0\u884c\u540e\u771f\u53d1"),
+            db=self.db,
+        )
+        saved = self.db.get(SendTask, task["id"])
+        saved.status = "dry_run"
+        self.db.commit()
+
+        result = queue_task_real_send(
+            task["id"],
+            SendTaskRealSendIn(content="\u8bd5\u8fd0\u884c\u540e\u771f\u53d1"),
+            request=admin_request("admin"),
+            db=self.db,
+        )
+
+        self.assertEqual(result["send_mode"], "real_send")
+        self.assertEqual(result["status"], "pending")
+        self.assertTrue(result["scheduled_at"])
         actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
         self.assertIn("confirm_real_send", actions)
 

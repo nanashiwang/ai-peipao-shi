@@ -259,6 +259,11 @@ class SendTaskUpdate(BaseModel):
     status: str = "pending"
 
 
+class SendTaskRealSendIn(BaseModel):
+    content: str | None = None
+    device_id: str | None = None
+
+
 # Agent 请求的统一入参。
 class AgentRequest(BaseModel):
     family_id: str
@@ -3101,12 +3106,15 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     clean_device_id = validate_task_device_binding(db, device_id or "", target_name)
     if send_mode == "real_send":
         validate_real_send_risk(db, target_name, content, exclude_task_id=task.id)
+    next_status = payload.status
+    if previous_mode != "real_send" and send_mode == "real_send":
+        next_status = "pending"
     task.target_name = target_name
     task.scene = scene
     task.content = content
     task.send_mode = send_mode
     task.device_id = clean_device_id
-    task.status = payload.status
+    task.status = next_status
     if task.status == "pending":
         task.scheduled_at = datetime.utcnow()
     action = "confirm_real_send" if previous_mode != "real_send" and send_mode == "real_send" else "update"
@@ -3150,6 +3158,37 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     task.status = "pending"
     task.scheduled_at = datetime.utcnow()
     audit_send_task_change(db, task, "queue_dry_run", actor_from_request(request), "控制端发起企微 dry-run 试运行", before)
+    sync_weekly_report_send_status(db, task, "pending")
+    db.commit()
+    return send_task_view(task, request)
+
+
+@app.post("/api/send-tasks/{task_id}/real-send")
+def queue_task_real_send(
+    task_id: int,
+    payload: SendTaskRealSendIn | None = None,
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    task = db.get(SendTask, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    ensure_task_family_access(db, task, request)
+    ensure_task_operation_allowed(task, request, "confirm_real_send")
+    content_source = task.content if not payload or payload.content is None else payload.content
+    content = validate_send_task_content(content_source)
+    device_id = task.device_id if not payload or payload.device_id is None else payload.device_id
+    clean_device_id = validate_task_device_binding(db, device_id or "", task.target_name)
+    validate_real_send_risk(db, task.target_name, content, exclude_task_id=task.id)
+    before = send_task_snapshot(task)
+    task.content = content
+    task.device_id = clean_device_id
+    task.send_mode = "real_send"
+    task.status = "pending"
+    task.last_error = ""
+    task.next_retry_at = None
+    task.scheduled_at = datetime.utcnow()
+    audit_send_task_change(db, task, "confirm_real_send", actor_from_request(request), "控制端确认企微真实发送", before)
     sync_weekly_report_send_status(db, task, "pending")
     db.commit()
     return send_task_view(task, request)

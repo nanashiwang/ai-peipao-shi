@@ -61,6 +61,13 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("autoDraftReplies()", html)
         self.assertIn("/api/agent/replies/auto-draft", js)
 
+    def test_task_page_exposes_wecom_real_send_action(self):
+        js = Path("app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn("企微试运行（不发送）", js)
+        self.assertIn("企微真实发送", js)
+        self.assertIn("queueTaskRealSend", js)
+        self.assertIn("/real-send", js)
+
     def test_control_auth_page_exposes_login_and_first_admin_registration(self):
         html = Path("app/static/index.html").read_text(encoding="utf-8")
         js = Path("app/static/app.js").read_text(encoding="utf-8")

@@ -64,7 +64,7 @@ def role_allows_task_operation(status: str | None, send_mode: str | None, role: 
     if operation == "retry":
         return status == "failed" and (role == "admin" or send_mode != "real_send")
     if operation == "confirm_real_send":
-        return role == "admin" and status == "pending" and send_mode != "real_send"
+        return role == "admin" and status in {"pending", "dry_run"} and send_mode != "real_send"
     if operation == "assign_device":
         return role == "admin" and status == "pending"
     if operation in {"edit", "review"}:

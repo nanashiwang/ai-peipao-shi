@@ -445,6 +445,16 @@ textarea:focus-visible {
   box-shadow: 0 0 0 4px var(--focus);
 }
 
+button.danger-action {
+  border-color: rgba(255, 59, 48, .34);
+  color: var(--danger);
+}
+
+button.danger-action:hover {
+  border-color: rgba(255, 59, 48, .55);
+  color: var(--danger);
+}
+
 .file input {
   display: none;
 }

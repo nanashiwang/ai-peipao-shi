@@ -284,6 +284,21 @@ function sendModeBadge(mode) {
   return badge(`未知模式：${mode}`);
 }
 
+function sendTaskStatusBadge(status) {
+  const labels = {
+    pending: "待处理",
+    approved: "已审核",
+    assigned: "发送中",
+    sent: "已发送",
+    failed: "发送失败",
+    dry_run: "试运行完成（未发送）",
+    skipped: "已跳过",
+    cancelled: "已取消",
+  };
+  const kind = status === "sent" || status === "dry_run" ? "ok" : (status === "failed" || status === "assigned" ? "warn" : "");
+  return badge(labels[status] || status || "未知", kind);
+}
+
 function reportSendStatusBadge(status) {
   const labels = {
     not_created: "未建任务",
@@ -1265,7 +1280,7 @@ function renderTasks() {
     { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
     { label: "对象", key: "target_name" },
     { label: "来源/场景", key: "scene" },
-    { label: "状态", render: (r) => badge(r.status, r.status === "sent" ? "ok" : r.status === "cancelled" ? "" : "warn") },
+    { label: "状态", render: (r) => sendTaskStatusBadge(r.status) },
     { label: "操作分层", render: taskOperationBadges },
     { label: "重试/告警", render: taskRetryCell },
     { label: "发送设备", render: (r) => deviceSelect(r) },
@@ -1274,7 +1289,8 @@ function renderTasks() {
     { label: "操作", render: (r) => `
       <div class="cell-actions">
         ${taskCan(r, "edit") || taskCan(r, "confirm_real_send") ? `<button onclick="saveTask(${r.id})">保存/审核</button>` : ""}
-        ${taskCan(r, "dry_run") ? `<button onclick="queueTaskDryRun(${r.id})">企微试运行</button>` : ""}
+        ${taskCan(r, "dry_run") ? `<button title="只定位、粘贴并清空，不按发送键" onclick="queueTaskDryRun(${r.id})">企微试运行（不发送）</button>` : ""}
+        ${taskCan(r, "confirm_real_send") ? `<button class="danger-action" title="确认后加入企业微信真实发送队列" onclick="queueTaskRealSend(${r.id})">企微真实发送</button>` : ""}
         ${taskCan(r, "retry") ? `<button onclick="retryTask(${r.id})">失败重试</button>` : ""}
         ${taskCan(r, "web_send") ? `<button onclick="sendTask(${r.id})">网页发送</button>` : ""}
         ${taskCan(r, "cancel") ? `<button onclick="cancelTask(${r.id})">取消</button>` : ""}
@@ -1291,7 +1307,7 @@ function renderLogs() {
     { label: "任务", key: "task_id" },
     { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
     { label: "对象", key: "target_name" },
-    { label: "状态", key: "status" },
+    { label: "状态", render: (r) => sendTaskStatusBadge(r.status) },
     { label: "模式", render: (r) => sendModeBadge(r.send_mode || "dry_run") },
     { label: "阶段/原因", render: sendReasonCell },
     { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
@@ -1619,6 +1635,7 @@ async function saveTask(id) {
         device_id: $(`task-device-${id}`)?.value || "",
         send_mode: sendMode,
         confirm_real_send: confirmRealSend,
+        status: confirmRealSend ? "pending" : (task?.status || "pending"),
       }),
     });
     toast("任务已保存");
@@ -1675,6 +1692,28 @@ async function queueTaskDryRun(id) {
     }
     await api(`/api/send-tasks/${id}/dry-run`, { method: "POST" });
     toast("已加入企微试运行队列；被控端会定位、粘贴并清空，不会真实发送");
+    await refreshAll();
+  });
+}
+
+// 把任务加入企微真实发送队列：服务端记录确认，被控端仍会二次校验目标和本机硬开关。
+async function queueTaskRealSend(id) {
+  return withAction("企微真实发送", async () => {
+    const task = state.tasks.find((item) => item.id === id);
+    const target = task?.target_name || "";
+    const ok = window.confirm(
+      `确认通过企业微信真实发送任务 ${id}？\n目标：${target}\n此操作会触达真实企微会话，请确认内容、对象和设备无误。\n\n安全条件：Windows 被控端还必须开启 allow_real_send=true，才会真正按发送键。`
+    );
+    if (!ok) return;
+    const editor = $(`task-${id}`);
+    const nextContent = editor?.value || task?.content || "";
+    const nextDeviceId = $(`task-device-${id}`)?.value || "";
+    await api(`/api/send-tasks/${id}/real-send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: nextContent, device_id: nextDeviceId }),
+    });
+    toast("已加入企微真实发送队列；被控端会再次校验目标后发送");
     await refreshAll();
   });
 }
