@@ -1691,6 +1691,50 @@ def extract_chat_messages_by_ark(window, conversation: str, config: dict) -> lis
             _cleanup_debug_image(img, config)
 
 
+def extract_post_send_screenshot_messages(window, target: str, text: str, config: dict) -> list[dict]:
+    if not config.get("post_send_verify_screenshot_fallback", True):
+        return []
+    try:
+        call_ark_vision_json = import_ark_vision()
+    except Exception as exc:
+        print(f"post_send_screenshot_read_unavailable detail={exc}")
+        return []
+    img = None
+    crop = None
+    try:
+        region = tuple(config.get("post_send_verify_screenshot_region", [0.30, 0.10, 1.0, 0.94]))
+        img, rect = screenshot_wecom(window, config, f"post_send_shot_{target}")
+        crop = crop_window_region(img, rect, region, f"post_send_shot_{target}")
+        data = call_ark_vision_json(
+            "你是企业微信发送结果核验助手。只输出 JSON，不要 Markdown。字段：found、text。"
+            "在右侧聊天区截图中查找刚刚由我发送的消息气泡；若能看到目标文本或清晰连续片段，found=true，并把可见文本写入 text。"
+            "不要输出左侧会话列表、输入框、时间或系统提示。",
+            str(crop),
+            f"目标文本：{text}",
+        )
+        visible = ""
+        if isinstance(data, dict):
+            visible = str(data.get("text") or data.get("content") or "").strip()
+            if not visible and isinstance(data.get("messages"), list):
+                visible = " ".join(str(item.get("content") or item.get("text") or "") for item in data["messages"] if isinstance(item, dict)).strip()
+        min_len = max(int(config.get("post_send_verify_screenshot_min_chars", 6) or 6), 1)
+        compact_visible = "".join(visible.split())
+        if visible and len(compact_visible) >= min_len and sent_content_match_count(text, [{"content": visible}], 1) > 0:
+            add_send_trace(config, "发送后截图回读命中")
+            return [{"speaker": "我", "content": visible, "source": "企业微信RPA-发送后截图回读"}]
+        add_send_trace(config, f"发送后截图回读未命中:{visible[:40]}")
+        return []
+    except Exception as exc:
+        print(f"post_send_screenshot_read_failed target={target} detail={exc}")
+        add_send_trace(config, f"发送后截图回读异常:{exc}")
+        return []
+    finally:
+        if crop:
+            _cleanup_debug_image(crop, config)
+        if img:
+            _cleanup_debug_image(img, config)
+
+
 def extract_chat_messages(window, conversation: str, config: dict) -> list[dict]:
     messages = extract_visible_chat_messages(window, conversation, config)
     if messages:
@@ -1959,6 +2003,7 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
     messages = []
     clipboard_count = None
     ark_count = None
+    screenshot_count = None
     recent_count = _post_send_verify_recent_count(config)
     before_count = sent_content_match_count(text, before_messages, recent_count) if before_messages is not None else 0
     before_self_count = sent_content_match_count(text, before_messages, recent_count, speaker="我") if before_messages is not None else 0
@@ -2040,11 +2085,31 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             add_send_trace(config, f"发送后视觉回读未命中:{len(ark_messages)}")
         except Exception as exc:
             add_send_trace(config, f"发送后视觉回读异常:{exc}")
+    if config.get("post_send_verify_screenshot_fallback", True):
+        try:
+            ensure_foreground_wecom(window, config)
+            reopen_target_for_post_send_verify(window, target, config, "发送后截图")
+            screenshot_messages = extract_post_send_screenshot_messages(window, target, text, config)
+            screenshot_count = len(screenshot_messages)
+            screenshot_after_count = sent_content_match_count(text, screenshot_messages, recent_count)
+            if sent_content_confirmed_after_send(text, before_messages, screenshot_messages, recent_count):
+                return build_confirmed_verification(
+                    target,
+                    "截图聊天记录",
+                    screenshot_messages,
+                    config,
+                    f"attempts={attempts}, message_count={len(screenshot_messages)}, "
+                    f"before_match_count={before_count}, after_match_count={screenshot_after_count}",
+                )
+            add_send_trace(config, f"发送后截图回读未命中:{len(screenshot_messages)}")
+        except Exception as exc:
+            add_send_trace(config, f"发送后截图回读异常:{exc}")
     clipboard_note = f"，clipboard_count={clipboard_count}" if clipboard_count is not None else ""
     ark_note = f"，ark_count={ark_count}" if ark_count is not None else ""
+    screenshot_note = f"，screenshot_count={screenshot_count}" if screenshot_count is not None else ""
     error_note = f"，last_error={last_error}" if last_error else ""
     detail = (
-        f"目标「{target}」聊天记录经过 {attempts} 次回读仍未读到本次新增内容，uia_count={len(messages)}{clipboard_note}{ark_note}{error_note}，"
+        f"目标「{target}」聊天记录经过 {attempts} 次回读仍未读到本次新增内容，uia_count={len(messages)}{clipboard_note}{ark_note}{screenshot_note}{error_note}，"
         f"before_match_count={before_count}, after_match_count={after_count}, "
         f"self_before_match_count={before_self_count}, self_after_match_count={after_self_count}"
     )

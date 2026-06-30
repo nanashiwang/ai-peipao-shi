@@ -149,5 +149,42 @@ class WecomSenderPostSendSyncTest(unittest.TestCase):
         self.assertIn("未成功落库", verification["verify_detail"])
 
 
+    def test_confirm_sent_message_uses_post_send_screenshot_fallback(self):
+        window = object()
+        before = [{"speaker": "parent", "content": "old message"}]
+        screenshot_messages = [{"speaker": "?", "content": "RPA_TOKEN_23", "source": "????RPA-???????"}]
+        config = {
+            "post_send_verify_wait_seconds": 0,
+            "post_send_verify_attempts": 1,
+            "post_send_verify_clipboard_fallback": False,
+            "post_send_verify_ark_fallback": False,
+            "post_send_verify_screenshot_fallback": True,
+            "_current_family_id": "WECOM_yihe",
+            "api_base_url": "http://example.invalid",
+        }
+
+        with (
+            patch.object(wecom_sender.time, "sleep"),
+            patch.object(wecom_sender, "ensure_foreground_wecom"),
+            patch.object(wecom_sender, "search_conversation"),
+            patch.object(wecom_sender, "verify_active_conversation"),
+            patch.object(wecom_sender, "extract_visible_chat_messages", return_value=before),
+            patch.object(wecom_sender, "extract_post_send_screenshot_messages", return_value=screenshot_messages),
+            patch.object(
+                wecom_sender,
+                "sync_conversation_to_api",
+                return_value={"messages_inserted": 1, "conversation_check": {"status": "ok", "message_count": 1}},
+            ) as sync,
+        ):
+            confirmed, verification = wecom_sender.confirm_sent_message(window, "??2?", "RPA_TOKEN_23", config, before)
+
+        self.assertTrue(confirmed)
+        self.assertEqual(verification["verify_status"], "confirmed")
+        self.assertIn("VERIFY_CONFIRMED", verification["verify_detail"])
+        self.assertIn("message_count=1", verification["verify_detail"])
+        sync.assert_called_once()
+
+
+
 if __name__ == "__main__":
     unittest.main()
