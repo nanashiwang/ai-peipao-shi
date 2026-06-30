@@ -4118,6 +4118,64 @@ def create_conversation_check_task(
     return task
 
 
+def queue_real_send_missing_proof_checks_for_claim(
+    db: Session,
+    dev: Device,
+    convs: list[str],
+    now: datetime,
+    limit: int,
+) -> list[SendTask]:
+    """设备领取真发前自动补只读证明，让控制端任务无需人工二次点准备。"""
+    if not dev.allow_real_send or not device_ready_for_real_send(dev, now) or device_has_inflight_real_send(db, dev):
+        return []
+    query = (
+        db.query(SendTask)
+        .filter(SendTask.status == "pending")
+        .filter(SendTask.send_mode == "real_send")
+        .filter(SendTask.device_id == dev.device_id)
+        .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
+    )
+    if not dev.allow_any_conversation:
+        query = query.filter(SendTask.target_name.in_(convs))
+    query = query.order_by(SendTask.id).limit(max(limit * 3, 10))
+    queued: list[SendTask] = []
+    seen_targets: set[str] = set()
+    for task in query.all():
+        target_name = (task.target_name or "").strip()
+        if not target_name or target_name in seen_targets:
+            continue
+        seen_targets.add(target_name)
+        proof_reason = device_conversation_proof_reason(db, dev, target_name, now)
+        if not proof_reason or active_conversation_check_task(db, dev, target_name):
+            continue
+        queued.append(
+            create_conversation_check_task(
+                db,
+                dev,
+                target_name,
+                task.family_id or f"WECOM_{target_name}",
+                f"设备:{dev.device_id}",
+            )
+        )
+        if len(queued) >= limit:
+            break
+    return queued
+
+
+def pending_conversation_check_query(db: Session, dev: Device, convs: list[str], now: datetime):
+    query = (
+        db.query(SendTask)
+        .filter(SendTask.status == "pending")
+        .filter(SendTask.device_id == dev.device_id)
+        .filter(SendTask.scene == CONVERSATION_CHECK_SCENE)
+        .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
+        .order_by(SendTask.id)
+    )
+    if not dev.allow_any_conversation:
+        query = query.filter(SendTask.target_name.in_(convs))
+    return query
+
+
 @app.post("/api/devices/{device_id}/conversation-checks/batch")
 def queue_device_conversation_checks_batch(
     device_id: str,
@@ -4211,23 +4269,27 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     if not convs and not dev.allow_any_conversation:
         db.commit()
         return []
-    candidates_query = (
-        db.query(SendTask)
-        .filter(SendTask.status == "pending")
-        .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
-        .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
-        .filter(or_(SendTask.send_mode != "real_send", SendTask.device_id == dev.device_id))
-    )
-    if not dev.allow_any_conversation:
-        candidates_query = candidates_query.filter(SendTask.target_name.in_(convs))
-    if not dev.allow_real_send:
-        candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
-    elif not device_ready_for_real_send(dev, now):
-        candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
-    elif device_has_inflight_real_send(db, dev):
-        candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
-    candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
-    candidates = apply_claim_row_lock(candidates_query, db).all()
+    queue_real_send_missing_proof_checks_for_claim(db, dev, convs, now, safe_limit)
+    preparation_query = pending_conversation_check_query(db, dev, convs, now).limit(safe_limit)
+    candidates = apply_claim_row_lock(preparation_query, db).all()
+    if not candidates:
+        candidates_query = (
+            db.query(SendTask)
+            .filter(SendTask.status == "pending")
+            .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
+            .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
+            .filter(or_(SendTask.send_mode != "real_send", SendTask.device_id == dev.device_id))
+        )
+        if not dev.allow_any_conversation:
+            candidates_query = candidates_query.filter(SendTask.target_name.in_(convs))
+        if not dev.allow_real_send:
+            candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
+        elif not device_ready_for_real_send(dev, now):
+            candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
+        elif device_has_inflight_real_send(db, dev):
+            candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
+        candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
+        candidates = apply_claim_row_lock(candidates_query, db).all()
     candidates = [
         task
         for task in candidates

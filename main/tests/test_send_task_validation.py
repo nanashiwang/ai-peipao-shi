@@ -1003,7 +1003,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(set(view["conversation_proof_missing_targets"]), {"测试2群", "许宝月"})
         self.assertIn("1/3", view["conversation_proof_label"])
 
-    def test_real_send_claim_waits_for_recent_device_conversation_proof(self):
+    def test_real_send_claim_auto_prepares_missing_device_conversation_proof(self):
         task = SendTask(
             family_id="f-real-proof",
             target_name="一合学社",
@@ -1019,12 +1019,23 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.dev.last_heartbeat = datetime.utcnow()
         self.db.commit()
 
-        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+        first_claimed = claim_tasks("dev-a", limit=1, dev=self.dev, db=self.db)
         self.db.refresh(task)
         self.assertEqual(task.status, "pending")
-        row = list_send_tasks(db=self.db)[0]
+        self.assertEqual(len(first_claimed), 1)
+        self.assertEqual(first_claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        self.assertEqual(first_claimed[0]["target_name"], "一合学社")
+        row = [item for item in list_send_tasks(db=self.db) if item["id"] == task.id][0]
         self.assertIn("没有成功读取目标", "；".join(row["send_readiness"]["reasons"]))
+        self.assertEqual(claim_tasks("dev-a", limit=1, dev=self.dev, db=self.db), [])
+        check_count = self.db.query(SendTask).filter(
+            SendTask.scene == main_module.CONVERSATION_CHECK_SCENE,
+            SendTask.target_name == "一合学社",
+        ).count()
+        self.assertEqual(check_count, 1)
 
+        check_task = self.db.get(SendTask, first_claimed[0]["id"])
+        check_task.status = "dry_run"
         self.add_conversation_proof()
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
