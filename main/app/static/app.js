@@ -2016,6 +2016,10 @@ $("manualTaskForm").onsubmit = async (event) => {
     if (!preflight.ok) {
       const detail = (preflight.reasons || []).join("\n");
       if (mode === "real_send") {
+        const hardReasons = Array.isArray(preflight.hard_reasons) ? preflight.hard_reasons : [];
+        if (hardReasons.length) {
+          throw new Error(`发送预检未通过：\n${hardReasons.join("\n")}`);
+        }
         const hint = preflight.conversation_check_hint || {};
         if (hint.action === "queue_conversation_check") {
           const existing = hint.existing_task_id ? `\n已有待执行校验任务：#${hint.existing_task_id}` : "";

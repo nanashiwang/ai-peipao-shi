@@ -1325,6 +1325,30 @@ def append_reason(reasons: list[str], detail) -> None:
         reasons.append(text)
 
 
+CONVERSATION_PROOF_PREPARATION_TERMS = (
+    "没有成功读取目标",
+    "可读证明已过期",
+    "最近读取目标",
+    "最近校验未读到聊天消息",
+    "最近会话读取失败",
+    "最近会话只读校验失败",
+    "自动补证明冷却",
+)
+
+
+def is_conversation_proof_preparation_reason(reason: str) -> bool:
+    text = str(reason or "")
+    return any(term in text for term in CONVERSATION_PROOF_PREPARATION_TERMS)
+
+
+def hard_real_send_readiness_reasons(readiness: dict) -> list[str]:
+    return [
+        reason
+        for reason in readiness.get("reasons", []) or []
+        if not is_conversation_proof_preparation_reason(reason)
+    ]
+
+
 def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request: Request | None = None) -> dict:
     reasons: list[str] = []
     target_name = (payload.target_name or "").strip()
@@ -1376,12 +1400,23 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
     for reason in readiness.get("reasons", []):
         append_reason(reasons, reason)
     conversation_check_hint = build_conversation_check_action(db, dev, target_name, payload.family_id) if mode == "real_send" and dev else None
-    ok = not reasons and readiness.get("status") == "ready"
-    label = "发送预检通过" if ok else (readiness.get("label") or "发送预检未通过")
+    auto_prepare_reasons = [reason for reason in reasons if is_conversation_proof_preparation_reason(reason)]
+    hard_reasons = [reason for reason in reasons if not is_conversation_proof_preparation_reason(reason)]
+    auto_prepare = mode == "real_send" and not hard_reasons and bool(auto_prepare_reasons)
+    ok = (not reasons and readiness.get("status") == "ready") or auto_prepare
+    if ok and auto_prepare:
+        label = "发送预检通过，设备会先自动补齐会话证明"
+    elif ok:
+        label = "发送预检通过"
+    else:
+        label = readiness.get("label") or "发送预检未通过"
     return {
         "ok": ok,
         "label": label,
         "reasons": reasons,
+        "hard_reasons": hard_reasons,
+        "auto_prepare": auto_prepare,
+        "auto_prepare_reasons": auto_prepare_reasons,
         "readiness": readiness,
         "conversation_check_hint": conversation_check_hint,
         "send_mode": mode,
@@ -1396,8 +1431,9 @@ def ensure_real_send_readiness(db: Session, task: SendTask) -> None:
     if (task.status or "pending").strip() != "pending":
         return
     readiness = send_task_readiness(db, task)
-    if readiness.get("status") != "ready":
-        detail = "；".join(readiness.get("reasons") or []) or readiness.get("label") or "真实发送条件未就绪"
+    hard_reasons = hard_real_send_readiness_reasons(readiness)
+    if readiness.get("status") != "ready" and hard_reasons:
+        detail = "；".join(hard_reasons) or readiness.get("label") or "真实发送条件未就绪"
         raise HTTPException(400, f"真实发送预检未通过：{detail}")
 
 

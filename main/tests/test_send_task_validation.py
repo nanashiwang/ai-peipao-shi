@@ -539,6 +539,34 @@ class SendTaskAuditLogTest(unittest.TestCase):
         actions = [log.action for log in self.db.query(AuditLog).filter(AuditLog.entity_id == task["id"]).order_by(AuditLog.id).all()]
         self.assertIn("confirm_real_send", actions)
 
+    def test_create_real_send_can_wait_for_auto_conversation_proof(self):
+        self.db.query(DeviceConversationCheck).delete()
+        self.db.commit()
+
+        task = create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="一合学社",
+                scene="real",
+                content="缺证明时先自动校验再发送",
+                send_mode="real_send",
+                confirm_real_send=True,
+                device_id="rpa-01",
+            ),
+            request=admin_request("admin"),
+            db=self.db,
+        )
+
+        self.assertEqual(task["send_mode"], "real_send")
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["send_readiness"]["status"], "blocked")
+        self.assertEqual(task["send_readiness"]["actions"][0]["action"], "queue_conversation_check")
+        dev = self.db.query(Device).filter_by(device_id="rpa-01").one()
+        claimed = claim_tasks("rpa-01", limit=1, dev=dev, db=self.db)
+
+        self.assertEqual(claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        self.assertEqual(claimed[0]["target_name"], "一合学社")
+
     def test_task_list_returns_operation_layer_for_role(self):
         create_send_task(
             SendTaskIn(family_id="f1", target_name="\u4e00\u5408\u5b66\u793e", scene="test", content="\u5f85\u5ba1\u6838\u5185\u5bb9"),
@@ -1188,7 +1216,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertFalse(row["send_readiness"]["actions"][0]["available"])
         self.assertEqual(row["send_readiness"]["actions"][0]["existing_task_id"], existing["id"])
 
-    def test_preflight_blocks_real_send_before_task_creation_until_ready(self):
+    def test_preflight_allows_real_send_with_auto_conversation_proof_prepare(self):
         blocked = build_send_task_preflight(
             self.db,
             SendTaskPreflightIn(
@@ -1222,8 +1250,11 @@ class ClaimTaskGuardTest(unittest.TestCase):
             ),
         )
 
-        self.assertFalse(ready["ok"])
+        self.assertTrue(ready["ok"])
+        self.assertTrue(ready["auto_prepare"])
+        self.assertEqual(ready["hard_reasons"], [])
         self.assertIn("没有成功读取目标", "；".join(ready["reasons"]))
+        self.assertIn("自动补齐会话证明", ready["label"])
         self.assertEqual(ready["conversation_check_hint"]["action"], "queue_conversation_check")
         self.assertEqual(ready["conversation_check_hint"]["device_id"], "dev-a")
         self.assertEqual(ready["conversation_check_hint"]["target_name"], "一合学社")
@@ -1244,10 +1275,11 @@ class ClaimTaskGuardTest(unittest.TestCase):
         )
 
         self.assertTrue(ready["ok"])
+        self.assertFalse(ready["auto_prepare"])
         self.assertEqual(ready["label"], "发送预检通过")
         self.assertIsNone(ready["conversation_check_hint"])
 
-    def test_preflight_conversation_check_hint_points_to_existing_check_task(self):
+    def test_preflight_auto_prepare_points_to_existing_check_task(self):
         self.dev.allow_real_send = True
         self.dev.wecom_ok = "Y"
         self.dev.last_heartbeat = datetime.utcnow()
@@ -1271,7 +1303,8 @@ class ClaimTaskGuardTest(unittest.TestCase):
             ),
         )
 
-        self.assertFalse(blocked["ok"])
+        self.assertTrue(blocked["ok"])
+        self.assertTrue(blocked["auto_prepare"])
         self.assertFalse(blocked["conversation_check_hint"]["available"])
         self.assertEqual(blocked["conversation_check_hint"]["existing_task_id"], existing["id"])
 
