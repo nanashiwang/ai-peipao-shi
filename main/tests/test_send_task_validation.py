@@ -707,6 +707,28 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.db.refresh(task)
         self.assertEqual(task.status, "assigned")
 
+    def test_allow_any_conversation_claims_group_or_private_chat_outside_whitelist(self):
+        task = SendTask(
+            family_id="f-private",
+            target_name="许宝月",
+            scene="private",
+            content="私聊也由控制端统一派发",
+            send_mode="dry_run",
+            status="pending",
+        )
+        self.db.add(task)
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+
+        updated = update_device("dev-a", DeviceUpdateIn(allow_any_conversation=True), db=self.db)
+        self.assertTrue(updated["allow_any_conversation"])
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
+        self.assertTrue(claimed[0]["server_allowed_target"])
+        self.assertTrue(claimed[0]["device_allow_any_conversation"])
+
     def test_claim_does_not_assign_same_task_twice_across_devices(self):
         task = SendTask(
             family_id="f-shared",

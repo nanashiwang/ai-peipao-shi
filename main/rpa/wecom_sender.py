@@ -1774,8 +1774,10 @@ def config_with_device_policy(config: dict, task: dict) -> dict:
 def process_task(task: dict, config: dict):
     config = config_with_device_policy(config, task)
     target = task.get("target_name") or ""
-    if not target_in_allowed_conversations(target, config.get("allowed_conversations", [])):
+    if not task.get("server_allowed_target") and not target_in_allowed_conversations(target, config.get("allowed_conversations", [])):
         return "skipped", target_not_allowed_detail(target)
+    if task.get("server_allowed_target"):
+        add_send_trace(config, "服务端会话策略放行")
     mode = (task.get("send_mode") or "").strip()
     if real_send_requested(config, mode) and not real_send_enabled(config):
         return "skipped", real_send_block_detail()

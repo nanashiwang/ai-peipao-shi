@@ -72,6 +72,37 @@ class SendTaskRetryTest(unittest.TestCase):
         self.assertEqual(retry_component["status"], "critical")
         self.assertEqual(retry_component["metrics"]["retry_alert"], 1)
 
+    def test_real_send_presend_failure_auto_retries(self):
+        task = self.add_task(send_mode="real_send")
+
+        record_send_result(task.id, SendResultIn(status="failed", detail="INPUT_FOCUS: 输入框定位失败：窗口不可点", device_id="dev-a"), db=self.db)
+        self.db.refresh(task)
+
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.retry_count, 1)
+        self.assertIsNotNone(task.next_retry_at)
+        self.assertIn("auto_retry", {item.action for item in self.db.query(AuditLog).all()})
+
+    def test_real_send_after_hotkey_failure_requires_manual_review(self):
+        task = self.add_task(send_mode="real_send")
+
+        record_send_result(task.id, SendResultIn(status="failed", detail="RPA_TRACE: 真实发送热键已触发", device_id="dev-a"), db=self.db)
+        self.db.refresh(task)
+
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.retry_count, 0)
+        self.assertIsNone(task.next_retry_at)
+
+    def test_real_send_guard_skip_keeps_task_pending(self):
+        task = self.add_task(send_mode="real_send")
+
+        record_send_result(task.id, SendResultIn(status="skipped", detail="REAL_SEND_GUARD: 控制端未开启该设备真实发送开关", device_id="dev-a"), db=self.db)
+        self.db.refresh(task)
+
+        self.assertEqual(task.status, "pending")
+        self.assertIsNotNone(task.next_retry_at)
+        self.assertIn("policy_wait", {item.action for item in self.db.query(AuditLog).all()})
+
     def test_manual_retry_requeues_failed_task_after_review(self):
         task = self.add_task(send_mode="dry_run", retry_count=2, max_retries=2)
         task.status = "failed"

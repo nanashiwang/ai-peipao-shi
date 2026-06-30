@@ -77,7 +77,7 @@ def ensure_columns():
             ("renewal_intent", "VARCHAR(40)"),
         ],
         "user_accounts": [("campus_names", "TEXT")],
-        "devices": [("allow_real_send", "BOOLEAN")],
+        "devices": [("allow_real_send", "BOOLEAN"), ("allow_any_conversation", "BOOLEAN")],
     }
     inspector = inspect(engine)
     dialect_name = engine.dialect.name
@@ -105,6 +105,7 @@ def ensure_columns():
                     "satisfaction_level": "'未知'",
                     "renewal_intent": "'未知'",
                     "allow_real_send": "FALSE",
+                    "allow_any_conversation": "FALSE",
                 }.get(col_name, "''")
                 safe_type = portable_column_type(col_type, dialect_name)
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {safe_type} DEFAULT {default}"))

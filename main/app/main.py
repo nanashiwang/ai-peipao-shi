@@ -206,6 +206,7 @@ class DeviceIn(BaseModel):
     note: str = ""
     conversations: list[str] = []
     allow_real_send: bool | None = None
+    allow_any_conversation: bool | None = None
 
 
 class DeviceUpdateIn(BaseModel):
@@ -213,6 +214,7 @@ class DeviceUpdateIn(BaseModel):
     note: str = ""
     conversations: list[str] | None = None
     allow_real_send: bool | None = None
+    allow_any_conversation: bool | None = None
 
 
 # 设备心跳上报：企微健康 + 本机负责的会话（后端据此刷新该设备 conversations，供动态领取过滤）。
@@ -717,14 +719,38 @@ NON_RETRYABLE_FAILURE_TERMS = (
     "旧任务",
     "超过",
 )
+REAL_SEND_RETRYABLE_FAILURE_TERMS = (
+    "没有找到企业微信窗口",
+    "当前前台窗口不是企业微信",
+    "无法确认当前前台窗口",
+    "INPUT_FOCUS",
+    "输入框定位失败",
+    "搜索结果未命中",
+    "无法在会话列表定位",
+    "窗口临时丢失",
+    "窗口不可点",
+)
+REAL_SEND_AFTER_HOTKEY_TERMS = (
+    "真实发送热键已触发",
+    "REAL_RPA",
+    "发送结果未知",
+)
 
 
 def is_retryable_send_failure(task: SendTask, detail: str) -> bool:
-    if send_log_mode(task) != "dry_run":
-        return False
     if task.retry_count >= task.max_retries:
         return False
-    return not any(term in (detail or "") for term in NON_RETRYABLE_FAILURE_TERMS)
+    detail = detail or ""
+    if any(term in detail for term in NON_RETRYABLE_FAILURE_TERMS):
+        return False
+    mode = send_log_mode(task)
+    if mode == "dry_run":
+        return True
+    if mode == "real_send":
+        if any(term in detail for term in REAL_SEND_AFTER_HOTKEY_TERMS):
+            return False
+        return any(term in detail for term in REAL_SEND_RETRYABLE_FAILURE_TERMS)
+    return False
 
 
 def task_needs_retry_alert(task: SendTask) -> bool:
@@ -3243,6 +3269,13 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     retry_summary = ""
     if payload.status == "failed":
         retry_action, retry_summary = apply_failed_send_retry_policy(task, payload.detail, finished_at)
+    elif payload.status == "skipped" and "REAL_SEND_GUARD" in (payload.detail or ""):
+        task.status = "pending"
+        task.last_error = payload.detail or ""
+        task.next_retry_at = finished_at + timedelta(seconds=AUTO_RETRY_DELAY_SECONDS)
+        task.scheduled_at = task.next_retry_at
+        retry_action = "policy_wait"
+        retry_summary = f"设备真实发送开关未开启，任务保持待发送；下次检查 {timeline_time(task.next_retry_at)}"
     else:
         task.status = payload.status
         task.last_error = ""
@@ -3265,6 +3298,9 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     audit_send_task_change(db, task, "result", actor, f"回写发送结果：{payload.status}", before)
     if retry_action == "auto_retry":
         log_audit_event(db, "send_task", task.id, "auto_retry", actor, retry_summary, before=before, after=send_task_snapshot(task))
+        sync_weekly_report_send_status(db, task, "pending")
+    elif retry_action == "policy_wait":
+        log_audit_event(db, "send_task", task.id, "policy_wait", actor, retry_summary, before=before, after=send_task_snapshot(task))
         sync_weekly_report_send_status(db, task, "pending")
     else:
         if retry_action == "alert":
@@ -3392,12 +3428,15 @@ def device_view(dev: Device, db: Session) -> dict:
         counts[st] = db.query(SendTask).filter(SendTask.device_id == dev.device_id, SendTask.status == st).count()
     data["task_counts"] = counts
     data["real_send_policy_label"] = "允许真实发送" if dev.allow_real_send else "仅试运行"
+    data["conversation_scope_label"] = "全会话" if dev.allow_any_conversation else "白名单会话"
     return data
 
 
 def device_task_payload(task: SendTask, dev: Device) -> dict:
     data = as_dict(task)
     data["device_allow_real_send"] = bool(dev.allow_real_send)
+    data["server_allowed_target"] = True
+    data["device_allow_any_conversation"] = bool(dev.allow_any_conversation)
     return data
 
 
@@ -3411,6 +3450,8 @@ def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
         dev.note = payload.note or dev.note
         if payload.allow_real_send is not None:
             dev.allow_real_send = bool(payload.allow_real_send)
+        if payload.allow_any_conversation is not None:
+            dev.allow_any_conversation = bool(payload.allow_any_conversation)
         if convs is not None:
             dev.conversations = convs
     else:
@@ -3421,6 +3462,7 @@ def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
             token=secrets.token_hex(16),
             conversations=convs or "[]",
             allow_real_send=bool(payload.allow_real_send),
+            allow_any_conversation=bool(payload.allow_any_conversation),
         )
         db.add(dev)
     db.commit()
@@ -3528,6 +3570,8 @@ def update_device(device_id: str, payload: DeviceUpdateIn, db: Session = Depends
         dev.conversations = json.dumps(payload.conversations, ensure_ascii=False)
     if payload.allow_real_send is not None:
         dev.allow_real_send = bool(payload.allow_real_send)
+    if payload.allow_any_conversation is not None:
+        dev.allow_any_conversation = bool(payload.allow_any_conversation)
     db.commit()
     return device_view(dev, db)
 
@@ -3563,15 +3607,17 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     ).update({"status": "pending"}, synchronize_session=False)
 
     convs = device_conversations(dev)
-    if not convs:
+    if not convs and not dev.allow_any_conversation:
         db.commit()
         return []
     candidates_query = (
         db.query(SendTask)
-        .filter(SendTask.status == "pending", SendTask.target_name.in_(convs))
+        .filter(SendTask.status == "pending")
         .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
         .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
     )
+    if not dev.allow_any_conversation:
+        candidates_query = candidates_query.filter(SendTask.target_name.in_(convs))
     if not dev.allow_real_send:
         candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
     candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
@@ -3585,11 +3631,12 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         updated = (
             db.query(SendTask)
             .filter(SendTask.id == task.id, SendTask.status == "pending")
-            .filter(SendTask.target_name.in_(convs))
             .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
             .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= assigned_at))
-            .update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": assigned_at}, synchronize_session=False)
         )
+        if not dev.allow_any_conversation:
+            updated = updated.filter(SendTask.target_name.in_(convs))
+        updated = updated.update({"status": "assigned", "device_id": dev.device_id, "scheduled_at": assigned_at}, synchronize_session=False)
         if updated != 1:
             continue
         task.status = "assigned"

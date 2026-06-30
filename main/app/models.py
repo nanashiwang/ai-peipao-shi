@@ -228,6 +228,7 @@ class Device(Base):
     status: Mapped[str] = mapped_column(String(20), default="offline")
     wecom_ok: Mapped[str] = mapped_column(String(10), default="")
     allow_real_send: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_any_conversation: Mapped[bool] = mapped_column(Boolean, default=False)
     last_error: Mapped[str] = mapped_column(Text, default="")
     last_heartbeat: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     note: Mapped[str] = mapped_column(String(200), default="")

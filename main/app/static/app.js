@@ -1335,6 +1335,16 @@ function deviceRealSendControl(device) {
   `;
 }
 
+function deviceConversationScopeControl(device) {
+  const enabled = device.allow_any_conversation === true;
+  const label = enabled ? "全会话" : "白名单";
+  const button = enabled ? "关闭全会话" : "开启全会话";
+  return `
+    ${badge(label, enabled ? "danger" : "ok")}
+    <button class="${enabled ? "" : "danger-action"}" onclick="toggleDeviceAnyConversation('${esc(device.device_id)}', ${enabled ? "false" : "true"})">${button}</button>
+  `;
+}
+
 // 渲染设备监控列表。
 function renderDevices() {
   $("deviceTable").innerHTML = table([
@@ -1343,6 +1353,7 @@ function renderDevices() {
     { label: "在线", render: (r) => badge(r.online ? "在线" : "离线", r.online ? "ok" : "") },
     { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
     { label: "真实发送开关", render: deviceRealSendControl },
+    { label: "会话范围", render: deviceConversationScopeControl },
     { label: "最后心跳", key: "last_heartbeat" },
     { label: "负责会话", key: "conversation_count" },
     { label: "待发", render: (r) => (r.task_counts?.pending ?? 0) + (r.task_counts?.assigned ?? 0) },
@@ -1912,9 +1923,40 @@ async function toggleDeviceRealSend(deviceId, enabled) {
         note: device?.note || "",
         conversations,
         allow_real_send: enabled,
+        allow_any_conversation: device?.allow_any_conversation === true,
       }),
     });
     toast(enabled ? "设备真实发送已开启" : "设备真实发送已关闭");
+    await refreshAll();
+  });
+}
+
+async function toggleDeviceAnyConversation(deviceId, enabled) {
+  const device = state.devices.find((item) => item.device_id === deviceId);
+  const actionText = enabled ? "开启全会话范围" : "关闭全会话范围";
+  if (enabled) {
+    const ok = window.confirm(`确认给设备 ${deviceId} 开启全会话范围？\n开启后，控制端可以把任意群聊或人员私聊任务派给这台电脑，RPA 会通过企微搜索目标会话后再发送。`);
+    if (!ok) return;
+  }
+  await withAction(actionText, async () => {
+    let conversations = [];
+    try {
+      conversations = JSON.parse(device?.conversations || "[]");
+    } catch {
+      conversations = [];
+    }
+    await api(`/api/devices/${encodeURIComponent(deviceId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: device?.name || "",
+        note: device?.note || "",
+        conversations,
+        allow_real_send: device?.allow_real_send === true,
+        allow_any_conversation: enabled,
+      }),
+    });
+    toast(enabled ? "设备会话范围已切到全会话" : "设备会话范围已切回白名单");
     await refreshAll();
   });
 }
