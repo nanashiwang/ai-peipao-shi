@@ -1325,6 +1325,16 @@ function renderAuditLogs() {
   ], state.auditLogs);
 }
 
+function deviceRealSendControl(device) {
+  const enabled = device.allow_real_send === true;
+  const label = enabled ? "真实发送已开启" : "仅试运行";
+  const button = enabled ? "关闭真发" : "开启真发";
+  return `
+    ${badge(label, enabled ? "danger" : "ok")}
+    <button class="${enabled ? "" : "danger-action"}" onclick="toggleDeviceRealSend('${esc(device.device_id)}', ${enabled ? "false" : "true"})">${button}</button>
+  `;
+}
+
 // 渲染设备监控列表。
 function renderDevices() {
   $("deviceTable").innerHTML = table([
@@ -1332,6 +1342,7 @@ function renderDevices() {
     { label: "名称", key: "name" },
     { label: "在线", render: (r) => badge(r.online ? "在线" : "离线", r.online ? "ok" : "") },
     { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
+    { label: "真实发送开关", render: deviceRealSendControl },
     { label: "最后心跳", key: "last_heartbeat" },
     { label: "负责会话", key: "conversation_count" },
     { label: "待发", render: (r) => (r.task_counts?.pending ?? 0) + (r.task_counts?.assigned ?? 0) },
@@ -1696,13 +1707,13 @@ async function queueTaskDryRun(id) {
   });
 }
 
-// 把任务加入企微真实发送队列：服务端记录确认，被控端仍会二次校验目标和本机硬开关。
+// 把任务加入企微真实发送队列：服务端记录确认，被控端仍会按设备策略二次校验。
 async function queueTaskRealSend(id) {
   return withAction("企微真实发送", async () => {
     const task = state.tasks.find((item) => item.id === id);
     const target = task?.target_name || "";
     const ok = window.confirm(
-      `确认通过企业微信真实发送任务 ${id}？\n目标：${target}\n此操作会触达真实企微会话，请确认内容、对象和设备无误。\n\n安全条件：Windows 被控端还必须开启 allow_real_send=true，才会真正按发送键。`
+      `确认通过企业微信真实发送任务 ${id}？\n目标：${target}\n此操作会触达真实企微会话，请确认内容、对象和设备无误。\n\n安全条件：设备监控里的“真实发送开关”必须开启，Windows 被控端才会真正按发送键。`
     );
     if (!ok) return;
     const editor = $(`task-${id}`);
@@ -1713,7 +1724,7 @@ async function queueTaskRealSend(id) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: nextContent, device_id: nextDeviceId }),
     });
-    toast("已加入企微真实发送队列；被控端会再次校验目标后发送");
+    toast("已加入企微真实发送队列；被控端会按设备真实发送开关和目标校验后执行");
     await refreshAll();
   });
 }
@@ -1878,6 +1889,35 @@ $("deviceForm").onsubmit = async (event) => {
     await refreshAll();
   });
 };
+
+async function toggleDeviceRealSend(deviceId, enabled) {
+  const device = state.devices.find((item) => item.device_id === deviceId);
+  const actionText = enabled ? "开启真实发送" : "关闭真实发送";
+  if (enabled) {
+    const ok = window.confirm(`确认给设备 ${deviceId} 开启真实发送？\n开启后，该设备领取 real_send 任务时会在企业微信真实按发送键。`);
+    if (!ok) return;
+  }
+  await withAction(actionText, async () => {
+    let conversations = [];
+    try {
+      conversations = JSON.parse(device?.conversations || "[]");
+    } catch {
+      conversations = [];
+    }
+    await api(`/api/devices/${encodeURIComponent(deviceId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: device?.name || "",
+        note: device?.note || "",
+        conversations,
+        allow_real_send: enabled,
+      }),
+    });
+    toast(enabled ? "设备真实发送已开启" : "设备真实发送已关闭");
+    await refreshAll();
+  });
+}
 
 async function refreshBackups() {
   const [backups, retention] = await Promise.all([api("/api/ops/backups"), api("/api/ops/retention")]);

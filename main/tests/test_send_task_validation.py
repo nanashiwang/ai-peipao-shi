@@ -13,6 +13,7 @@ import app.main as main_module
 from app.db import Base
 from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
+    DeviceUpdateIn,
     SendResultIn,
     SendTaskIn,
     SendTaskRealSendIn,
@@ -27,6 +28,7 @@ from app.main import (
     queue_task_real_send,
     record_send_result,
     resolve_send_screenshot,
+    update_device,
     update_send_task,
     validate_send_task_execution_guard,
     validate_device_conversation_scope,
@@ -679,6 +681,31 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(allowed_task.device_id, "dev-a")
         self.assertEqual(outside_task.status, "pending")
         self.assertEqual(outside_task.device_id, "")
+
+    def test_real_send_claim_requires_device_control_switch(self):
+        task = SendTask(
+            family_id="f-real",
+            target_name="一合学社",
+            scene="real",
+            content="真实发送由控制端设备开关放行",
+            send_mode="real_send",
+            status="pending",
+        )
+        self.db.add(task)
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "pending")
+
+        updated = update_device("dev-a", DeviceUpdateIn(allow_real_send=True), db=self.db)
+        self.assertTrue(updated["allow_real_send"])
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
+        self.assertTrue(claimed[0]["device_allow_real_send"])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "assigned")
 
     def test_claim_does_not_assign_same_task_twice_across_devices(self):
         task = SendTask(

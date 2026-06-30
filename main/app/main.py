@@ -205,6 +205,14 @@ class DeviceIn(BaseModel):
     name: str = ""
     note: str = ""
     conversations: list[str] = []
+    allow_real_send: bool | None = None
+
+
+class DeviceUpdateIn(BaseModel):
+    name: str = ""
+    note: str = ""
+    conversations: list[str] | None = None
+    allow_real_send: bool | None = None
 
 
 # 设备心跳上报：企微健康 + 本机负责的会话（后端据此刷新该设备 conversations，供动态领取过滤）。
@@ -3383,6 +3391,13 @@ def device_view(dev: Device, db: Session) -> dict:
     for st in ("pending", "assigned", "sent", "failed"):
         counts[st] = db.query(SendTask).filter(SendTask.device_id == dev.device_id, SendTask.status == st).count()
     data["task_counts"] = counts
+    data["real_send_policy_label"] = "允许真实发送" if dev.allow_real_send else "仅试运行"
+    return data
+
+
+def device_task_payload(task: SendTask, dev: Device) -> dict:
+    data = as_dict(task)
+    data["device_allow_real_send"] = bool(dev.allow_real_send)
     return data
 
 
@@ -3394,6 +3409,8 @@ def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
     if dev:
         dev.name = payload.name or dev.name
         dev.note = payload.note or dev.note
+        if payload.allow_real_send is not None:
+            dev.allow_real_send = bool(payload.allow_real_send)
         if convs is not None:
             dev.conversations = convs
     else:
@@ -3403,6 +3420,7 @@ def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
             note=payload.note,
             token=secrets.token_hex(16),
             conversations=convs or "[]",
+            allow_real_send=bool(payload.allow_real_send),
         )
         db.add(dev)
     db.commit()
@@ -3435,8 +3453,8 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
         "use_local_ocr": False,          # 被控端走 ARK 云端定位，不装 paddleocr
         "use_ark_vision_fallback": True,
         "enable_search_fallback": True,
-        "dry_run": True,                 # 默认安全：只粘贴不发；真实发送走任务 real_send + allow_real_send 双确认
-        "allow_real_send": False,         # 被控端二次硬开关：不显式打开就算任务 real_send 也不按发送键
+        "dry_run": True,                 # 默认安全：只粘贴不发；真实发送走任务 real_send + 控制端设备策略双确认
+        "allow_real_send": False,         # 兼容旧客户端的本地兜底；新客户端以控制端设备开关为准
         "auto_launch_wecom": False,
     })
 
@@ -3498,14 +3516,18 @@ def list_devices(db: Session = Depends(get_db)):
     return [device_view(dev, db) for dev in db.query(Device).order_by(Device.device_id).all()]
 
 
-# 修改设备显示名/备注。
+# 修改设备显示名/备注和控制端设备策略。
 @app.put("/api/devices/{device_id}")
-def update_device(device_id: str, payload: DeviceIn, db: Session = Depends(get_db)):
+def update_device(device_id: str, payload: DeviceUpdateIn, db: Session = Depends(get_db)):
     dev = db.query(Device).filter(Device.device_id == device_id).first()
     if not dev:
         raise HTTPException(404, "设备不存在")
     dev.name = payload.name or dev.name
     dev.note = payload.note or dev.note
+    if payload.conversations is not None:
+        dev.conversations = json.dumps(payload.conversations, ensure_ascii=False)
+    if payload.allow_real_send is not None:
+        dev.allow_real_send = bool(payload.allow_real_send)
     db.commit()
     return device_view(dev, db)
 
@@ -3549,9 +3571,10 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         .filter(SendTask.status == "pending", SendTask.target_name.in_(convs))
         .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
         .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
-        .order_by(SendTask.id)
-        .limit(safe_limit)
     )
+    if not dev.allow_real_send:
+        candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
+    candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
     candidates = apply_claim_row_lock(candidates_query, db).all()
     claimed = []
     for task in candidates:
@@ -3597,7 +3620,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         audit_send_task_change(db, task, "assign_device", f"设备:{dev.device_id}", "设备领取发送任务", before)
         sync_weekly_report_send_status(db, task, "assigned")
     db.commit()
-    return [as_dict(db.get(SendTask, t.id)) for t in claimed]
+    return [device_task_payload(db.get(SendTask, t.id), dev) for t in claimed]
 
 
 # ============ ARK（阿里百炼）云端定位密钥 · 控制台在线配置 ============

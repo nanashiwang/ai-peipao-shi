@@ -23,18 +23,22 @@ from rpa.send_guard import (
 
 
 class RpaSendGuardTest(unittest.TestCase):
-    def test_real_send_requires_device_hard_switch(self):
+    def test_real_send_requires_device_control_switch(self):
         with self.assertRaises(SendGuardError) as ctx:
             config_for_send_mode({"dry_run": True, "allow_real_send": False}, "real_send")
 
         self.assertEqual(str(ctx.exception), real_send_block_detail())
 
-    def test_real_send_can_disable_dry_run_only_after_hard_switch(self):
+    def test_real_send_can_disable_dry_run_only_after_control_switch(self):
         config = config_for_send_mode({"dry_run": True, "allow_real_send": True}, "real_send")
 
         self.assertFalse(config["dry_run"])
 
-    def test_dry_run_mode_overrides_even_when_hard_switch_is_enabled(self):
+    def test_server_policy_overrides_local_real_send_switch(self):
+        self.assertTrue(real_send_enabled({"allow_real_send": False, "server_allow_real_send": True}))
+        self.assertFalse(real_send_enabled({"allow_real_send": True, "server_allow_real_send": False}))
+
+    def test_dry_run_mode_overrides_even_when_control_switch_is_enabled(self):
         config = config_for_send_mode({"dry_run": False, "allow_real_send": True, "clear_after_dry_run": False}, "dry_run")
 
         self.assertTrue(config["dry_run"])
@@ -65,12 +69,12 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertFalse(real_send_enabled({"allow_real_send": "true"}))
         self.assertFalse(real_send_enabled({}))
 
-    def test_legacy_dry_run_false_is_also_blocked_without_hard_switch(self):
+    def test_legacy_dry_run_false_is_also_blocked_without_control_switch(self):
         self.assertTrue(real_send_requested({"dry_run": False}, ""))
         with self.assertRaises(SendGuardError):
             config_for_send_mode({"dry_run": False, "allow_real_send": False}, "")
 
-    def test_real_send_mode_allows_send_hotkey_only_after_hard_switch(self):
+    def test_real_send_mode_allows_send_hotkey_only_after_control_switch(self):
         config = config_for_send_mode({"dry_run": True, "allow_real_send": True}, "real_send")
 
         self.assertTrue(should_press_send_hotkey(config))

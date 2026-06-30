@@ -7,7 +7,7 @@ import difflib
 import math
 
 
-REAL_SEND_GUARD_MESSAGE = "REAL_SEND_GUARD: 被控端 allow_real_send=false，已阻止真实发送。"
+REAL_SEND_GUARD_MESSAGE = "REAL_SEND_GUARD: 控制端未开启该设备真实发送开关，已阻止真实发送。"
 TARGET_NOT_ALLOWED_TEMPLATE = "目标「{target}」不在白名单，已跳过。"
 FOREGROUND_UNKNOWN_MESSAGE = "无法确认当前前台窗口，已停止 RPA 操作，避免误操作其他页面。"
 FOREGROUND_NOT_WECOM_TEMPLATE = "当前前台窗口不是企业微信，已停止 RPA 操作。foreground={foreground}"
@@ -23,6 +23,8 @@ class SendGuardError(ValueError):
 
 
 def real_send_enabled(config: dict) -> bool:
+    if "server_allow_real_send" in config:
+        return config.get("server_allow_real_send") is True
     return config.get("allow_real_send") is True
 
 

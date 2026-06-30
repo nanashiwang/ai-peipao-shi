@@ -68,6 +68,14 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("queueTaskRealSend", js)
         self.assertIn("/real-send", js)
 
+    def test_device_page_exposes_real_send_switch(self):
+        html = Path("app/static/index.html").read_text(encoding="utf-8")
+        js = Path("app/static/app.js").read_text(encoding="utf-8")
+        self.assertIn("真实发送开关", html)
+        self.assertIn("toggleDeviceRealSend", js)
+        self.assertIn("allow_real_send", js)
+        self.assertIn("开启真发", js)
+
     def test_control_auth_page_exposes_login_and_first_admin_registration(self):
         html = Path("app/static/index.html").read_text(encoding="utf-8")
         js = Path("app/static/app.js").read_text(encoding="utf-8")

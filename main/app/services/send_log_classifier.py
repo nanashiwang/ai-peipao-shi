@@ -40,7 +40,7 @@ def classify_send_log(status: str, detail: str) -> dict:
         ("输入框定位失败", "输入框", "input_focus_failed", "输入框失败", "danger"),
         ("当前前台窗口不是企业微信", "前台窗口", "foreground_not_wecom", "焦点不在企微", "danger"),
         ("无法确认当前前台窗口", "前台窗口", "foreground_unknown", "无法确认焦点", "danger"),
-        ("REAL_SEND_GUARD", "发送闸门", "real_send_guard", "真实发送硬开关", "warn"),
+        ("REAL_SEND_GUARD", "发送闸门", "real_send_guard", "真实发送开关未开启", "warn"),
         ("不在白名单", "发送闸门", "target_not_allowed", "白名单拦截", "warn"),
         ("SEND_GUARD", "发送闸门", "send_guard", "安全闸门拦截", "danger"),
         ("DRY_RUN", "试运行", "dry_run_done", "试运行完成", "ok"),

@@ -253,7 +253,7 @@ def validate_config(config: dict):
     if config.get("auto_send_ai_replies", False) and config.get("dry_run", True):
         print("WARN: auto_send_ai_replies=true 但 dry_run=true，本轮只会粘贴不真实发送。")
     if not config.get("dry_run", True) and not real_send_enabled(config):
-        print("WARN: dry_run=false 但 allow_real_send=false，本机真实发送硬开关未开启，本轮会阻止真实发送。")
+        print("WARN: dry_run=false 但控制端/本机未开启真实发送开关，本轮会阻止真实发送。")
 
 
 def launch_wecom(config: dict):
@@ -1763,8 +1763,16 @@ def config_for_task_send_mode(config: dict, send_mode: str) -> dict:
         raise RpaError(str(exc)) from exc
 
 
+def config_with_device_policy(config: dict, task: dict) -> dict:
+    merged = {**config}
+    if "device_allow_real_send" in task:
+        merged["server_allow_real_send"] = task.get("device_allow_real_send") is True
+    return merged
+
+
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
 def process_task(task: dict, config: dict):
+    config = config_with_device_policy(config, task)
     target = task.get("target_name") or ""
     if not target_in_allowed_conversations(target, config.get("allowed_conversations", [])):
         return "skipped", target_not_allowed_detail(target)
@@ -1828,6 +1836,7 @@ def send_created_reply_tasks(sync_results: list[dict], config: dict):
 def reply_unread_conversations(config: dict, config_path: Path):
     results = sync_unread_conversations(config, config_path)
     if config.get("auto_send_ai_replies", False):
+        send_heartbeat(config)
         send_created_reply_tasks(results, config)
     else:
         print("auto_send_ai_replies=false: AI回复已生成待发送任务，请在后台审核后发送。")
@@ -1845,7 +1854,7 @@ def device_headers(config: dict) -> dict:
 def send_heartbeat(config: dict):
     device_id = config.get("device_id", "")
     if not device_id:
-        return
+        return None
     wecom_ok = "N"
     try:
         wins = find_wecom_windows(Desktop(backend="uia"), config)
@@ -1854,10 +1863,14 @@ def send_heartbeat(config: dict):
         wecom_ok = "N"
     payload = {"wecom_ok": wecom_ok, "detail": "", "conversations": watched_conversations(config)}
     try:
-        request_json(config["api_base_url"], f"/api/devices/{device_id}/heartbeat",
-                     method="POST", payload=payload, extra_headers=device_headers(config))
+        response = request_json(config["api_base_url"], f"/api/devices/{device_id}/heartbeat",
+                                method="POST", payload=payload, extra_headers=device_headers(config))
+        if isinstance(response, dict) and "allow_real_send" in response:
+            config["server_allow_real_send"] = response.get("allow_real_send") is True
+        return response
     except Exception as exc:
         print(f"heartbeat_failed detail={exc}")
+        return None
 
 
 # 发送队列中的待发送任务：配了 device_id 走多被控端领取，否则拉全部筛 pending（兼容旧单机）。
@@ -1869,7 +1882,8 @@ def run_once(config: dict):
         send_heartbeat(config)
         selected = request_json(base_url, f"/api/devices/{device_id}/claim?limit={limit}",
                                 method="POST", extra_headers=device_headers(config))
-        print(f"device={device_id}, claimed={len(selected)}, default_dry_run={config.get('dry_run', True)}")
+        real_policy = selected[0].get("device_allow_real_send") if selected else "unknown"
+        print(f"device={device_id}, claimed={len(selected)}, default_dry_run={config.get('dry_run', True)}, server_allow_real_send={real_policy}")
     else:
         tasks = request_json(base_url, "/api/send-tasks")
         pending = [task for task in tasks if task.get("status") == "pending"]

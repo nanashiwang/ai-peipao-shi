@@ -27,8 +27,8 @@ class DevicePackageTest(unittest.TestCase):
             chunks.append(chunk)
         return b"".join(chunks)
 
-    def test_device_package_includes_send_guard_and_safe_default_config(self):
-        self.db.add(Device(device_id="rpa-01", token="token-1", conversations='["一合学社"]'))
+    def test_device_package_includes_send_guard_and_server_controlled_real_send(self):
+        self.db.add(Device(device_id="rpa-01", token="token-1", conversations='["一合学社"]', allow_real_send=True))
         self.db.commit()
 
         response = download_device_package("rpa-01", server_url="https://server.test", db=self.db)
@@ -38,6 +38,7 @@ class DevicePackageTest(unittest.TestCase):
             names = set(zf.namelist())
             config = json.loads(zf.read("rpa/config.json").decode("utf-8"))
             manifest = json.loads(zf.read("package_manifest.json").decode("utf-8"))
+            readme = zf.read("使用说明.txt").decode("utf-8")
 
         self.assertIn("rpa/wecom_sender.py", names)
         self.assertIn("rpa/send_guard.py", names)
@@ -51,6 +52,8 @@ class DevicePackageTest(unittest.TestCase):
         self.assertEqual(config["device_id"], "rpa-01")
         self.assertFalse(config["allow_real_send"])
         self.assertTrue(config["dry_run"])
+        self.assertIn("设备监控", readme)
+        self.assertIn("真实发送开关", readme)
         self.assertEqual(manifest["package_type"], "rpa-client-script")
         self.assertEqual(manifest["device_id"], "rpa-01")
         manifest_paths = {item["path"] for item in manifest["files"]}
