@@ -1723,7 +1723,15 @@ def known_conversations_from_api(config: dict) -> list[dict]:
 
 
 # 把当前会话的消息同步给后端，并附带是否自动生成回复的控制位。
-def sync_conversation_to_api(target_name: str, family_id: str, messages: list[dict], config: dict, latest_message: str = "") -> dict:
+def sync_conversation_to_api(
+    target_name: str,
+    family_id: str,
+    messages: list[dict],
+    config: dict,
+    latest_message: str = "",
+    conversation_opened: bool = False,
+    empty_conversation_ok: bool = False,
+) -> dict:
     defaults = (config.get("new_family_defaults") or {}).get(family_id, {})
     payload = {
         "target_name": target_name,
@@ -1736,6 +1744,8 @@ def sync_conversation_to_api(target_name: str, family_id: str, messages: list[di
         "auto_create_reply_task": bool(config.get("auto_create_reply_task", True)),
         "auto_generate_all_agents": bool(config.get("auto_generate_all_agents", True)),
         "latest_message": latest_message,
+        "conversation_opened": conversation_opened,
+        "empty_conversation_ok": empty_conversation_ok,
     }
     return request_json(
         config["api_base_url"],
@@ -1798,18 +1808,24 @@ def sync_target_conversation(config: dict, target: str, family_id: str = "", fie
     search_conversation(window, target, config)
     verify_active_conversation(window, target, config)
     messages = extract_chat_messages(window, target, config)
-    if not messages:
-        raise RpaError(f"已进入「{target}」，但 UIA/剪贴板都没有读到聊天文本。请确认聊天区可见，或企微是否禁用了文本复制。")
     latest_count = int(config.get("latest_messages_count", 0) or 0)
     if latest_count > 0:
         messages = messages[-latest_count:]
-    latest = next((msg["content"] for msg in reversed(messages) if msg.get("speaker") != "我"), messages[-1]["content"])
+    latest = next((msg["content"] for msg in reversed(messages) if msg.get("speaker") != "我"), messages[-1]["content"]) if messages else ""
     defaults = fields or {}
     merged_defaults = config.setdefault("new_family_defaults", {}).setdefault(family_id or f"WECOM_{target}", {})
     for key in ("parent_nickname", "child_grade", "coach_name"):
         if defaults.get(key):
             merged_defaults[key] = defaults[key]
-    result = sync_conversation_to_api(target, family_id or defaults.get("family_id") or f"WECOM_{target}", messages, config, latest)
+    result = sync_conversation_to_api(
+        target,
+        family_id or defaults.get("family_id") or f"WECOM_{target}",
+        messages,
+        config,
+        latest,
+        conversation_opened=True,
+        empty_conversation_ok=not messages,
+    )
     print(
         f"sync target={target} messages={len(messages)} inserted={result.get('messages_inserted')} "
         f"outputs={len(result.get('generated_outputs') or [])} task={result.get('send_task', {}).get('id') if result.get('send_task') else ''}"
@@ -2160,11 +2176,23 @@ def process_conversation_check_task(task: dict, config: dict) -> tuple[str, str,
         verify_active_conversation(window, target, task_config)
         messages = extract_chat_messages(window, target, task_config)
         latest = next((msg["content"] for msg in reversed(messages) if msg.get("speaker") != "我"), messages[-1]["content"]) if messages else ""
-        result = sync_conversation_to_api(target, task.get("family_id") or f"WECOM_{target}", messages, sync_config, latest)
+        result = sync_conversation_to_api(
+            target,
+            task.get("family_id") or f"WECOM_{target}",
+            messages,
+            sync_config,
+            latest,
+            conversation_opened=True,
+            empty_conversation_ok=not messages,
+        )
         proof = result.get("conversation_check") or {}
         if not messages:
-            detail = f"CONVERSATION_CHECK_FAILED: 目标「{target}」已打开但未读到可见聊天消息，已记录失败证明。"
-            return "failed", detail_with_send_trace(detail, task_config), verification_payload("not_applicable", "只读会话校验未发送消息")
+            detail = (
+                f"CONVERSATION_CHECK_OK_EMPTY: 目标「{target}」已打开且标题已校验，"
+                f"当前没有可见历史聊天消息，proof_status={proof.get('status', 'ok')}"
+            )
+            add_send_trace(task_config, "只读校验空会话标题")
+            return "dry_run", detail_with_send_trace(detail, task_config), verification_payload("not_applicable", "只读会话标题校验，不粘贴不发送")
         detail = (
             f"CONVERSATION_CHECK_OK: 目标「{target}」可读，"
             f"message_count={len(messages)}, proof_status={proof.get('status', 'ok')}"

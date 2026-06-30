@@ -286,6 +286,8 @@ class RpaConversationIn(BaseModel):
     auto_create_reply_task: bool = False
     auto_generate_all_agents: bool = False
     latest_message: str = ""
+    conversation_opened: bool = False
+    empty_conversation_ok: bool = False
 
 
 # 更新发送任务的可编辑字段。
@@ -1178,7 +1180,8 @@ def device_conversation_proof_reason(db: Session, dev: Device, target_name: str,
             f"设备「{dev.device_id}」对目标「{target_name}」的可读证明已过期"
             f"（最近校验：{timeline_time(proof.verified_at)}），请重新同步/校验"
         )
-    if (proof.message_count or 0) <= 0:
+    empty_title_check = "空会话" in (proof.source or "") or "标题校验" in (proof.source or "")
+    if (proof.message_count or 0) <= 0 and not empty_title_check:
         return f"设备「{dev.device_id}」对目标「{target_name}」的最近校验未读到聊天消息，请先确认目标会话可读"
     return ""
 
@@ -3495,15 +3498,19 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
     inserted = 0
     latest_parent_message = payload.latest_message.strip()
     readable_messages = [msg for msg in payload.messages if (msg.content or "").strip()]
-    proof_source = next((msg.source for msg in readable_messages if (msg.source or "").strip()), "企业微信RPA")
+    empty_title_check = bool(payload.conversation_opened and payload.empty_conversation_ok and not readable_messages)
+    proof_source = next((msg.source for msg in readable_messages if (msg.source or "").strip()), "")
+    if not proof_source:
+        proof_source = "企业微信RPA-空会话标题校验" if empty_title_check else "企业微信RPA"
+    proof_ok = bool(readable_messages) or empty_title_check
     conversation_check = record_device_conversation_check(
         db,
         dev,
         payload.target_name,
-        "ok" if readable_messages else "failed",
+        "ok" if proof_ok else "failed",
         message_count=len(readable_messages),
         source=proof_source,
-        last_error="" if readable_messages else "同步时未读到聊天消息",
+        last_error="" if proof_ok else "同步时未读到聊天消息",
     )
     for msg in payload.messages:
         content = msg.content.strip()

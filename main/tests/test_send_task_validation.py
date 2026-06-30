@@ -752,14 +752,21 @@ class ClaimTaskGuardTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def add_conversation_proof(self, device_id: str = "dev-a", target_name: str = "一合学社", verified_at: datetime | None = None):
+    def add_conversation_proof(
+        self,
+        device_id: str = "dev-a",
+        target_name: str = "一合学社",
+        verified_at: datetime | None = None,
+        message_count: int = 1,
+        source: str = "企业微信RPA-视觉回读",
+    ):
         self.db.add(
             DeviceConversationCheck(
                 device_id=device_id,
                 target_name=target_name,
                 status="ok",
-                message_count=1,
-                source="企业微信RPA-视觉回读",
+                message_count=message_count,
+                source=source,
                 verified_at=verified_at or datetime.utcnow(),
             )
         )
@@ -1319,6 +1326,55 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(row["send_readiness"]["status"], "blocked")
         self.assertFalse(row["send_readiness"]["actions"][0]["available"])
         self.assertEqual(row["send_readiness"]["actions"][0]["existing_task_id"], existing["id"])
+
+    def test_empty_private_title_check_can_prepare_real_send(self):
+        self.dev.conversations = '["许宝月"]'
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.add(
+            SendTask(
+                family_id="WECOM_许宝月",
+                target_name="许宝月",
+                scene="real",
+                content="空私聊发送准备",
+                send_mode="real_send",
+                status="pending",
+                device_id="dev-a",
+            )
+        )
+        self.db.commit()
+        self.add_conversation_proof(
+            target_name="许宝月",
+            message_count=0,
+            source="企业微信RPA-空会话标题校验",
+        )
+
+        row = list_send_tasks(db=self.db)[0]
+
+        self.assertEqual(row["send_readiness"]["status"], "ready")
+        self.assertEqual(row["send_readiness"]["label"], "真实发送条件就绪")
+
+    def test_rpa_sync_records_empty_conversation_title_check(self):
+        result = sync_rpa_conversation(
+            RpaConversationIn(
+                target_name="许宝月",
+                family_id="WECOM_许宝月",
+                messages=[],
+                auto_generate_reply=False,
+                auto_create_reply_task=False,
+                auto_generate_all_agents=False,
+                conversation_opened=True,
+                empty_conversation_ok=True,
+            ),
+            request=SimpleNamespace(headers={"x-device-id": "dev-a", "x-device-token": "token"}, state=SimpleNamespace()),
+            db=self.db,
+        )
+
+        proof = self.db.query(DeviceConversationCheck).filter_by(device_id="dev-a", target_name="许宝月").one()
+        self.assertEqual(result["conversation_check"]["status"], "ok")
+        self.assertEqual(proof.message_count, 0)
+        self.assertIn("空会话标题校验", proof.source)
 
     def test_preflight_allows_real_send_with_auto_conversation_proof_prepare(self):
         blocked = build_send_task_preflight(
