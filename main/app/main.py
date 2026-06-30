@@ -518,10 +518,12 @@ def scoped_payload_campus_name(request: Request | None, campus_name: str) -> str
     raise HTTPException(400, "当前账号绑定多个校区，请先选择家庭所属校区")
 
 
-def send_task_view(task: SendTask, request: Request | None = None) -> dict:
+def send_task_view(task: SendTask, request: Request | None = None, db: Session | None = None) -> dict:
     data = as_dict(task)
     data.update(send_task_operation_state(task.status, task.send_mode, operation_role_from_request(request)))
     data["retry_alert"] = task_needs_retry_alert(task)
+    if db is not None:
+        data["send_readiness"] = send_task_readiness(db, task)
     return data
 
 
@@ -952,6 +954,52 @@ def validate_task_device_binding(db: Session, device_id: str, target_name: str) 
 def validate_real_send_device_binding(device_id: str) -> None:
     if not (device_id or "").strip():
         raise HTTPException(400, "企微真实发送必须指定发送设备；每台设备代表一个发送人，不能由系统随机派发")
+
+
+def device_online(dev: Device, now: datetime | None = None) -> bool:
+    now = now or datetime.utcnow()
+    return bool(dev.last_heartbeat) and (now - dev.last_heartbeat) <= timedelta(seconds=HEARTBEAT_ONLINE_SECONDS)
+
+
+def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None) -> dict:
+    """给控制端展示任务能否被指定设备稳定执行，不改变调度结果。"""
+    now = now or datetime.utcnow()
+    reasons: list[str] = []
+    mode = send_log_mode(task)
+    status = (task.status or "pending").strip()
+    if status == "sent":
+        return {"status": "done", "label": "已发送归档", "reasons": []}
+    if status == "cancelled":
+        return {"status": "done", "label": "已取消", "reasons": []}
+    if status == "failed":
+        return {"status": "review", "label": "失败待复核", "reasons": [task.last_error or "需要人工复核后重试"]}
+    if task.next_retry_at and task.next_retry_at > now:
+        reasons.append(f"等待同设备自动重试：{timeline_time(task.next_retry_at)}")
+
+    clean_device_id = (task.device_id or "").strip()
+    if mode == "real_send" and not clean_device_id:
+        reasons.append("真实发送必须先绑定发送设备；设备代表发送人，系统不会随机派发")
+    dev = db.query(Device).filter(Device.device_id == clean_device_id).first() if clean_device_id else None
+    if clean_device_id and not dev:
+        reasons.append(f"绑定设备「{clean_device_id}」不存在")
+    if dev:
+        if not device_online(dev, now):
+            reasons.append(f"设备「{dev.device_id}」不在线或心跳超时")
+        if dev.wecom_ok != "Y":
+            reasons.append(f"设备「{dev.device_id}」企微状态异常：{dev.wecom_ok or '未知'}")
+        if mode == "real_send" and not dev.allow_real_send:
+            reasons.append(f"设备「{dev.device_id}」真实发送开关未开启")
+        if not dev.allow_any_conversation and task.target_name not in device_conversations(dev):
+            reasons.append(f"目标「{task.target_name}」不在设备「{dev.device_id}」负责会话内")
+    if status == "assigned" and task.scheduled_at and task.scheduled_at < now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS):
+        reasons.append("任务已被该设备领取但超时未回写，等待同设备回收重试")
+
+    if reasons:
+        label = "等待设备就绪" if any("等待" in item or "不在线" in item for item in reasons) else "发送前需处理"
+        return {"status": "blocked" if mode == "real_send" else "warn", "label": label, "reasons": reasons}
+    if mode == "real_send":
+        return {"status": "ready", "label": "真实发送条件就绪", "reasons": []}
+    return {"status": "ready", "label": "试运行条件就绪", "reasons": []}
 
 
 def weekly_report_send_status(task: SendTask | None) -> str:
@@ -2752,7 +2800,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     output.updated_at = datetime.utcnow()
     add_send_task_with_audit(db, task, "create", actor_from_request(request), f"AI 输出 {output_id} 创建发送任务")
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 # 家庭画像 Agent 接口。
@@ -3127,7 +3175,7 @@ def list_send_tasks(status: str = "", device_id: str = "", request: Request = No
         query = query.filter(SendTask.status == status)
     if device_id:
         query = query.filter(SendTask.device_id == device_id)
-    return maybe_redact_for_request([send_task_view(t, request) for t in query.order_by(SendTask.id.desc()).all()], request)
+    return maybe_redact_for_request([send_task_view(t, request, db) for t in query.order_by(SendTask.id.desc()).all()], request)
 
 
 # 直接新增一条发送任务。
@@ -3147,7 +3195,7 @@ def create_send_task(payload: SendTaskIn, request: Request = None, db: Session =
     task = SendTask(**data)
     add_send_task_with_audit(db, task, "create", actor_from_request(request), "控制端手动创建发送任务")
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 # 更新发送任务的内容和状态。
@@ -3205,7 +3253,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     audit_send_task_change(db, task, action, actor_from_request(request), summary, before)
     sync_weekly_report_send_status(db, task)
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 @app.post("/api/send-tasks/{task_id}/cancel")
@@ -3220,7 +3268,7 @@ def cancel_send_task(task_id: int, request: Request = None, db: Session = Depend
     audit_send_task_change(db, task, "cancel", actor_from_request(request), "取消发送任务", before)
     sync_weekly_report_send_status(db, task, "cancelled")
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 @app.post("/api/send-tasks/{task_id}/dry-run")
@@ -3243,7 +3291,7 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     audit_send_task_change(db, task, "queue_dry_run", actor_from_request(request), "控制端发起企微 dry-run 试运行", before)
     sync_weekly_report_send_status(db, task, "pending")
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 @app.post("/api/send-tasks/{task_id}/real-send")
@@ -3275,7 +3323,7 @@ def queue_task_real_send(
     audit_send_task_change(db, task, "confirm_real_send", actor_from_request(request), "控制端确认企微真实发送", before)
     sync_weekly_report_send_status(db, task, "pending")
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 @app.post("/api/send-tasks/{task_id}/retry")
@@ -3302,7 +3350,7 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
     audit_send_task_change(db, task, "manual_retry", actor_from_request(request), "人工复核后重新加入发送队列", before)
     sync_weekly_report_send_status(db, task, "pending")
     db.commit()
-    return send_task_view(task, request)
+    return send_task_view(task, request, db)
 
 
 @app.post("/api/send-tasks/{task_id}/result")
@@ -3420,7 +3468,7 @@ def web_send(task_id: int, request: Request = None, db: Session = Depends(get_db
     ensure_task_operation_allowed(task, request, "web_send")
     message, log = send_task_to_web_chat(db, task, actor_from_request(request), "web_send")
     db.commit()
-    return {"task": send_task_view(task, request), "message": as_dict(message), "log": send_log_view(log)}
+    return {"task": send_task_view(task, request, db), "message": as_dict(message), "log": send_log_view(log)}
 
 
 @app.post("/api/send-tasks/web-send-all")

@@ -365,6 +365,16 @@ function taskRetryCell(task) {
   return `${badge(retry, task.retry_alert ? "danger" : task.next_retry_at ? "warn" : "")}${alert}${next}${lastError}`;
 }
 
+function taskReadinessCell(task) {
+  const readiness = task.send_readiness || {};
+  const status = readiness.status || "";
+  const kind = status === "ready" || status === "done" ? "ok" : (status === "blocked" || status === "review" ? "danger" : "warn");
+  const reasons = Array.isArray(readiness.reasons) && readiness.reasons.length
+    ? `<p class="muted">${esc(readiness.reasons.join("；")).slice(0, 160)}</p>`
+    : "";
+  return `${badge(readiness.label || "未检查", kind)}${reasons}`;
+}
+
 function sendModeSelect(task) {
   const mode = task.send_mode || "dry_run";
   const canEdit = taskCan(task, "edit") || taskCan(task, "confirm_real_send");
@@ -1298,6 +1308,7 @@ function renderTasks() {
     { label: "状态", render: (r) => sendTaskStatusBadge(r.status) },
     { label: "操作分层", render: taskOperationBadges },
     { label: "重试/告警", render: taskRetryCell },
+    { label: "发送准备", render: taskReadinessCell },
     { label: "发送设备", render: (r) => deviceSelect(r) },
     { label: "企微模式", render: (r) => sendModeSelect(r) },
     { label: "最终内容", render: (r) => `<textarea id="task-${r.id}" ${taskCan(r, "edit") ? "" : "readonly"}>${esc(r.content)}</textarea>` },

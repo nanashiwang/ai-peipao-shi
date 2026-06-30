@@ -734,6 +734,32 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(task.status, "pending")
         self.assertEqual(task.device_id, "")
 
+    def test_task_readiness_explains_real_send_blocks_and_ready_state(self):
+        task = SendTask(
+            family_id="f-ready",
+            target_name="一合学社",
+            scene="real",
+            content="准备度检查",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add(task)
+        self.db.commit()
+
+        row = list_send_tasks(db=self.db)[0]
+        self.assertEqual(row["send_readiness"]["status"], "blocked")
+        self.assertIn("真实发送开关未开启", "；".join(row["send_readiness"]["reasons"]))
+
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+        row = list_send_tasks(db=self.db)[0]
+
+        self.assertEqual(row["send_readiness"]["status"], "ready")
+        self.assertEqual(row["send_readiness"]["label"], "真实发送条件就绪")
+
     def test_allow_any_conversation_claims_group_or_private_chat_outside_whitelist(self):
         task = SendTask(
             family_id="f-private",
