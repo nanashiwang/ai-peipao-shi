@@ -990,7 +990,8 @@ def ark_locate_in_region(image_path, target: str, config: dict, win_rect_img: di
     try:
         data = call_ark_vision_json(
             "你是企业微信界面定位助手。在给定截图里找到名为目标的会话或聊天标题，"
-            "只输出 JSON，不要 Markdown。字段：found(true/false), x_ratio, y_ratio。"
+            "只输出 JSON，不要 Markdown。字段：found(true/false), x_ratio, y_ratio, text。"
+            "text 必须是截图里实际看到的会话名或标题文字，不要照抄目标。"
             "x_ratio/y_ratio 是目标中心相对整张图的位置比例(0~1)。找不到则 found=false。",
             str(crop_path),
             f"目标名称：{target}",
@@ -1002,6 +1003,17 @@ def ark_locate_in_region(image_path, target: str, config: dict, win_rect_img: di
         _cleanup_debug_image(crop_path, config)
     if not data or not data.get("found"):
         return None
+    matched_text = str(data.get("text") or data.get("matched_text") or "").strip()
+    if config.get("ark_require_text_match", True):
+        if not matched_text:
+            print(f"ark_rejected target={target} reason=no_matched_text")
+            return None
+        min_ratio = float(config.get("ark_match_min_ratio", 0.85))
+        if not text_matches_target(target, matched_text, min_ratio):
+            print(f"ark_rejected target={target} text={matched_text} min_ratio={min_ratio}")
+            return None
+    else:
+        matched_text = matched_text or target
     try:
         ax = float(data.get("x_ratio"))
         ay = float(data.get("y_ratio"))
@@ -1009,7 +1021,7 @@ def ark_locate_in_region(image_path, target: str, config: dict, win_rect_img: di
         return None
     rx = region_ratio[0] + ax * (region_ratio[2] - region_ratio[0])
     ry = region_ratio[1] + ay * (region_ratio[3] - region_ratio[1])
-    return {"rx": rx, "ry": ry, "text": target, "score": 1.0, "via": "ark", "image_width": img_w, "image_height": img_h}
+    return {"rx": rx, "ry": ry, "text": matched_text, "score": 1.0, "via": "ark", "image_width": img_w, "image_height": img_h}
 
 
 def locate_and_open_conversation(window, target: str, config: dict) -> bool:

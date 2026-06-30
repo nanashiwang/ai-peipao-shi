@@ -18,6 +18,7 @@ from rpa.send_guard import (
     should_press_send_hotkey,
     target_in_allowed_conversations,
     target_not_allowed_detail,
+    text_matches_target,
     validate_active_conversation_title,
     validate_foreground_wecom,
     validate_visual_hit,
@@ -154,6 +155,11 @@ class RpaSendGuardTest(unittest.TestCase):
         with self.assertRaises(SendGuardError) as ctx:
             validate_active_conversation_title("一合学社", ocr_items=[{"text": "测试2群", "score": 0.99}], min_ratio=0.9)
         self.assertEqual(str(ctx.exception), conversation_title_mismatch_detail("一合学社"))
+
+
+    def test_high_ratio_title_match_rejects_similar_group_names(self):
+        self.assertFalse(text_matches_target("\u4e00\u5408\u5b66\u8bf4", "\u4e00\u5408\u5b66\u793e", 0.85))
+        self.assertTrue(text_matches_target("\u6d4b\u8bd52\u7fa4", "\u6d4b\u8bd52", 0.85))
 
     def test_visual_hit_guard_accepts_coordinate_hit(self):
         hit = {"rx": 0.2, "ry": 0.3, "text": "一合学社"}
