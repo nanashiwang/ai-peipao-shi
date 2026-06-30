@@ -1114,6 +1114,36 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
 
+    def test_real_send_auto_prepare_check_claims_before_manual_conversation_checks(self):
+        self.dev.conversations = '["一合学社", "测试2群"]'
+        manual_check = queue_device_conversation_check(
+            "dev-a",
+            DeviceConversationCheckRequestIn(target_name="测试2群", family_id="WECOM_测试2群"),
+            db=self.db,
+        )
+        task = SendTask(
+            family_id="f-real-proof-priority",
+            target_name="一合学社",
+            scene="real",
+            content="真发前置校验应优先执行",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add(task)
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+
+        claimed = claim_tasks("dev-a", limit=1, dev=self.dev, db=self.db)
+
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0]["target_name"], "一合学社")
+        self.assertEqual(claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        self.assertIn("真实发送前置校验", claimed[0]["content"])
+        self.assertGreater(claimed[0]["id"], manual_check["id"])
+
     def test_real_send_auto_prepare_respects_failed_check_cooldown(self):
         task = SendTask(
             family_id="f-real-proof-cooldown",

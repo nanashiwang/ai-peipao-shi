@@ -101,6 +101,8 @@ SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
 DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS = 24
 WEEKLY_REPORT_SCENE = "周报发送"
 CONVERSATION_CHECK_SCENE = "会话可读校验"
+CONVERSATION_CHECK_CONTENT = "只读校验：打开目标会话并读取可见消息，不粘贴不发送。"
+REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX = "真实发送前置校验："
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
 app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
@@ -4234,12 +4236,18 @@ def create_conversation_check_task(
     target_name: str,
     family_id: str,
     actor: str,
+    auto_prepare_real_send: bool = False,
 ) -> SendTask:
+    content = (
+        f"{REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX}打开目标会话并读取可见消息，证明成功后同设备再继续真实发送。"
+        if auto_prepare_real_send
+        else CONVERSATION_CHECK_CONTENT
+    )
     task = SendTask(
         family_id=((family_id or f"WECOM_{target_name}")[:64]),
         target_name=target_name,
         scene=CONVERSATION_CHECK_SCENE,
-        content="只读校验：打开目标会话并读取可见消息，不粘贴不发送。",
+        content=content,
         device_id=dev.device_id,
         send_mode="dry_run",
         status="pending",
@@ -4250,7 +4258,7 @@ def create_conversation_check_task(
         task,
         "conversation_check",
         actor,
-        f"下发设备「{dev.device_id}」只读校验「{target_name}」",
+        f"{'自动下发真实发送前置' if auto_prepare_real_send else '下发设备'}「{dev.device_id}」只读校验「{target_name}」",
     )
     return task
 
@@ -4294,6 +4302,7 @@ def queue_real_send_missing_proof_checks_for_claim(
                 target_name,
                 task.family_id or f"WECOM_{target_name}",
                 f"设备:{dev.device_id}",
+                auto_prepare_real_send=True,
             )
         )
         if len(queued) >= limit:
@@ -4308,7 +4317,7 @@ def pending_conversation_check_query(db: Session, dev: Device, convs: list[str],
         .filter(SendTask.device_id == dev.device_id)
         .filter(SendTask.scene == CONVERSATION_CHECK_SCENE)
         .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
-        .order_by(SendTask.id)
+        .order_by(SendTask.content.startswith(REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX).desc(), SendTask.id)
     )
     if not dev.allow_any_conversation:
         query = query.filter(SendTask.target_name.in_(convs))
