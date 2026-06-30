@@ -244,6 +244,7 @@ class DeviceConversationCheckRequestIn(BaseModel):
 
 class DeviceConversationBatchCheckRequestIn(BaseModel):
     target_names: list[str] = Field(default_factory=list)
+    missing_only: bool = False
 
 
 class RetentionPruneIn(BaseModel):
@@ -4132,10 +4133,14 @@ def queue_device_conversation_checks_batch(
     targets = [str(item).strip() for item in requested_targets if str(item).strip()]
     if not targets:
         targets = device_conversations(dev)
+    if payload and payload.missing_only:
+        missing = set(device_conversation_proof_summary(db, dev)["missing_targets"])
+        targets = [target for target in targets if target in missing]
     seen = set()
     targets = [target for target in targets if not (target in seen or seen.add(target))]
     if not targets:
-        raise HTTPException(400, "设备未配置负责会话，无法批量刷新证明")
+        detail = "缺失/过期会话证明已补齐，无需再次下发校验" if payload and payload.missing_only else "设备未配置负责会话，无法批量刷新证明"
+        raise HTTPException(400, detail)
     actor = actor_from_request(request)
     queued = []
     skipped = []

@@ -1256,6 +1256,21 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(result["skipped"][0]["task_id"], existing["id"])
         self.assertEqual(result["queued"][0]["target_name"], "测试2群")
 
+    def test_batch_conversation_check_can_only_queue_missing_or_expired_proofs(self):
+        self.dev.conversations = '["一合学社", "测试2群", "许宝月"]'
+        self.add_conversation_proof(target_name="一合学社")
+        self.add_conversation_proof(target_name="测试2群", verified_at=datetime.utcnow() - timedelta(hours=25))
+
+        result = queue_device_conversation_checks_batch(
+            "dev-a",
+            DeviceConversationBatchCheckRequestIn(missing_only=True),
+            db=self.db,
+        )
+
+        self.assertEqual(result["queued_count"], 2)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual({task["target_name"] for task in result["queued"]}, {"测试2群", "许宝月"})
+
     def test_claim_does_not_assign_same_task_twice_across_devices(self):
         task = SendTask(
             family_id="f-shared",

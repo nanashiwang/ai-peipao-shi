@@ -1444,6 +1444,7 @@ function renderDevices() {
     { label: "最近错误", key: "last_error" },
     { label: "只读校验", render: (r) => `
       <button onclick="requestConversationProof('${esc(r.device_id)}')">刷新单个</button>
+      <button ${Number(r.conversation_proof_missing_count || 0) > 0 ? "" : "disabled"} onclick="requestMissingConversationProofs('${esc(r.device_id)}')">补齐缺失</button>
       <button onclick="requestAllConversationProofs('${esc(r.device_id)}')">巡检全部</button>
     ` },
     { label: "接入包", render: (r) => `<a class="dl-link" href="/api/devices/${encodeURIComponent(r.device_id)}/package?server_url=${encodeURIComponent(location.origin)}">下载接入包</a>` },
@@ -2148,6 +2149,23 @@ async function requestAllConversationProofs(deviceId) {
       body: JSON.stringify({}),
     });
     toast(`已下发会话巡检：新增 ${result.queued_count || 0} 个，跳过 ${result.skipped_count || 0} 个；被控端不会发送消息`);
+    await refreshAll();
+    switchTab("tasks");
+  });
+}
+
+async function requestMissingConversationProofs(deviceId) {
+  const device = state.devices.find((item) => item.device_id === deviceId);
+  const targets = Array.isArray(device?.conversation_proof_missing_targets) ? device.conversation_proof_missing_targets : [];
+  const ok = window.confirm(`确认让设备 ${deviceId} 只补齐缺失/过期的会话证明？\n校验只会打开群/私聊并读取可见消息，不会粘贴或发送。${targets.length ? `\n目标：${targets.slice(0, 8).join("、")}${targets.length > 8 ? "…" : ""}` : ""}`);
+  if (!ok) return;
+  await withAction("补齐缺失会话证明", async () => {
+    const result = await api(`/api/devices/${encodeURIComponent(deviceId)}/conversation-checks/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ missing_only: true }),
+    });
+    toast(`已下发缺失证明校验：新增 ${result.queued_count || 0} 个，跳过 ${result.skipped_count || 0} 个`);
     await refreshAll();
     switchTab("tasks");
   });

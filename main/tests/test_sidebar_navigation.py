@@ -88,6 +88,8 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("readiness.actions", js)
         self.assertIn("任务发送前刷新证明", js)
         self.assertIn("requestAllConversationProofs", js)
+        self.assertIn("requestMissingConversationProofs", js)
+        self.assertIn("missing_only", js)
         self.assertIn("/conversation-checks", js)
         self.assertIn("/conversation-checks/batch", js)
         self.assertIn("conversation_proof_count", js)
