@@ -159,6 +159,7 @@ class RealSendRiskValidationTest(unittest.TestCase):
         self.db.add_all([
             Family(family_id="f1", parent_nickname="一合学社", coach_name="coach"),
             Family(family_id="f2", parent_nickname="一合学社", coach_name="coach"),
+            Device(device_id="rpa-01", token="token", conversations='["一合学社"]'),
         ])
         self.db.commit()
         self.now = datetime(2026, 6, 29, 10, 0, 0)
@@ -234,6 +235,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.db.add_all([
             Family(family_id="f1", parent_nickname="一合学社", coach_name="coach"),
             Family(family_id="f2", parent_nickname="一合学社", coach_name="coach"),
+            Device(device_id="rpa-01", token="token", conversations='["一合学社"]'),
         ])
         self.db.commit()
 
@@ -297,6 +299,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                 target_name="\u4e00\u5408\u5b66\u793e",
                 scene="test",
                 content="\u91cd\u590d\u5185\u5bb9",
+                device_id="rpa-01",
                 send_mode="real_send",
                 confirm_real_send=True,
             ),
@@ -310,6 +313,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                     target_name="\u4e00\u5408\u5b66\u793e",
                     scene="test",
                     content="\u91cd\u590d\u5185\u5bb9",
+                    device_id="rpa-01",
                     send_mode="real_send",
                     confirm_real_send=True,
                 ),
@@ -327,6 +331,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                     target_name="\u4e00\u5408\u5b66\u793e",
                     scene="test",
                     content="\u771f\u5b9e\u53d1\u9001\u5185\u5bb9",
+                    device_id="rpa-01",
                     send_mode="real_send",
                     confirm_real_send=True,
                 ),
@@ -338,9 +343,6 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.assertEqual(self.db.query(SendTask).count(), 0)
 
     def test_coach_role_cannot_bind_device_when_creating_task(self):
-        self.db.add(Device(device_id="rpa-01", token="token", conversations='["\u4e00\u5408\u5b66\u793e"]'))
-        self.db.commit()
-
         with self.assertRaises(HTTPException) as ctx:
             create_send_task(
                 SendTaskIn(
@@ -385,6 +387,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                     target_name="\u4e00\u5408\u5b66\u793e",
                     scene="test",
                     content="\u8fd1\u671f\u5df2\u53d1\u5185\u5bb9",
+                    device_id="rpa-01",
                     send_mode="real_send",
                     confirm_real_send=True,
                 ),
@@ -400,6 +403,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                 target_name="\u4e00\u5408\u5b66\u793e",
                 scene="test",
                 content="\u5df2\u6392\u961f\u5185\u5bb9",
+                device_id="rpa-01",
                 send_mode="real_send",
                 confirm_real_send=True,
             ),
@@ -420,6 +424,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                 candidate["id"],
                 SendTaskUpdate(
                     content="\u5df2\u6392\u961f\u5185\u5bb9",
+                    device_id="rpa-01",
                     send_mode="real_send",
                     confirm_real_send=True,
                     status="pending",
@@ -442,7 +447,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             update_send_task(
                 task["id"],
-                SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u5f85\u786e\u8ba4\u5185\u5bb9", status="pending"),
+                SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u5f85\u786e\u8ba4\u5185\u5bb9", status="pending", device_id="rpa-01"),
                 request=admin_request("coach"),
                 db=self.db,
             )
@@ -459,7 +464,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
 
         update_send_task(
             task["id"],
-            SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u6d4b\u8bd5\u5185\u5bb9", status="pending"),
+            SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u6d4b\u8bd5\u5185\u5bb9", status="pending", device_id="rpa-01"),
             db=self.db,
         )
 
@@ -477,7 +482,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
 
         result = update_send_task(
             task["id"],
-            SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u8bd5\u8fd0\u884c\u540e\u4fdd\u5b58\u771f\u53d1", status="dry_run"),
+            SendTaskUpdate(send_mode="real_send", confirm_real_send=True, content="\u8bd5\u8fd0\u884c\u540e\u4fdd\u5b58\u771f\u53d1", status="dry_run", device_id="rpa-01"),
             request=admin_request("admin"),
             db=self.db,
         )
@@ -496,7 +501,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
 
         result = queue_task_real_send(
             task["id"],
-            SendTaskRealSendIn(content="\u8bd5\u8fd0\u884c\u540e\u771f\u53d1"),
+            SendTaskRealSendIn(content="\u8bd5\u8fd0\u884c\u540e\u771f\u53d1", device_id="rpa-01"),
             request=admin_request("admin"),
             db=self.db,
         )
@@ -538,6 +543,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                 target_name="\u4e00\u5408\u5b66\u793e",
                 scene="test",
                 content="\u8bd5\u8fd0\u884c\u5185\u5bb9",
+                device_id="rpa-01",
                 send_mode="real_send",
                 confirm_real_send=True,
             ),
@@ -559,6 +565,7 @@ class SendTaskAuditLogTest(unittest.TestCase):
                 target_name="\u4e00\u5408\u5b66\u793e",
                 scene="test",
                 content="\u5148\u8bd5\u8fd0\u884c\u5185\u5bb9",
+                device_id="rpa-01",
                 send_mode="real_send",
                 confirm_real_send=True,
             ),
@@ -690,6 +697,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
             content="真实发送由控制端设备开关放行",
             send_mode="real_send",
             status="pending",
+            device_id="dev-a",
         )
         self.db.add(task)
         self.db.commit()
@@ -706,6 +714,25 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertTrue(claimed[0]["device_allow_real_send"])
         self.db.refresh(task)
         self.assertEqual(task.status, "assigned")
+
+    def test_real_send_without_device_binding_is_not_auto_claimed(self):
+        task = SendTask(
+            family_id="f-unbound-real",
+            target_name="一合学社",
+            scene="real",
+            content="真实发送必须指定发送设备",
+            send_mode="real_send",
+            status="pending",
+            device_id="",
+        )
+        self.db.add(task)
+        self.db.commit()
+        update_device("dev-a", DeviceUpdateIn(allow_real_send=True), db=self.db)
+
+        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.device_id, "")
 
     def test_allow_any_conversation_claims_group_or_private_chat_outside_whitelist(self):
         task = SendTask(
@@ -800,6 +827,46 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertTrue(log["screenshot_path"].startswith("/api/send-artifacts/task_"))
         filename = log["screenshot_path"].rsplit("/", 1)[1]
         self.assertEqual(resolve_send_screenshot(filename).read_bytes(), self.PNG_BYTES)
+
+    def test_record_send_result_persists_group_verification(self):
+        task = self.add_task()
+        verified_at = datetime.utcnow()
+
+        log = record_send_result(
+            task.id,
+            SendResultIn(
+                status="sent",
+                detail="REAL_RPA: 已通过企业微信 PC 端发送。",
+                device_id="rpa-01",
+                verify_status="confirmed",
+                verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容",
+                verified_at=verified_at,
+            ),
+            db=self.db,
+        )
+
+        self.db.refresh(task)
+        saved_log = self.db.query(SendLog).filter(SendLog.task_id == task.id).one()
+        self.assertEqual(task.status, "sent")
+        self.assertEqual(log["verify_status"], "confirmed")
+        self.assertIn("回读命中", log["verify_detail"])
+        self.assertEqual(saved_log.verify_status, "confirmed")
+        self.assertEqual(saved_log.verified_at.replace(microsecond=0), verified_at.replace(microsecond=0))
+
+    def test_real_send_sent_without_group_verification_is_landed_as_failed(self):
+        task = self.add_task()
+
+        log = record_send_result(
+            task.id,
+            SendResultIn(status="sent", detail="REAL_RPA: 已通过企业微信 PC 端发送。", device_id="rpa-01"),
+            db=self.db,
+        )
+
+        self.db.refresh(task)
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(log["status"], "failed")
+        self.assertEqual(log["verify_status"], "unknown")
+        self.assertIn("SEND_CONFIRM_FAILED", log["detail"])
 
     def test_record_send_result_keeps_dry_run_mode(self):
         task = self.add_task()

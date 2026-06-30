@@ -323,6 +323,21 @@ function sendReasonCell(log) {
   return `${badge(log.send_stage || "发送结果", level)}<strong>${esc(log.send_reason_label || "未分类")}</strong>${trace}`;
 }
 
+function sendVerifyCell(log) {
+  const status = log.verify_status || "";
+  if (!status) return "—";
+  const labels = {
+    confirmed: "群内已回读",
+    failed: "群内未确认",
+    unknown: "待人工核对",
+    not_applicable: "无需校验",
+  };
+  const kind = status === "confirmed" ? "ok" : (status === "failed" || status === "unknown" ? "danger" : "");
+  const detail = log.verify_detail ? `<p class="muted">${esc(log.verify_detail)}</p>` : "";
+  const time = log.verified_at ? `<p class="muted">校验时间：${esc(log.verified_at)}</p>` : "";
+  return `${badge(labels[status] || status, kind)}${detail}${time}`;
+}
+
 function taskAllowedOperations(task) {
   if (Array.isArray(task.allowed_operations)) return task.allowed_operations;
   if (state.currentUser?.role === "readonly") return ["view"];
@@ -1310,6 +1325,7 @@ function renderLogs() {
     { label: "状态", render: (r) => sendTaskStatusBadge(r.status) },
     { label: "模式", render: (r) => sendModeBadge(r.send_mode || "dry_run") },
     { label: "阶段/原因", render: sendReasonCell },
+    { label: "群内校验", render: sendVerifyCell },
     { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
     { label: "详情", key: "detail" },
   ], state.logs);

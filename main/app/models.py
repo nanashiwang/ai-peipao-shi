@@ -212,6 +212,9 @@ class SendLog(Base):
     send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     device_id: Mapped[str] = mapped_column(String(64), default="")
     screenshot_path: Mapped[str] = mapped_column(Text, default="")
+    verify_status: Mapped[str] = mapped_column(String(30), default="")
+    verify_detail: Mapped[str] = mapped_column(Text, default="")
+    verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     detail: Mapped[str] = mapped_column(Text, default="")
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

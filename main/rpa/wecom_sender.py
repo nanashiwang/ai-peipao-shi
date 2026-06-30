@@ -1703,10 +1703,15 @@ def clear_message_input():
     time.sleep(0.1)
 
 
-def confirm_sent_message(window, target: str, text: str, config: dict) -> bool:
-    if not config.get("verify_sent_message_enabled", True):
-        add_send_trace(config, "发送后回读已关闭")
-        return True
+def verification_payload(status: str, detail: str, verified: bool = False) -> dict:
+    return {
+        "verify_status": status,
+        "verify_detail": detail,
+        "verified_at": datetime.utcnow().isoformat(timespec="seconds") if verified else None,
+    }
+
+
+def confirm_sent_message(window, target: str, text: str, config: dict) -> tuple[bool, dict]:
     time.sleep(float(config.get("post_send_verify_wait_seconds", 0.8)))
     try:
         ensure_foreground_wecom(window, config)
@@ -1714,12 +1719,14 @@ def confirm_sent_message(window, target: str, text: str, config: dict) -> bool:
         messages = extract_visible_chat_messages(window, target, verify_config)
     except Exception as exc:
         add_send_trace(config, f"发送后回读异常:{exc}")
-        return False
+        return False, verification_payload("failed", f"目标「{target}」发送后回读异常：{exc}", True)
     if sent_content_confirmed(text, messages):
+        detail = f"VERIFY_CONFIRMED: 目标「{target}」可见聊天记录回读命中本次内容，message_count={len(messages)}"
         add_send_trace(config, "发送后消息回读命中")
-        return True
+        return True, verification_payload("confirmed", detail, True)
+    detail = f"目标「{target}」可见聊天记录未回读到本次内容，message_count={len(messages)}"
     add_send_trace(config, "发送后消息回读未命中")
-    return False
+    return False, verification_payload("failed", detail, True)
 
 
 # 真正发送消息前，先补充签名，再决定是 dry-run 还是回车发送。
@@ -1728,7 +1735,9 @@ def send_message(window, content: str, config: dict):
     signature = config.get("append_signature", "").strip()
     if signature:
         text = f"{text}\n{signature}"
+    config["_send_verification"] = {}
     if not config.get("dry_run", True) and not real_send_enabled(config):
+        config["_send_verification"] = verification_payload("not_applicable", "真实发送未放行，未按发送键")
         return "skipped", real_send_block_detail()
     try:
         try:
@@ -1749,12 +1758,19 @@ def send_message(window, content: str, config: dict):
         if not should_press_send_hotkey(config):
             ensure_foreground_wecom(window, config)
             clear_message_input()
+            config["_send_verification"] = verification_payload("not_applicable", "dry-run 未按发送键，无需群内回读")
             add_send_trace(config, "dry-run已清空输入框")
             return "dry_run", dry_run_result_detail()
+        if not config.get("verify_sent_message_enabled", True):
+            config["_send_verification"] = verification_payload("failed", "发送后回读配置已关闭，已阻止真实发送")
+            add_send_trace(config, "发送后回读配置关闭，已阻止真实发送")
+            return "failed", "SEND_GUARD: 发送后回读配置关闭，无法落地校验结果，已阻止真实发送。"
         ensure_foreground_wecom(window, config)
         hotkey(config.get("send_hotkey", ["enter"]))
         add_send_trace(config, "真实发送热键已触发")
-        if not confirm_sent_message(window, config.get("_current_target", ""), text, config):
+        confirmed, verification = confirm_sent_message(window, config.get("_current_target", ""), text, config)
+        config["_send_verification"] = verification
+        if not confirmed:
             return "failed", "SEND_CONFIRM_FAILED: 已触发真实发送热键，但未在可见聊天记录回读到本次内容，请人工核对后再重试。"
         return "sent", "REAL_RPA: 已通过企业微信 PC 端发送。"
     finally:
@@ -1798,12 +1814,12 @@ def process_task(task: dict, config: dict):
     config = config_with_device_policy(config, task)
     target = task.get("target_name") or ""
     if not task.get("server_allowed_target") and not target_in_allowed_conversations(target, config.get("allowed_conversations", [])):
-        return "skipped", target_not_allowed_detail(target)
+        return "skipped", target_not_allowed_detail(target), verification_payload("not_applicable", "目标不在本设备会话范围，未发送")
     if task.get("server_allowed_target"):
         add_send_trace(config, "服务端会话策略放行")
     mode = (task.get("send_mode") or "").strip()
     if real_send_requested(config, mode) and not real_send_enabled(config):
-        return "skipped", real_send_block_detail()
+        return "skipped", real_send_block_detail(), verification_payload("not_applicable", "真实发送未放行，未按发送键")
     content = validate_task_content(task.get("content") or "")
     task_config = config_for_task_send_mode(config, mode)
     task_config["_current_target"] = target
@@ -1812,7 +1828,7 @@ def process_task(task: dict, config: dict):
         search_conversation(window, target, task_config)
         verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
         status, detail = send_message(window, content, task_config)
-        return status, detail_with_send_trace(detail, task_config)
+        return status, detail_with_send_trace(detail, task_config), task_config.get("_send_verification", {})
     except Exception as exc:
         raise RpaError(detail_with_send_trace(str(exc), task_config)) from exc
 
@@ -1820,18 +1836,23 @@ def process_task(task: dict, config: dict):
 # 发送单条任务并把结果回写到后端日志接口。
 def send_task_and_record(task: dict, config: dict):
     task_id = task["id"]
+    verification = {}
     try:
-        status, detail = process_task(task, config)
+        status, detail, verification = process_task(task, config)
     except Exception as exc:
         status, detail = "failed", str(exc)
     screenshot_base64 = capture_send_screenshot(config, task_id, status)
+    verification = verification or {}
     request_json(config["api_base_url"], f"/api/send-tasks/{task_id}/result", method="POST",
                  payload={
                      "status": status,
                      "detail": detail,
                      "device_id": config.get("device_id", ""),
                      "screenshot_base64": screenshot_base64,
-                 },
+                     "verify_status": verification.get("verify_status", ""),
+                     "verify_detail": verification.get("verify_detail", ""),
+                     "verified_at": verification.get("verified_at"),
+                  },
                  extra_headers=device_headers(config))
     print(f"task={task_id} target={task.get('target_name')} mode={task.get('send_mode') or 'config_default'} status={status} detail={detail}")
     return status, detail

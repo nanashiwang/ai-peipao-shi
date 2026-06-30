@@ -40,11 +40,12 @@ def normalize_confirmation_text(text: str) -> str:
     return "".join(str(text or "").split())
 
 
-def sent_content_confirmed(content: str, messages) -> bool:
+def sent_content_confirmed(content: str, messages, recent_count: int = 8) -> bool:
     expected = normalize_confirmation_text(content)
     if not expected:
         return False
-    for message in messages or []:
+    recent_messages = list(messages or [])[-max(int(recent_count or 1), 1):]
+    for message in recent_messages:
         if isinstance(message, dict):
             observed = normalize_confirmation_text(message.get("content", ""))
         else:

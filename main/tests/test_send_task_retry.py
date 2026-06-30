@@ -15,7 +15,8 @@ class SendTaskRetryTest(unittest.TestCase):
         Base.metadata.create_all(bind=engine)
         self.db = sessionmaker(bind=engine, future=True)()
         self.dev = Device(device_id="dev-a", token="token", conversations='["一合学社"]')
-        self.db.add(self.dev)
+        self.dev_b = Device(device_id="dev-b", token="token-b", conversations='["一合学社"]')
+        self.db.add_all([self.dev, self.dev_b])
         self.db.commit()
 
     def tearDown(self):
@@ -45,6 +46,7 @@ class SendTaskRetryTest(unittest.TestCase):
 
         self.assertEqual(log["status"], "failed")
         self.assertEqual(task.status, "pending")
+        self.assertEqual(task.device_id, "dev-a")
         self.assertEqual(task.retry_count, 1)
         self.assertIsNotNone(task.next_retry_at)
         self.assertEqual(self.db.query(SendLog).count(), 1)
@@ -57,6 +59,39 @@ class SendTaskRetryTest(unittest.TestCase):
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
+
+    def test_retryable_failure_stays_bound_to_failed_device(self):
+        task = self.add_task(send_mode="dry_run")
+
+        record_send_result(task.id, SendResultIn(status="failed", detail="INPUT_FOCUS: 输入框定位失败：窗口不可点", device_id="dev-a"), db=self.db)
+        task.next_retry_at = datetime.utcnow() - timedelta(seconds=1)
+        task.scheduled_at = task.next_retry_at
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-b", limit=5, dev=self.dev_b, db=self.db), [])
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
+        self.db.refresh(task)
+        self.assertEqual(task.device_id, "dev-a")
+
+    def test_stale_assigned_task_requeues_only_for_same_device(self):
+        task = self.add_task(send_mode="dry_run")
+        task.scheduled_at = datetime.utcnow() - timedelta(minutes=10)
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-b", limit=5, dev=self.dev_b, db=self.db), [])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "assigned")
+        self.assertEqual(task.device_id, "dev-a")
+
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "assigned")
+        self.assertEqual(task.device_id, "dev-a")
+        self.assertIn("same_device_requeue", {item.action for item in self.db.query(AuditLog).all()})
 
     def test_real_send_failure_goes_to_manual_alert_without_auto_retry(self):
         task = self.add_task(send_mode="real_send")
@@ -79,6 +114,7 @@ class SendTaskRetryTest(unittest.TestCase):
         self.db.refresh(task)
 
         self.assertEqual(task.status, "pending")
+        self.assertEqual(task.device_id, "dev-a")
         self.assertEqual(task.retry_count, 1)
         self.assertIsNotNone(task.next_retry_at)
         self.assertIn("auto_retry", {item.action for item in self.db.query(AuditLog).all()})
@@ -100,6 +136,7 @@ class SendTaskRetryTest(unittest.TestCase):
         self.db.refresh(task)
 
         self.assertEqual(task.status, "pending")
+        self.assertEqual(task.device_id, "dev-a")
         self.assertIsNotNone(task.next_retry_at)
         self.assertIn("policy_wait", {item.action for item in self.db.query(AuditLog).all()})
 

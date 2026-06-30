@@ -70,7 +70,14 @@ def ensure_columns():
             ("next_retry_at", "DATETIME"),
             ("last_error", "TEXT"),
         ],
-        "send_logs": [("device_id", "VARCHAR(64)"), ("screenshot_path", "TEXT"), ("send_mode", "VARCHAR(20)")],
+        "send_logs": [
+            ("device_id", "VARCHAR(64)"),
+            ("screenshot_path", "TEXT"),
+            ("send_mode", "VARCHAR(20)"),
+            ("verify_status", "VARCHAR(30)"),
+            ("verify_detail", "TEXT"),
+            ("verified_at", "DATETIME"),
+        ],
         "ai_outputs": [("evidence_json", "TEXT")],
         "parent_profiles": [
             ("satisfaction_level", "VARCHAR(20)"),
@@ -102,6 +109,7 @@ def ensure_columns():
                     "retry_count": "0",
                     "max_retries": "2",
                     "next_retry_at": "NULL",
+                    "verified_at": "NULL",
                     "satisfaction_level": "'未知'",
                     "renewal_intent": "'未知'",
                     "allow_real_send": "FALSE",

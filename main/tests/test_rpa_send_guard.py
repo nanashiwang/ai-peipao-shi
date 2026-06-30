@@ -71,6 +71,12 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertTrue(sent_content_confirmed("测试发送 第一行\n第二行", messages))
         self.assertFalse(sent_content_confirmed("另一条内容", messages))
 
+    def test_sent_content_confirmation_only_checks_recent_messages(self):
+        messages = [{"speaker": "我", "content": f"旧消息{i}"} for i in range(9)]
+        messages[0]["content"] = "重复内容"
+
+        self.assertFalse(sent_content_confirmed("重复内容", messages, recent_count=8))
+
     def test_real_send_enabled_requires_boolean_true(self):
         self.assertTrue(real_send_enabled({"allow_real_send": True}))
         self.assertFalse(real_send_enabled({"allow_real_send": "true"}))
