@@ -19,6 +19,7 @@ from app.main import (
     HeartbeatIn,
     RpaConversationIn,
     RpaMessageIn,
+    SendLogManualVerificationIn,
     SendResultIn,
     SendTaskIn,
     SendTaskPreflightIn,
@@ -32,6 +33,7 @@ from app.main import (
     device_heartbeat,
     list_audit_logs,
     list_send_tasks,
+    manually_verify_send_log,
     queue_task_dry_run,
     queue_device_conversation_checks_batch,
     queue_device_conversation_check,
@@ -1599,6 +1601,58 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["verify_status"], "unknown")
         self.assertIn("缺少目标会话回读命中或落库证据", log["verify_detail"])
+
+    def test_manual_verification_can_confirm_after_hotkey_failure_without_requeue(self):
+        task = self.add_task()
+        failed_log = record_send_result(
+            task.id,
+            SendResultIn(status="failed", detail="SEND_CONFIRM_FAILED: 真实发送热键已触发但自动回读失败", device_id="rpa-01"),
+            db=self.db,
+        )
+
+        result = manually_verify_send_log(
+            failed_log["id"],
+            SendLogManualVerificationIn(confirmed=True, detail="2026-07-01 10:00 已在一合学社群看到测试内容"),
+            request=admin_request("admin"),
+            db=self.db,
+        )
+
+        self.db.refresh(task)
+        saved_log = self.db.get(SendLog, failed_log["id"])
+        self.assertEqual(task.status, "sent")
+        self.assertIsNone(task.next_retry_at)
+        self.assertEqual(task.last_error, "")
+        self.assertEqual(result["log"]["status"], "sent")
+        self.assertEqual(result["log"]["verify_status"], "confirmed")
+        self.assertIn("回读已落库", result["log"]["verify_detail"])
+        self.assertNotIn("SEND_CONFIRM_FAILED", saved_log.detail)
+        self.assertIn("manual_send_verify", {item.action for item in self.db.query(AuditLog).all()})
+
+    def test_manual_verification_requires_admin_and_evidence(self):
+        task = self.add_task()
+        failed_log = record_send_result(
+            task.id,
+            SendResultIn(status="failed", detail="SEND_CONFIRM_FAILED: 真实发送热键已触发但自动回读失败", device_id="rpa-01"),
+            db=self.db,
+        )
+
+        with self.assertRaises(HTTPException) as role_ctx:
+            manually_verify_send_log(
+                failed_log["id"],
+                SendLogManualVerificationIn(confirmed=True, detail="已看到"),
+                request=admin_request("coach"),
+                db=self.db,
+            )
+        self.assertEqual(role_ctx.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as detail_ctx:
+            manually_verify_send_log(
+                failed_log["id"],
+                SendLogManualVerificationIn(confirmed=True, detail=""),
+                request=admin_request("admin"),
+                db=self.db,
+            )
+        self.assertEqual(detail_ctx.exception.status_code, 400)
 
     def test_record_send_result_keeps_dry_run_mode(self):
         task = self.add_task()

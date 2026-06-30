@@ -338,6 +338,21 @@ function sendVerifyCell(log) {
   return `${badge(labels[status] || status, kind)}${detail}${time}`;
 }
 
+function canManualVerifyLog(log) {
+  if (!isAdminUser() || (log.send_mode || "") !== "real_send") return false;
+  return !(log.status === "sent" && log.verify_status === "confirmed");
+}
+
+function manualVerifyLogActions(log) {
+  if (!canManualVerifyLog(log)) return "—";
+  return `
+    <div class="cell-actions">
+      <button class="danger-action" onclick="manualVerifySendLog(${log.id}, true)">人工确认已发</button>
+      <button onclick="manualVerifySendLog(${log.id}, false)">人工确认未发</button>
+    </div>
+  `;
+}
+
 function taskAllowedOperations(task) {
   if (Array.isArray(task.allowed_operations)) return task.allowed_operations;
   if (state.currentUser?.role === "readonly") return ["view"];
@@ -1366,6 +1381,7 @@ function renderLogs() {
     { label: "模式", render: (r) => sendModeBadge(r.send_mode || "dry_run") },
     { label: "阶段/原因", render: sendReasonCell },
     { label: "群内校验", render: sendVerifyCell },
+    { label: "人工核验", render: manualVerifyLogActions },
     { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
     { label: "详情", key: "detail" },
   ], state.logs);
@@ -1843,6 +1859,29 @@ async function retryTask(id) {
   return withAction("失败重试", async () => {
     await api(`/api/send-tasks/${id}/retry`, { method: "POST" });
     toast("已重新加入发送队列");
+    await refreshAll();
+  });
+}
+
+async function manualVerifySendLog(id, confirmed) {
+  const detail = window.prompt(
+    confirmed
+      ? "请填写你在目标群/私聊看到本次内容的证据（例如最后一条内容、时间或截图编号）："
+      : "请填写你核对后确认未发送成功的证据（例如目标会话最后一条内容或异常现象）："
+  );
+  if (detail === null) return;
+  if (!detail.trim()) return toast("必须填写人工核验证据");
+  if (confirmed) {
+    const ok = window.confirm("确认已经在企业微信目标群/私聊中看到本次内容？确认后任务会归档为已发送，且不会自动重发。");
+    if (!ok) return;
+  }
+  return withAction("人工核验发送结果", async () => {
+    await api(`/api/send-logs/${id}/manual-verification`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed, detail }),
+    });
+    toast(confirmed ? "已人工确认发送成功并落库" : "已人工确认未发送成功并落库");
     await refreshAll();
   });
 }

@@ -212,6 +212,11 @@ class SendResultIn(BaseModel):
     verified_at: datetime | None = None
 
 
+class SendLogManualVerificationIn(BaseModel):
+    confirmed: bool
+    detail: str = ""
+
+
 # 设备注册/更新入参。
 class DeviceIn(BaseModel):
     device_id: str
@@ -3924,6 +3929,97 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         sync_weekly_report_send_status(db, task, result_status, finished_at)
     db.commit()
     return send_log_view(log)
+
+
+def ensure_manual_send_log_verification_allowed(log: SendLog, request: Request | None) -> None:
+    role = operation_role_from_request(request)
+    if role != "admin":
+        role_label = {"coach": "陪跑师", "readonly": "只读"}.get(role, role or "未知")
+        raise HTTPException(403, f"只有超管可以人工核验真实发送结果（当前角色：{role_label}）")
+    if log.send_mode != "real_send":
+        raise HTTPException(400, "只有企微真实发送日志需要人工核验")
+
+
+def manual_send_verify_detail(log: SendLog, confirmed: bool, detail: str) -> tuple[str, str]:
+    clean_detail = (detail or "").strip()
+    if not clean_detail:
+        raise HTTPException(400, "必须填写人工核验证据，说明你在目标群/私聊中看到或未看到的结果")
+    target = (log.target_name or "目标会话").strip()
+    if confirmed:
+        verify_detail = (
+            f"VERIFY_CONFIRMED: 人工核对目标「{target}」群/私聊回读命中本次内容，"
+            f"回读已落库（人工核验）。证据：{clean_detail}"
+        )
+        detail_text = f"MANUAL_VERIFY_CONFIRMED: 超管人工核对目标「{target}」实际已发送成功。"
+    else:
+        verify_detail = f"人工核对目标「{target}」群/私聊未看到本次内容。证据：{clean_detail}"
+        detail_text = f"MANUAL_VERIFY_FAILED: 超管人工核对目标「{target}」未确认发送成功。"
+    return detail_text, verify_detail
+
+
+@app.post("/api/send-logs/{log_id}/manual-verification")
+def manually_verify_send_log(
+    log_id: int,
+    payload: SendLogManualVerificationIn,
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    log = db.get(SendLog, log_id)
+    if not log:
+        raise HTTPException(404, "发送日志不存在")
+    ensure_family_id_access(db, log.family_id, request)
+    ensure_manual_send_log_verification_allowed(log, request)
+    task = db.get(SendTask, log.task_id) if log.task_id else None
+    if task:
+        ensure_task_family_access(db, task, request)
+    before_task = send_task_snapshot(task) if task else None
+    before_log = as_dict(log)
+    now = datetime.utcnow()
+    detail_text, verify_detail = manual_send_verify_detail(log, payload.confirmed, payload.detail)
+    actor = actor_from_request(request, "控制端")
+
+    log.detail = detail_text
+    log.verify_detail = verify_detail
+    log.verified_at = now
+    if payload.confirmed:
+        log.status = "sent"
+        log.verify_status = "confirmed"
+        if task:
+            task.status = "sent"
+            task.last_error = ""
+            task.next_retry_at = None
+            task.retry_count = 0
+            sync_weekly_report_send_status(db, task, "sent", now)
+    else:
+        log.status = "failed"
+        log.verify_status = "failed"
+        if task:
+            task.status = "failed"
+            task.last_error = verify_detail
+            task.next_retry_at = None
+            sync_weekly_report_send_status(db, task, "failed", now)
+
+    if task:
+        audit_send_task_change(
+            db,
+            task,
+            "manual_send_verify",
+            actor,
+            "人工核验真实发送结果并更新任务状态",
+            before_task,
+        )
+    log_audit_event(
+        db,
+        "send_log",
+        log.id,
+        "manual_send_verify",
+        actor,
+        "人工核验真实发送结果：已确认成功" if payload.confirmed else "人工核验真实发送结果：未确认成功",
+        before=before_log,
+        after=as_dict(log),
+    )
+    db.commit()
+    return {"log": send_log_view(log), "task": send_task_view(task, request, db) if task else None}
 
 
 def send_task_to_web_chat(db: Session, task: SendTask, actor: str = "控制端", action: str = "web_send") -> tuple[RawMessage, SendLog]:
