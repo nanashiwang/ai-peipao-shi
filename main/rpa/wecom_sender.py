@@ -1613,11 +1613,92 @@ def extract_chat_messages_by_clipboard(window, conversation: str, config: dict) 
     return normalize_clipboard_lines(copied, conversation, config)
 
 
+def crop_window_region(image_path: Path, win_rect_img: dict, region_ratio, reason: str) -> Path:
+    if Image is None:
+        raise RpaError("未安装 Pillow，无法裁剪企微截图。")
+    image = Image.open(image_path).convert("RGB")
+    img_w, img_h = image.size
+    scale = get_screen_scale(img_w)
+    left = win_rect_img["left"] / scale
+    top = win_rect_img["top"] / scale
+    width = win_rect_img["width"] / scale
+    height = win_rect_img["height"] / scale
+    x0 = int(max(0, min(left + region_ratio[0] * width, img_w)))
+    y0 = int(max(0, min(top + region_ratio[1] * height, img_h)))
+    x1 = int(max(0, min(left + region_ratio[2] * width, img_w)))
+    y1 = int(max(0, min(top + region_ratio[3] * height, img_h)))
+    if x1 <= x0 or y1 <= y0:
+        raise RpaError("企微聊天区截图范围无效。")
+    safe_reason = re.sub(r"[^0-9A-Za-z一-鿿_-]+", "_", reason)[:24] or "chat"
+    crop_path = ROOT / f"debug_wecom_{safe_reason}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    image.crop((x0, y0, x1, y1)).save(crop_path)
+    return crop_path
+
+
+def normalize_ark_chat_messages(data: dict, conversation: str, config: dict) -> list[dict]:
+    rows = data.get("messages", []) if isinstance(data, dict) else []
+    self_names = set(config.get("self_names", ["我", "本人", "陪跑师", "老师"]))
+    messages = []
+    for item in rows:
+        if isinstance(item, dict):
+            speaker = str(item.get("speaker") or conversation).strip() or conversation
+            content = str(item.get("content") or item.get("text") or "").strip()
+        else:
+            speaker = conversation
+            content = str(item or "").strip()
+        if not content or not is_chat_message_text(content, config):
+            continue
+        if speaker in self_names:
+            speaker = "我"
+        messages.append({"speaker": speaker, "content": content, "source": "企业微信RPA-视觉回读"})
+    limit = int(config.get("max_messages_per_conversation", 50))
+    return messages[-limit:]
+
+
+def extract_chat_messages_by_ark(window, conversation: str, config: dict) -> list[dict]:
+    if not config.get("use_ark_vision_for_chat_read", True):
+        return []
+    try:
+        call_ark_vision_json = import_ark_vision()
+    except Exception as exc:
+        print(f"ark_chat_read_unavailable detail={exc}")
+        return []
+    img = None
+    crop = None
+    try:
+        region = tuple(config.get("chat_read_region", [0.30, 0.10, 1.0, 0.84]))
+        img, rect = screenshot_wecom(window, config, f"chat_read_{conversation}")
+        crop = crop_window_region(img, rect, region, f"chat_read_{conversation}")
+        data = call_ark_vision_json(
+            "你是企业微信聊天记录 OCR 助手。只输出 JSON，不要 Markdown。字段：messages。"
+            "messages 是数组，元素字段 speaker、content。只记录截图中清晰可见的聊天消息，不要输出导航、时间、会话列表或输入框文字，不要猜测看不清的内容。",
+            str(crop),
+            "读取截图右侧聊天区中可见的聊天消息；如果没有清晰消息，输出 {\"messages\": []}。",
+        )
+        messages = normalize_ark_chat_messages(data, conversation, config)
+        if messages:
+            add_send_trace(config, f"视觉回读消息:{len(messages)}")
+        return messages
+    except Exception as exc:
+        print(f"ark_chat_read_failed target={conversation} detail={exc}")
+        add_send_trace(config, f"视觉回读异常:{exc}")
+        return []
+    finally:
+        if crop:
+            _cleanup_debug_image(crop, config)
+        if img:
+            _cleanup_debug_image(img, config)
+
+
 def extract_chat_messages(window, conversation: str, config: dict) -> list[dict]:
     messages = extract_visible_chat_messages(window, conversation, config)
     if messages:
         return messages
-    return extract_chat_messages_by_clipboard(window, conversation, config)
+    messages = extract_chat_messages_by_clipboard(window, conversation, config)
+    if messages:
+        return messages
+    return extract_chat_messages_by_ark(window, conversation, config)
+
 
 
 def known_conversations_from_api(config: dict) -> list[dict]:
@@ -1776,6 +1857,7 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
     time.sleep(float(config.get("post_send_verify_wait_seconds", 0.8)))
     messages = []
     clipboard_count = None
+    ark_count = None
     recent_count = _post_send_verify_recent_count(config)
     before_count = sent_content_match_count(text, before_messages, recent_count) if before_messages is not None else 0
     before_self_count = sent_content_match_count(text, before_messages, recent_count, speaker="我") if before_messages is not None else 0
@@ -1840,10 +1922,30 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             add_send_trace(config, f"发送后剪贴板回读未命中:{len(clipboard_messages)}")
         except Exception as exc:
             add_send_trace(config, f"发送后剪贴板回读异常:{exc}")
+    if config.get("post_send_verify_ark_fallback", True):
+        try:
+            ensure_foreground_wecom(window, config)
+            ark_messages = extract_chat_messages_by_ark(window, target, config)
+            ark_count = len(ark_messages)
+            ark_after_count = sent_content_match_count(text, ark_messages, recent_count)
+            ark_self_after_count = sent_content_match_count(text, ark_messages, recent_count, speaker="我")
+            if sent_content_confirmed_after_send(text, before_messages, ark_messages, recent_count):
+                detail = (
+                    f"VERIFY_CONFIRMED: 目标「{target}」视觉OCR聊天记录回读命中本次内容，"
+                    f"attempts={attempts}, message_count={len(ark_messages)}, "
+                    f"before_match_count={before_count}, after_match_count={ark_after_count}, "
+                    f"self_before_match_count={before_self_count}, self_after_match_count={ark_self_after_count}"
+                )
+                add_send_trace(config, "发送后视觉回读命中")
+                return True, verification_payload("confirmed", detail, True)
+            add_send_trace(config, f"发送后视觉回读未命中:{len(ark_messages)}")
+        except Exception as exc:
+            add_send_trace(config, f"发送后视觉回读异常:{exc}")
     clipboard_note = f"，clipboard_count={clipboard_count}" if clipboard_count is not None else ""
+    ark_note = f"，ark_count={ark_count}" if ark_count is not None else ""
     error_note = f"，last_error={last_error}" if last_error else ""
     detail = (
-        f"目标「{target}」聊天记录经过 {attempts} 次回读仍未读到本次新增内容，uia_count={len(messages)}{clipboard_note}{error_note}，"
+        f"目标「{target}」聊天记录经过 {attempts} 次回读仍未读到本次新增内容，uia_count={len(messages)}{clipboard_note}{ark_note}{error_note}，"
         f"before_match_count={before_count}, after_match_count={after_count}, "
         f"self_before_match_count={before_self_count}, self_after_match_count={after_self_count}"
     )
