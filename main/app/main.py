@@ -961,6 +961,10 @@ def device_online(dev: Device, now: datetime | None = None) -> bool:
     return bool(dev.last_heartbeat) and (now - dev.last_heartbeat) <= timedelta(seconds=HEARTBEAT_ONLINE_SECONDS)
 
 
+def device_ready_for_real_send(dev: Device, now: datetime | None = None) -> bool:
+    return bool(dev.allow_real_send and device_online(dev, now) and dev.wecom_ok == "Y")
+
+
 def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None) -> dict:
     """给控制端展示任务能否被指定设备稳定执行，不改变调度结果。"""
     now = now or datetime.utcnow()
@@ -3530,7 +3534,7 @@ def require_device(
 # 把设备 ORM 转字典并补上 online 状态、负责会话数、任务统计，供看板展示。
 def device_view(dev: Device, db: Session) -> dict:
     data = as_dict(dev)
-    online = bool(dev.last_heartbeat) and (datetime.utcnow() - dev.last_heartbeat) <= timedelta(seconds=HEARTBEAT_ONLINE_SECONDS)
+    online = device_online(dev)
     data["online"] = online
     try:
         data["conversation_count"] = len(json.loads(dev.conversations or "[]"))
@@ -3742,6 +3746,8 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     if not dev.allow_any_conversation:
         candidates_query = candidates_query.filter(SendTask.target_name.in_(convs))
     if not dev.allow_real_send:
+        candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
+    elif not device_ready_for_real_send(dev, now):
         candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
     candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
     candidates = apply_claim_row_lock(candidates_query, db).all()

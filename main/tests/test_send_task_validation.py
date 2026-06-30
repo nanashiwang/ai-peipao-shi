@@ -708,6 +708,9 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         updated = update_device("dev-a", DeviceUpdateIn(allow_real_send=True), db=self.db)
         self.assertTrue(updated["allow_real_send"])
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
         claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
 
         self.assertEqual([item["id"] for item in claimed], [task.id])
@@ -733,6 +736,33 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.db.refresh(task)
         self.assertEqual(task.status, "pending")
         self.assertEqual(task.device_id, "")
+
+    def test_real_send_claim_waits_until_device_wecom_is_ready(self):
+        task = SendTask(
+            family_id="f-real-wecom",
+            target_name="一合学社",
+            scene="real",
+            content="企微健康后才领取",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        self.db.add(task)
+        self.db.commit()
+        update_device("dev-a", DeviceUpdateIn(allow_real_send=True), db=self.db)
+        self.dev.wecom_ok = "N"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+
+        self.assertEqual(claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db), [])
+        self.db.refresh(task)
+        self.assertEqual(task.status, "pending")
+
+        self.dev.wecom_ok = "Y"
+        self.db.commit()
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task.id])
 
     def test_task_readiness_explains_real_send_blocks_and_ready_state(self):
         task = SendTask(
