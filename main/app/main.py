@@ -616,8 +616,37 @@ AI_SENSITIVE_TERMS = ("退费", "退款", "投诉", "赔偿", "合同", "维权"
 AI_UNCERTAIN_TERMS = ("不确定", "无法判断", "需要确认", "转人工", "人工介入", "主管确认", "先确认")
 
 
+def iter_ai_safety_texts(value) -> list[str]:
+    """只扫描正文和值，避免 JSON 字段名误触发安全词。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in "{[":
+            try:
+                return iter_ai_safety_texts(json.loads(text))
+            except json.JSONDecodeError:
+                pass
+        return [value]
+    if isinstance(value, dict):
+        items: list[str] = []
+        for item in value.values():
+            items.extend(iter_ai_safety_texts(item))
+        return items
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            items.extend(iter_ai_safety_texts(item))
+        return items
+    if isinstance(value, (bool, int, float)):
+        return []
+    return [str(value)]
+
+
 def ai_safety_findings(*texts: str) -> dict:
-    blob = "\n".join(str(text or "") for text in texts)
+    blob = "\n".join(item for text in texts for item in iter_ai_safety_texts(text))
     sensitive = sorted({term for term in AI_SENSITIVE_TERMS if term in blob})
     uncertain = sorted({term for term in AI_UNCERTAIN_TERMS if term in blob})
     return {

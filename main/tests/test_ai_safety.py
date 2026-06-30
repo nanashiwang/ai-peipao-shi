@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import AIOutputTaskIn, create_task_from_ai_output, save_ai_output
+from app.main import AIOutputTaskIn, ai_safety_findings, create_task_from_ai_output, save_ai_output
 from app.models import AIOutput, AuditLog, Family, SendTask
 
 
@@ -97,6 +97,21 @@ class AiSafetyBoundaryTest(unittest.TestCase):
 
     def test_approved_sensitive_output_can_create_dry_run_review_task(self):
         output = self.add_output(status="approved")
+
+        task = create_task_from_ai_output(output.id, AIOutputTaskIn(send_mode="dry_run"), db=self.db)
+
+        self.assertEqual(task["send_mode"], "dry_run")
+        self.assertEqual(self.db.query(SendTask).count(), 1)
+
+    def test_safety_scan_ignores_json_field_names(self):
+        findings = ai_safety_findings(json.dumps({"是否需要人工介入": False, "推荐回复": "今天继续打卡即可"}, ensure_ascii=False))
+
+        self.assertFalse(findings["requires_manual"])
+
+    def test_safe_output_with_review_field_name_can_create_task(self):
+        output = self.add_safe_output(status="needs_review")
+        output.raw_json = json.dumps({"是否需要人工介入": False, "推荐回复": "今天继续打卡即可"}, ensure_ascii=False)
+        self.db.commit()
 
         task = create_task_from_ai_output(output.id, AIOutputTaskIn(send_mode="dry_run"), db=self.db)
 
