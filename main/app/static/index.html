@@ -17,6 +17,7 @@
       <div class="nav-group">
         <span class="nav-label">日常工作</span>
         <button data-tab="dashboard" data-title="工作台" class="active">工作台</button>
+        <button data-tab="parentDashboard" data-title="家长看板">家长看板</button>
         <button data-tab="webChat" data-title="陪跑会话">陪跑会话</button>
         <button data-tab="familyDetailPanel" data-title="家庭档案">家庭档案</button>
         <button data-tab="tasks" data-title="审核发送">审核发送</button>
@@ -104,6 +105,19 @@
           <div id="recentOutputs" class="stack"></div>
         </section>
       </div>
+    </section>
+
+    <!-- 家长看板：家长登录后只展示自己家庭的阶段进度、周报和沟通摘要。 -->
+    <section id="parentDashboard" class="panel">
+      <div class="section-head">
+        <h2>家长看板</h2>
+        <div class="actions left">
+          <span class="muted">面向家长的只读进度页，不暴露内部风控和运营数据</span>
+          <button onclick="refreshParentDashboard()">刷新</button>
+        </div>
+      </div>
+      <div id="parentDashboardSummary" class="summary-grid"></div>
+      <div id="parentDashboardContent" class="split"></div>
     </section>
 
     <!-- 管理看板：按陪跑师统计服务质量、风险家庭和发送完成率。 -->

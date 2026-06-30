@@ -41,6 +41,14 @@ class AdminIdentity:
     campus_names: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ParentIdentity:
+    username: str
+    display_name: str
+    family_id: str
+    exp: int = 0
+
+
 def admin_auth_required(env: dict | None = None) -> bool:
     source = env or os.environ
     explicit = str(source.get("ADMIN_AUTH_REQUIRED", "")).strip().lower()
@@ -103,6 +111,20 @@ def sign_admin_token(
     return f"{payload_b64}.{_b64(sig)}"
 
 
+def sign_parent_token(username: str, display_name: str, family_id: str, secret: str, ttl_seconds: int = 8 * 3600, now: int | None = None) -> str:
+    issued_at = int(now if now is not None else time.time())
+    payload = {
+        "username": username,
+        "role": "parent",
+        "display_name": display_name,
+        "family_id": family_id,
+        "exp": issued_at + int(ttl_seconds),
+    }
+    payload_b64 = _b64(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
+    return f"{payload_b64}.{_b64(sig)}"
+
+
 def verify_admin_token(token: str, secret: str, now: int | None = None) -> AdminIdentity:
     try:
         payload_b64, sig_b64 = (token or "").split(".", 1)
@@ -127,6 +149,29 @@ def verify_admin_token(token: str, secret: str, now: int | None = None) -> Admin
     )
 
 
+def verify_parent_token(token: str, secret: str, now: int | None = None) -> ParentIdentity:
+    try:
+        payload_b64, sig_b64 = (token or "").split(".", 1)
+        expected = hmac.new(secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
+        if not hmac.compare_digest(_b64(expected), sig_b64):
+            raise ValueError("签名不匹配")
+        payload = json.loads(_unb64(payload_b64).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("家长端 token 无效") from exc
+    exp = int(payload.get("exp", 0))
+    family_id = str(payload.get("family_id", "")).strip()
+    if payload.get("role") != "parent" or not family_id:
+        raise ValueError("家长端 token 角色无效")
+    if exp < int(now if now is not None else time.time()):
+        raise ValueError("家长端 token 已过期")
+    return ParentIdentity(
+        username=str(payload.get("username", "")),
+        display_name=str(payload.get("display_name", "")),
+        family_id=family_id,
+        exp=exp,
+    )
+
+
 def bearer_token(authorization: str) -> str:
     prefix = "Bearer "
     value = authorization or ""
@@ -137,6 +182,8 @@ def is_public_admin_path(path: str) -> bool:
     if path in PUBLIC_PATHS:
         return True
     if path.startswith("/api/send-artifacts/"):
+        return True
+    if path.startswith("/api/parent/"):
         return True
     if path.startswith("/static/"):
         return True

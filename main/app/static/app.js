@@ -11,6 +11,7 @@ const state = {
   todayPriorities: [],
   workbenchOverview: {},
   serviceQuality: {},
+  parentDashboard: {},
   devices: [],
   opsHealth: {},
   backups: [],
@@ -44,6 +45,7 @@ async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (!headers.has("X-Actor")) headers.set("X-Actor", encodeURIComponent(currentActor()));
   if (state.currentUser?.admin_token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${state.currentUser.admin_token}`);
+  if (!state.currentUser?.admin_token && state.currentUser?.parent_token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${state.currentUser.parent_token}`);
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -296,6 +298,8 @@ const GLOBAL_STATE_TARGETS = [
   "todoBoard",
   "priorityList",
   "recentOutputs",
+  "parentDashboardSummary",
+  "parentDashboardContent",
   "serviceQualitySummary",
   "serviceQualityTable",
   "chatConversations",
@@ -535,6 +539,11 @@ async function refreshServiceQuality() {
   renderServiceQuality();
 }
 
+async function refreshParentDashboard() {
+  state.parentDashboard = await api("/api/parent/dashboard");
+  renderParentDashboard();
+}
+
 function renderServiceFunnel() {
   const stages = state.workbenchOverview?.service_funnel?.stages || [];
   $("serviceFunnel").innerHTML = stages.length ? stages.map((stage) => `
@@ -609,6 +618,67 @@ function renderServiceQuality() {
     { label: "发送完成率", render: (r) => `${badge(percent(r.send_completion_rate), r.send_failure_rate ? "warn" : "ok")} <span class="muted">失败 ${percent(r.send_failure_rate)}</span>` },
     { label: "风险家庭", render: (r) => (r.risk_families || []).map((family) => `<button onclick="setSelectedFamily('${esc(family.family_id)}')">${esc(family.family_name)}</button>`).join("") || "—" },
   ], state.serviceQuality?.coaches || []);
+}
+
+function renderParentDashboard() {
+  const summaryEl = $("parentDashboardSummary");
+  const contentEl = $("parentDashboardContent");
+  if (!summaryEl || !contentEl) return;
+  const data = state.parentDashboard || {};
+  const family = data.family || {};
+  const progress = data.progress || {};
+  const report = data.weekly_report;
+  const profile = data.profile || {};
+  if (!state.currentUser?.parent_token) {
+    summaryEl.innerHTML = "";
+    contentEl.innerHTML = emptyState("请先登录家长账号", "在陪跑会话页登录家长账号后，这里会展示该家庭的阶段进度和已审核周报。");
+    return;
+  }
+  summaryEl.innerHTML = [
+    ["课程阶段", displayValue(family.course_stage, "未登记")],
+    ["Unit 进度", displayValue(family.unit_progress, "未登记")],
+    ["打卡记录", progress.checkin_count || 0],
+    ["PBL 次数", family.pbl_count || 0],
+    ["周报状态", report ? displayValue(report.send_status, "已审核") : "待陪跑师审核"],
+  ].map(([label, value]) => `<article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join("");
+  contentEl.innerHTML = `
+    <section>
+      <article class="detail-card">
+        ${badge("家庭进度", "ok")}
+        <h3>${esc(family.parent_nickname || family.family_id || "我的家庭")}</h3>
+        <p class="muted">${esc(family.child_grade || "未知年级")} · ${esc(family.campus_name || "未分配校区")} · ${esc(family.coach_name || "未分配陪跑师")}</p>
+        ${stageProfile(family)}
+        <p><strong>下一里程碑</strong> ${esc(displayValue(family.next_milestone || progress.suggested_next_action, "陪跑师会在周报或群内同步下一步安排"))}</p>
+        <p><strong>孩子状态摘要</strong> ${esc(displayValue(profile.child_summary, "暂无画像摘要"))}</p>
+        <p><strong>建议配合</strong> ${esc(displayValue(profile.suggested_actions || report?.teacher_suggestion, "保持当前沟通节奏"))}</p>
+      </article>
+    </section>
+    <section>
+      <article class="detail-card">
+        ${badge("已审核周报")}
+        <h3>${esc(report?.week_label || "暂无可见周报")}</h3>
+        ${report ? `
+          <p><strong>整体状态</strong>${esc(report.overall_state || "未填写")}</p>
+          <p><strong>主要变化</strong>${esc(report.main_changes || "未填写")}</p>
+          <p><strong>家长关注</strong>${esc(report.parent_focus || "未填写")}</p>
+          <p><strong>下步建议</strong>${esc(report.teacher_suggestion || "未填写")}</p>
+          <pre>${esc(report.final_text || "")}</pre>
+        ` : emptyState("周报待审核", "陪跑师审核通过后，家长端才会展示正式周报。")}
+      </article>
+      <article class="detail-card">
+        ${badge("最近沟通")}
+        <div class="stack">
+          ${(data.recent_messages || []).map((msg) => `
+            <div class="timeline-item">
+              <strong>${esc(msg.speaker || "未知")}</strong>
+              <p>${esc(msg.content || "")}</p>
+              <span class="muted">${esc(msg.message_time || "")}${msg.checkin_status ? ` · ${esc(msg.checkin_status)}` : ""}</span>
+            </div>
+          `).join("") || emptyState("暂无沟通记录", "陪跑师同步或家长发送消息后，这里会出现最近沟通。")}
+        </div>
+      </article>
+    </section>
+  `;
 }
 
 function statusBadge(status) {
@@ -1204,6 +1274,7 @@ function renderAll() {
   renderKpis();
   renderWorkbenchOverview();
   renderServiceQuality();
+  renderParentDashboard();
   renderPriorityList();
   renderRecentOutputs();
   renderWebChat();
@@ -1725,6 +1796,12 @@ $("loginForm").onsubmit = async (event) => {
     state.currentUser = user;
     localStorage.setItem("chatUser", JSON.stringify(user));
     toast(`已登录：${user.display_name}`);
+    if (user.role === "parent") {
+      await refreshParentDashboard();
+      renderWebChat();
+      switchTab("parentDashboard");
+      return;
+    }
     await refreshAll();
     switchTab("webChat");
   });
@@ -1853,4 +1930,8 @@ window.addEventListener("error", (event) => {
 });
 
 api("/health").then(() => $("health").textContent = "本地服务正常").catch(() => $("health").textContent = "服务异常");
-refreshAll().catch((err) => toast(`加载失败：${err.message}`));
+if (state.currentUser?.role === "parent") {
+  refreshParentDashboard().then(renderAll).then(() => switchTab("parentDashboard")).catch((err) => toast(`家长看板加载失败：${err.message}`));
+} else {
+  refreshAll().catch((err) => toast(`加载失败：${err.message}`));
+}

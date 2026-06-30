@@ -46,6 +46,7 @@ class AdminAuthTest(unittest.TestCase):
     def test_protected_paths_and_role_permissions(self):
         self.assertFalse(path_requires_admin_auth("/health"))
         self.assertFalse(path_requires_admin_auth("/api/admin/auth/login"))
+        self.assertFalse(path_requires_admin_auth("/api/parent/dashboard"))
         self.assertFalse(path_requires_admin_auth("/api/devices/rpa-01/heartbeat"))
         self.assertTrue(path_requires_admin_auth("/api/send-tasks"))
 

@@ -59,7 +59,9 @@ from app.services.admin_auth import (
     path_requires_admin_auth,
     role_allowed_for_request,
     sign_admin_token,
+    sign_parent_token,
     verify_admin_token,
+    verify_parent_token,
 )
 from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
 from app.services.claim_lock import apply_claim_row_lock, claim_lock_report, normalize_claim_limit
@@ -1090,6 +1092,8 @@ def admin_account_payload(account: UserAccount) -> dict:
     data = account_payload(account)
     if account.role in ADMIN_ROLES:
         data["admin_token"] = sign_admin_token(account.username, account.role, account.display_name, admin_auth_secret(), campus_names=account.campus_names)
+    if account.role == "parent" and account.family_id:
+        data["parent_token"] = sign_parent_token(account.username, account.display_name, account.family_id, admin_auth_secret())
     return data
 
 
@@ -1255,6 +1259,71 @@ def admin_me(authorization: str = Header("")):
         "campus_names": list(identity.campus_names),
         "expires_at": datetime.utcfromtimestamp(identity.exp).isoformat(sep=" ", timespec="seconds"),
     }
+
+
+def parent_dashboard_payload(db: Session, family: Family) -> dict:
+    latest_report = (
+        db.query(WeeklyReport)
+        .filter(WeeklyReport.family_id == family.family_id, WeeklyReport.status == "approved")
+        .order_by(WeeklyReport.updated_at.desc(), WeeklyReport.id.desc())
+        .first()
+    )
+    profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
+    recent_messages = (
+        db.query(RawMessage)
+        .filter(RawMessage.family_id == family.family_id)
+        .order_by(RawMessage.message_time.desc())
+        .limit(8)
+        .all()
+    )
+    latest_message = recent_messages[0] if recent_messages else None
+    checkin_count = db.query(RawMessage).filter(RawMessage.family_id == family.family_id, RawMessage.checkin_status != "").count()
+    return {
+        "family": {
+            "family_id": family.family_id,
+            "parent_nickname": family.parent_nickname,
+            "child_grade": family.child_grade,
+            "campus_name": family.campus_name,
+            "coach_name": family.coach_name,
+            "course_stage": family.course_stage,
+            "unit_progress": family.unit_progress,
+            "pbl_count": family.pbl_count,
+            "checkin_rate": family.checkin_rate,
+            "next_milestone": family.next_milestone,
+            "service_status": family.service_status,
+        },
+        "progress": {
+            "message_count": db.query(RawMessage).filter(RawMessage.family_id == family.family_id).count(),
+            "checkin_count": checkin_count,
+            "latest_message_at": timeline_time(latest_message.message_time) if latest_message else "",
+            "weekly_report_status": latest_report.send_status if latest_report else "not_ready",
+            "suggested_next_action": family.next_milestone or (latest_report.teacher_suggestion if latest_report else ""),
+        },
+        "profile": {
+            "child_summary": profile.child_summary if profile else "",
+            "communication_style": profile.communication_style if profile else "",
+            "satisfaction_level": profile.satisfaction_level if profile else "未知",
+            "suggested_actions": profile.suggested_actions if profile else "",
+        },
+        "weekly_report": as_dict(latest_report) if latest_report else None,
+        "recent_messages": [as_dict(item) for item in reversed(recent_messages)],
+    }
+
+
+@app.get("/api/parent/dashboard")
+def parent_dashboard(authorization: str = Header(""), db: Session = Depends(get_db)):
+    try:
+        identity = verify_parent_token(bearer_token(authorization), admin_auth_secret())
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(401, str(exc)) from exc
+    account = db.query(UserAccount).filter(
+        UserAccount.username == identity.username,
+        UserAccount.role == "parent",
+        UserAccount.family_id == identity.family_id,
+    ).one_or_none()
+    if not account:
+        raise HTTPException(401, "家长端账号已失效，请重新登录")
+    return parent_dashboard_payload(db, require_family(db, identity.family_id))
 
 
 @app.get("/api/test-chat/accounts")
