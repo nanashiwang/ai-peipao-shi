@@ -1097,6 +1097,10 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertFalse(ready["ok"])
         self.assertIn("没有成功读取目标", "；".join(ready["reasons"]))
+        self.assertEqual(ready["conversation_check_hint"]["action"], "queue_conversation_check")
+        self.assertEqual(ready["conversation_check_hint"]["device_id"], "dev-a")
+        self.assertEqual(ready["conversation_check_hint"]["target_name"], "一合学社")
+        self.assertTrue(ready["conversation_check_hint"]["available"])
 
         self.add_conversation_proof()
         ready = build_send_task_preflight(
@@ -1114,6 +1118,35 @@ class ClaimTaskGuardTest(unittest.TestCase):
 
         self.assertTrue(ready["ok"])
         self.assertEqual(ready["label"], "发送预检通过")
+        self.assertIsNone(ready["conversation_check_hint"])
+
+    def test_preflight_conversation_check_hint_points_to_existing_check_task(self):
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+        existing = queue_device_conversation_check(
+            "dev-a",
+            DeviceConversationCheckRequestIn(target_name="一合学社", family_id="WECOM_一合学社"),
+            db=self.db,
+        )
+
+        blocked = build_send_task_preflight(
+            self.db,
+            SendTaskPreflightIn(
+                family_id="f-preflight",
+                target_name="一合学社",
+                scene="real",
+                content="预检内容",
+                send_mode="real_send",
+                confirm_real_send=True,
+                device_id="dev-a",
+            ),
+        )
+
+        self.assertFalse(blocked["ok"])
+        self.assertFalse(blocked["conversation_check_hint"]["available"])
+        self.assertEqual(blocked["conversation_check_hint"]["existing_task_id"], existing["id"])
 
     def test_allow_any_conversation_claims_group_or_private_chat_outside_whitelist(self):
         task = SendTask(

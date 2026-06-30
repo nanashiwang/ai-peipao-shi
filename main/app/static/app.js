@@ -1994,7 +1994,22 @@ $("manualTaskForm").onsubmit = async (event) => {
     });
     if (!preflight.ok) {
       const detail = (preflight.reasons || []).join("\n");
-      if (mode === "real_send") throw new Error(`发送预检未通过：\n${detail}`);
+      if (mode === "real_send") {
+        const hint = preflight.conversation_check_hint || {};
+        if (hint.action === "queue_conversation_check") {
+          const existing = hint.existing_task_id ? `\n已有待执行校验任务：#${hint.existing_task_id}` : "";
+          const ok = window.confirm(`发送预检未通过：\n${detail}\n\n是否先下发只读会话校验？\n设备：${hint.device_id}\n目标：${hint.target_name}${existing}\n\n校验只会打开会话并读取消息，不会发送。`);
+          if (ok && hint.available !== false) {
+            await queueConversationProof(hint.device_id, hint.target_name, hint.family_id || manualTaskFamilyId(hint.target_name), "下发预检修复校验");
+          } else if (ok) {
+            toast("已有会话校验任务在队列中，请等待被控端回写后再创建真实发送");
+            await refreshAll();
+            switchTab("tasks");
+          }
+          return;
+        }
+        throw new Error(`发送预检未通过：\n${detail}`);
+      }
       const keep = window.confirm(`发送预检提示：\n${detail || preflight.label}\n\n是否仍创建试运行任务？`);
       if (!keep) return;
     }
@@ -2087,6 +2102,19 @@ async function toggleDeviceAnyConversation(deviceId, enabled) {
   });
 }
 
+async function queueConversationProof(deviceId, target, familyId, actionText = "刷新会话可读证明") {
+  await withAction(actionText, async () => {
+    await api(`/api/devices/${encodeURIComponent(deviceId)}/conversation-checks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_name: target, family_id: familyId || manualTaskFamilyId(target) }),
+    });
+    toast(`已下发只读校验：${deviceId} -> ${target}；被控端会打开会话并回读，不会发送`);
+    await refreshAll();
+    switchTab("tasks");
+  });
+}
+
 async function requestConversationProof(deviceId) {
   const device = state.devices.find((item) => item.device_id === deviceId);
   let defaultTarget = "";
@@ -2097,16 +2125,7 @@ async function requestConversationProof(deviceId) {
   }
   const target = (window.prompt(`输入要让设备 ${deviceId} 只读校验的群/私聊名称`, defaultTarget) || "").trim();
   if (!target) return;
-  await withAction("刷新会话可读证明", async () => {
-    await api(`/api/devices/${encodeURIComponent(deviceId)}/conversation-checks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target_name: target, family_id: manualTaskFamilyId(target) }),
-    });
-    toast(`已下发只读校验：${deviceId} -> ${target}；被控端会打开会话并回读，不会发送`);
-    await refreshAll();
-    switchTab("tasks");
-  });
+  await queueConversationProof(deviceId, target, manualTaskFamilyId(target));
 }
 
 async function requestAllConversationProofs(deviceId) {

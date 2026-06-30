@@ -1244,6 +1244,21 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
     readiness = send_task_readiness(db, task)
     for reason in readiness.get("reasons", []):
         append_reason(reasons, reason)
+    conversation_check_hint = None
+    target_in_device_scope = bool(dev and (dev.allow_any_conversation or target_name in device_conversations(dev)))
+    if mode == "real_send" and dev and target_name and target_in_device_scope:
+        proof_reason = device_conversation_proof_reason(db, dev, target_name)
+        if proof_reason:
+            existing_check = active_conversation_check_task(db, dev, target_name)
+            conversation_check_hint = {
+                "action": "queue_conversation_check",
+                "device_id": dev.device_id,
+                "target_name": target_name,
+                "family_id": (payload.family_id or f"WECOM_{target_name}")[:64],
+                "reason": proof_reason,
+                "existing_task_id": existing_check.id if existing_check else None,
+                "available": existing_check is None,
+            }
     ok = not reasons and readiness.get("status") == "ready"
     label = "发送预检通过" if ok else (readiness.get("label") or "发送预检未通过")
     return {
@@ -1251,6 +1266,7 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
         "label": label,
         "reasons": reasons,
         "readiness": readiness,
+        "conversation_check_hint": conversation_check_hint,
         "send_mode": mode,
         "device_id": device_id,
         "target_name": target_name,
