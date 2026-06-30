@@ -33,7 +33,7 @@ echo "  默认 APP_ENV=pilot；正式环境请先创建 .env，设置 APP_ENV=pr
 echo ""
 
 echo "== 3/5 构建并启动（api + postgres）=="
-docker compose up -d --build
+docker compose up -d --build --force-recreate api
 echo ""
 
 echo "== 4/5 等待后端就绪 =="
