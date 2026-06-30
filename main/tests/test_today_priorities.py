@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import build_today_priorities
-from app.models import AIOutput, Family, ParentProfile, RawMessage, SendTask, WeeklyReport
+from app.models import AIOutput, Family, FollowupRecord, ParentProfile, RawMessage, SendTask, WeeklyReport
 
 
 class TodayPrioritiesTest(unittest.TestCase):
@@ -88,6 +88,24 @@ class TodayPrioritiesTest(unittest.TestCase):
 
         self.assertEqual(len(priorities), 1)
         self.assertEqual(priorities[0]["review_report_count"], 1)
+
+    def test_open_followup_is_prioritized(self):
+        self.db.add(
+            FollowupRecord(
+                family_id="quiet",
+                followup_type="周报",
+                content="家长低分反馈",
+                status="需升级",
+                next_action="主管回访",
+            )
+        )
+        self.db.commit()
+
+        priorities = build_today_priorities(self.db, now=self.now)
+
+        self.assertEqual(priorities[0]["family_id"], "quiet")
+        self.assertEqual(priorities[0]["open_followup_count"], 1)
+        self.assertEqual(priorities[0]["suggested_action"], "先处理需升级跟进")
 
 
 if __name__ == "__main__":

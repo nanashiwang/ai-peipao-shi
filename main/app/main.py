@@ -1850,6 +1850,17 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
     if has_any(explicit_status, RENEWAL_TERMS):
         return "续报", "服务状态已进入续报阶段"
 
+    open_followup = (
+        db.query(FollowupRecord)
+        .filter(FollowupRecord.family_id == family.family_id, FollowupRecord.status != "已完成")
+        .order_by(FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc())
+        .first()
+    )
+    if open_followup:
+        if open_followup.status == "需升级":
+            return "风险", f"{open_followup.followup_type}跟进需升级"
+        return "需跟进", f"{open_followup.followup_type}跟进待处理"
+
     profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
     recent_messages = (
         db.query(RawMessage)
@@ -1940,6 +1951,7 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
         "leave_makeup": {"label": "请假补课", "items": []},
         "weekly_pending_send": {"label": "周报待发", "items": []},
         "negative_feedback": {"label": "负面反馈", "items": []},
+        "followup_pending": {"label": "跟进待办", "items": []},
         "ai_review": {"label": "AI待审核", "items": []},
         "send_failed": {"label": "发送失败", "items": []},
     }
@@ -1990,6 +2002,17 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
             categories["negative_feedback"]["items"].append(
                 todo_item(family, "出现退费/投诉/不满等负面信号", risk_msg.content if risk_msg else risk_text, risk_msg.id if risk_msg else 0, risk_msg.message_time if risk_msg else None)
             )
+
+        followup = (
+            db.query(FollowupRecord)
+            .filter(FollowupRecord.family_id == family.family_id, FollowupRecord.status != "已完成")
+            .order_by(FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc())
+            .first()
+        )
+        if followup:
+            reason = "跟进记录需升级" if followup.status == "需升级" else "跟进记录待处理"
+            evidence = "；".join([item for item in [followup.content, followup.next_action] if item])
+            categories["followup_pending"]["items"].append(todo_item(family, reason, evidence, followup.id, followup.occurred_at))
 
         output = (
             db.query(AIOutput)
@@ -2198,12 +2221,22 @@ def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = 
             score += min(20, failed_send * 6)
             reasons.append(f"{failed_send} 条发送失败需复核")
 
+        open_followups = db.query(FollowupRecord).filter(FollowupRecord.family_id == family.family_id, FollowupRecord.status != "已完成").all()
+        if open_followups:
+            upgrade_count = sum(1 for item in open_followups if item.status == "需升级")
+            score += min(40, len(open_followups) * 10 + upgrade_count * 15)
+            reasons.append(f"{len(open_followups)} 条跟进记录待处理")
+
         if not reasons:
             continue
-        if pending_tasks:
+        if open_followups and any(item.status == "需升级" for item in open_followups):
+            action = "先处理需升级跟进"
+        elif pending_tasks:
             action = "先处理待发送任务"
         elif review_outputs or review_reports:
             action = "先审核 AI 内容/周报"
+        elif open_followups:
+            action = "先处理跟进记录"
         elif score >= 45:
             action = "查看家庭时间线并人工跟进"
         else:
@@ -2221,6 +2254,7 @@ def build_today_priorities(db: Session, limit: int = 12, now: datetime | None = 
             "pending_task_count": len(pending_tasks),
             "review_output_count": review_outputs,
             "review_report_count": review_reports,
+            "open_followup_count": len(open_followups),
         })
 
     items.sort(key=lambda item: (-item["score"], item["family_id"]))

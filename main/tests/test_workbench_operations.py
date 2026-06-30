@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import build_service_funnel, build_workbench_todos
-from app.models import AIOutput, Family, ParentProfile, RawMessage, SendLog, WeeklyReport
+from app.models import AIOutput, Family, FollowupRecord, ParentProfile, RawMessage, SendLog, WeeklyReport
 
 
 class WorkbenchOperationsTest(unittest.TestCase):
@@ -82,6 +82,7 @@ class WorkbenchOperationsTest(unittest.TestCase):
             WeeklyReport(family_id=family.family_id, status="approved", final_text="本周周报"),
             AIOutput(family_id=family.family_id, agent_type="ai_reply", status="needs_review", display_text="待审核回复"),
             SendLog(task_id=7, family_id=family.family_id, target_name="张妈妈", status="failed", detail="窗口未找到"),
+            FollowupRecord(family_id=family.family_id, followup_type="周报", content="家长低分反馈", status="需升级", next_action="主管回访"),
         ])
         self.db.commit()
 
@@ -92,10 +93,28 @@ class WorkbenchOperationsTest(unittest.TestCase):
         self.assertEqual(counts["leave_makeup"], 1)
         self.assertEqual(counts["weekly_pending_send"], 1)
         self.assertEqual(counts["negative_feedback"], 1)
+        self.assertEqual(counts["followup_pending"], 1)
         self.assertEqual(counts["ai_review"], 1)
         self.assertEqual(counts["send_failed"], 1)
         pbl_items = next(category["items"] for category in todos["categories"] if category["key"] == "pbl_incomplete")
         self.assertEqual(pbl_items[0]["family_id"], "f1")
+        followup_items = next(category["items"] for category in todos["categories"] if category["key"] == "followup_pending")
+        self.assertEqual(followup_items[0]["reason"], "跟进记录需升级")
+
+    def test_open_followup_changes_service_stage(self):
+        self.add_family("todo", "待跟进家庭")
+        self.add_family("upgrade", "升级家庭")
+        self.db.add_all([
+            FollowupRecord(family_id="todo", followup_type="电话", content="待回访", status="待跟进"),
+            FollowupRecord(family_id="upgrade", followup_type="投诉", content="主管介入", status="需升级"),
+        ])
+        self.db.commit()
+
+        funnel = build_service_funnel(self.db, now=self.now)
+        counts = {stage["stage"]: stage["family_count"] for stage in funnel["stages"]}
+
+        self.assertEqual(counts["需跟进"], 1)
+        self.assertEqual(counts["风险"], 1)
 
 
 if __name__ == "__main__":
