@@ -50,7 +50,14 @@ def ensure_columns():
             ("send_status", "VARCHAR(30)"),
             ("sent_at", "DATETIME"),
         ],
-        "send_tasks": [("device_id", "VARCHAR(64)"), ("send_mode", "VARCHAR(20)")],
+        "send_tasks": [
+            ("device_id", "VARCHAR(64)"),
+            ("send_mode", "VARCHAR(20)"),
+            ("retry_count", "INTEGER"),
+            ("max_retries", "INTEGER"),
+            ("next_retry_at", "DATETIME"),
+            ("last_error", "TEXT"),
+        ],
         "send_logs": [("device_id", "VARCHAR(64)"), ("screenshot_path", "TEXT"), ("send_mode", "VARCHAR(20)")],
         "ai_outputs": [("evidence_json", "TEXT")],
         "parent_profiles": [
@@ -74,6 +81,9 @@ def ensure_columns():
                     "send_status": "'not_created'",
                     "sent_at": "NULL",
                     "pbl_count": "0",
+                    "retry_count": "0",
+                    "max_retries": "2",
+                    "next_retry_at": "NULL",
                     "satisfaction_level": "'未知'",
                     "renewal_intent": "'未知'",
                 }.get(col_name, "''")

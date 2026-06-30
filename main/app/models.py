@@ -185,6 +185,10 @@ class SendTask(Base):
     send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     status: Mapped[str] = mapped_column(String(30), default="pending")
     device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, default=2)
+    next_retry_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    last_error: Mapped[str] = mapped_column(Text, default="")
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

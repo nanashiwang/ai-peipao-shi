@@ -365,6 +365,7 @@ def operation_role_from_request(request: Request | None) -> str:
 def send_task_view(task: SendTask, request: Request | None = None) -> dict:
     data = as_dict(task)
     data.update(send_task_operation_state(task.status, task.send_mode, operation_role_from_request(request)))
+    data["retry_alert"] = task_needs_retry_alert(task)
     return data
 
 
@@ -408,6 +409,10 @@ def send_task_snapshot(task: SendTask | None) -> dict:
         "send_mode": task.send_mode,
         "status": task.status,
         "device_id": task.device_id,
+        "retry_count": task.retry_count,
+        "max_retries": task.max_retries,
+        "next_retry_at": task.next_retry_at.isoformat(sep=" ", timespec="seconds") if task.next_retry_at else "",
+        "last_error": task.last_error,
         "scheduled_at": task.scheduled_at.isoformat(sep=" ", timespec="seconds") if task.scheduled_at else "",
     }
 
@@ -516,6 +521,48 @@ def validate_send_task_execution_guard(task: SendTask, now: datetime | None = No
 def send_log_mode(task: SendTask) -> str:
     mode = (task.send_mode or "dry_run").strip()
     return mode if mode in {"dry_run", "real_send"} else "invalid"
+
+
+AUTO_RETRY_DELAY_SECONDS = 120
+NON_RETRYABLE_FAILURE_TERMS = (
+    "SEND_GUARD",
+    "REAL_SEND_BLOCKED",
+    "内容",
+    "白名单",
+    "标题不是",
+    "不在设备",
+    "旧任务",
+    "超过",
+)
+
+
+def is_retryable_send_failure(task: SendTask, detail: str) -> bool:
+    if send_log_mode(task) != "dry_run":
+        return False
+    if task.retry_count >= task.max_retries:
+        return False
+    return not any(term in (detail or "") for term in NON_RETRYABLE_FAILURE_TERMS)
+
+
+def task_needs_retry_alert(task: SendTask) -> bool:
+    return task.status == "failed" and (send_log_mode(task) == "real_send" or task.retry_count >= task.max_retries)
+
+
+def apply_failed_send_retry_policy(task: SendTask, detail: str, now: datetime | None = None) -> tuple[str, str]:
+    now = now or datetime.utcnow()
+    task.last_error = detail or ""
+    if is_retryable_send_failure(task, detail):
+        task.retry_count += 1
+        delay = AUTO_RETRY_DELAY_SECONDS * task.retry_count
+        task.next_retry_at = now + timedelta(seconds=delay)
+        task.scheduled_at = task.next_retry_at
+        task.status = "pending"
+        return "auto_retry", f"发送失败已自动排队重试 {task.retry_count}/{task.max_retries}，下次时间 {timeline_time(task.next_retry_at)}"
+    task.status = "failed"
+    task.next_retry_at = None
+    if task_needs_retry_alert(task):
+        return "alert", "发送失败已进入人工告警，请复核后手动重试"
+    return "failed", "发送失败待复核"
 
 
 def validate_send_mode_submit(send_mode: str, confirm_real_send: bool, current_mode: str = "") -> str:
@@ -2499,6 +2546,31 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     return send_task_view(task, request)
 
 
+@app.post("/api/send-tasks/{task_id}/retry")
+def retry_failed_task(task_id: int, request: Request = None, db: Session = Depends(get_db)):
+    task = db.get(SendTask, task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    ensure_task_operation_allowed(task, request, "retry")
+    if task.status != "failed":
+        raise HTTPException(400, "只有 failed 状态的任务可以重试")
+    content = validate_send_task_content(task.content)
+    clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
+    if task.send_mode == "real_send":
+        validate_real_send_risk(db, task.target_name, content, exclude_task_id=task.id)
+    before = send_task_snapshot(task)
+    now = datetime.utcnow()
+    task.content = content
+    task.device_id = clean_device_id
+    task.status = "pending"
+    task.next_retry_at = now
+    task.scheduled_at = now
+    audit_send_task_change(db, task, "manual_retry", actor_from_request(request), "人工复核后重新加入发送队列", before)
+    sync_weekly_report_send_status(db, task, "pending")
+    db.commit()
+    return send_task_view(task, request)
+
+
 @app.post("/api/send-tasks/{task_id}/result")
 def record_send_result(task_id: int, payload: SendResultIn, request: Request = None, db: Session = Depends(get_db)):
     task = db.get(SendTask, task_id)
@@ -2508,8 +2580,17 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
     screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
     before = send_task_snapshot(task)
-    task.status = payload.status
     finished_at = datetime.utcnow()
+    retry_action = ""
+    retry_summary = ""
+    if payload.status == "failed":
+        retry_action, retry_summary = apply_failed_send_retry_policy(task, payload.detail, finished_at)
+    else:
+        task.status = payload.status
+        task.last_error = ""
+        task.next_retry_at = None
+        if payload.status in {"sent", "dry_run"}:
+            task.retry_count = 0
     log = SendLog(
         task_id=task.id,
         family_id=task.family_id,
@@ -2524,7 +2605,13 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
     db.add(log)
     actor = actor_from_request(request, f"设备:{payload.device_id}" if payload.device_id else "RPA被控端")
     audit_send_task_change(db, task, "result", actor, f"回写发送结果：{payload.status}", before)
-    sync_weekly_report_send_status(db, task, payload.status, finished_at)
+    if retry_action == "auto_retry":
+        log_audit_event(db, "send_task", task.id, "auto_retry", actor, retry_summary, before=before, after=send_task_snapshot(task))
+        sync_weekly_report_send_status(db, task, "pending")
+    else:
+        if retry_action == "alert":
+            log_audit_event(db, "send_task", task.id, "send_alert", actor, retry_summary, before=before, after=send_task_snapshot(task))
+        sync_weekly_report_send_status(db, task, payload.status, finished_at)
     db.commit()
     return send_log_view(log)
 
@@ -2786,6 +2873,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         db.query(SendTask)
         .filter(SendTask.status == "pending", SendTask.target_name.in_(convs))
         .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
+        .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= datetime.utcnow()))
         .order_by(SendTask.id)
         .limit(limit)
         .all()
@@ -2895,6 +2983,8 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
     wecom_ok_devices = [dev for dev in online_devices if dev.wecom_ok == "Y"]
     pending_count = db.query(SendTask).filter(SendTask.status == "pending").count()
     assigned_count = db.query(SendTask).filter(SendTask.status == "assigned").count()
+    retry_waiting_count = db.query(SendTask).filter(SendTask.status == "pending", SendTask.next_retry_at.is_not(None), SendTask.next_retry_at > now).count()
+    retry_alert_count = sum(1 for task in db.query(SendTask).filter(SendTask.status == "failed").all() if task_needs_retry_alert(task))
     stale_before = now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS)
     stale_assigned_count = db.query(SendTask).filter(SendTask.status == "assigned", SendTask.scheduled_at < stale_before).count()
     recent_failed_count = db.query(SendLog).filter(SendLog.status == "failed", SendLog.sent_at >= now - timedelta(hours=24)).count()
@@ -2931,6 +3021,12 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             "近24小时发送失败",
             f"{recent_failed_count} 条失败日志",
             {"failed_24h": recent_failed_count},
+        ),
+        component_status(
+            "critical" if retry_alert_count else ("warn" if retry_waiting_count else "ok"),
+            "失败重试与告警",
+            f"{retry_waiting_count} 条等待自动重试，{retry_alert_count} 条需人工告警",
+            {"retry_waiting": retry_waiting_count, "retry_alert": retry_alert_count},
         ),
         component_status(
             "ok" if ark.get("configured") else "warn",

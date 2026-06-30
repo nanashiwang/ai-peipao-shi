@@ -232,6 +232,14 @@ function taskOperationBadges(task) {
   return `<div class="op-layer"><strong>${esc(task.workflow_stage || "待处理")}</strong><div>${chips || badge("仅查看")}</div>${warningText}</div>`;
 }
 
+function taskRetryCell(task) {
+  const retry = `重试 ${task.retry_count || 0}/${task.max_retries ?? 2}`;
+  const next = task.next_retry_at ? `<p class="muted">下次：${esc(task.next_retry_at)}</p>` : "";
+  const alert = task.retry_alert ? badge("需人工告警", "danger") : "";
+  const lastError = task.last_error ? `<p class="muted">${esc(task.last_error).slice(0, 80)}</p>` : "";
+  return `${badge(retry, task.retry_alert ? "danger" : task.next_retry_at ? "warn" : "")}${alert}${next}${lastError}`;
+}
+
 function sendModeSelect(task) {
   const mode = task.send_mode || "dry_run";
   const canEdit = taskCan(task, "edit") || taskCan(task, "confirm_real_send");
@@ -1023,6 +1031,7 @@ function renderTasks() {
     { label: "来源/场景", key: "scene" },
     { label: "状态", render: (r) => badge(r.status, r.status === "sent" ? "ok" : r.status === "cancelled" ? "" : "warn") },
     { label: "操作分层", render: taskOperationBadges },
+    { label: "重试/告警", render: taskRetryCell },
     { label: "发送设备", render: (r) => deviceSelect(r) },
     { label: "企微模式", render: (r) => sendModeSelect(r) },
     { label: "最终内容", render: (r) => `<textarea id="task-${r.id}" ${taskCan(r, "edit") ? "" : "readonly"}>${esc(r.content)}</textarea>` },
@@ -1030,6 +1039,7 @@ function renderTasks() {
       <div class="cell-actions">
         ${taskCan(r, "edit") || taskCan(r, "confirm_real_send") ? `<button onclick="saveTask(${r.id})">保存/审核</button>` : ""}
         ${taskCan(r, "dry_run") ? `<button onclick="queueTaskDryRun(${r.id})">企微试运行</button>` : ""}
+        ${taskCan(r, "retry") ? `<button onclick="retryTask(${r.id})">失败重试</button>` : ""}
         ${taskCan(r, "web_send") ? `<button onclick="sendTask(${r.id})">网页发送</button>` : ""}
         ${taskCan(r, "cancel") ? `<button onclick="cancelTask(${r.id})">取消</button>` : ""}
         ${taskAllowedOperations(r).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
@@ -1407,6 +1417,14 @@ async function queueTaskDryRun(id) {
     });
     await api(`/api/send-tasks/${id}/dry-run`, { method: "POST" });
     toast("已加入企微试运行队列；被控端会定位、粘贴并清空，不会真实发送");
+    await refreshAll();
+  });
+}
+
+async function retryTask(id) {
+  return withAction("失败重试", async () => {
+    await api(`/api/send-tasks/${id}/retry`, { method: "POST" });
+    toast("已重新加入发送队列");
     await refreshAll();
   });
 }

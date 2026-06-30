@@ -13,6 +13,7 @@ OPERATION_LABELS = {
     "assign_device": "调度设备",
     "dry_run": "企微试运行",
     "web_send": "网页发送",
+    "retry": "失败重试",
     "cancel": "取消",
     "confirm_real_send": "确认真实发送",
 }
@@ -60,6 +61,8 @@ def role_allows_task_operation(status: str | None, send_mode: str | None, role: 
         return status == "pending"
     if operation == "web_send":
         return status == "pending" and send_mode != "real_send"
+    if operation == "retry":
+        return status == "failed" and (role == "admin" or send_mode != "real_send")
     if operation == "confirm_real_send":
         return role == "admin" and status == "pending" and send_mode != "real_send"
     if operation == "assign_device":
