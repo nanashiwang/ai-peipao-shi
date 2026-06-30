@@ -428,6 +428,46 @@ function manualTaskFamilyId(target) {
   return `MANUAL_${clean || "TASK"}`.slice(0, 64);
 }
 
+function deviceConversationList(device) {
+  if (Array.isArray(device.conversation_list)) return device.conversation_list;
+  try {
+    const rows = JSON.parse(device.conversations || "[]");
+    return Array.isArray(rows) ? rows.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function devicesForTarget(target) {
+  const clean = String(target || "").trim();
+  if (!clean) return [];
+  return state.devices.filter((device) => deviceConversationList(device).includes(clean));
+}
+
+function syncManualTaskDeviceSelection(force = false) {
+  const target = $("manualTaskTarget")?.value || "";
+  const mode = $("manualTaskMode")?.value || "dry_run";
+  const select = $("manualTaskDevice");
+  const hint = $("manualTaskDeviceHint");
+  if (!select || !hint) return;
+  if (mode !== "real_send") {
+    hint.textContent = "试运行可以自动领取；真实发送会按目标会话绑定到唯一负责设备。";
+    return;
+  }
+  const candidates = devicesForTarget(target);
+  if (candidates.length === 1) {
+    const device = candidates[0];
+    if (force || !select.value || select.value !== device.device_id) select.value = device.device_id;
+    hint.textContent = `已按目标「${target}」自动选择人员设备：${device.device_id}${device.name ? ` · ${device.name}` : ""}`;
+  } else if (candidates.length > 1) {
+    hint.textContent = `目标「${target}」绑定了多个设备：${candidates.map((item) => item.device_id).join("、")}，请明确选择发送人。`;
+  } else if (target.trim()) {
+    hint.textContent = `目标「${target}」还没有绑定负责设备；请先到设备监控给对应人员设备配置负责会话。`;
+  } else {
+    hint.textContent = "填写目标后会自动匹配唯一负责设备；真实发送不会随机派发。";
+  }
+}
+
 function renderManualTaskForm() {
   const select = $("manualTaskDevice");
   if (!select) return;
@@ -441,6 +481,7 @@ function renderManualTaskForm() {
     })
   );
   select.innerHTML = options.join("");
+  syncManualTaskDeviceSelection(false);
 }
 
 // 渲染通用表格，减少重复 HTML 拼接。
@@ -2026,6 +2067,9 @@ $("templateForm").onsubmit = async (event) => {
   });
 };
 
+if ($("manualTaskTarget")) $("manualTaskTarget").addEventListener("input", () => syncManualTaskDeviceSelection(true));
+if ($("manualTaskMode")) $("manualTaskMode").addEventListener("change", () => syncManualTaskDeviceSelection(true));
+
 // 控制端直接创建企微发送任务，适合群聊/私聊测试和临时通知。
 $("manualTaskForm").onsubmit = async (event) => {
   event.preventDefault();
@@ -2037,7 +2081,6 @@ $("manualTaskForm").onsubmit = async (event) => {
     const deviceId = (data.device_id || "").trim();
     if (!target) throw new Error("请填写企微目标群/私聊");
     if (!content) throw new Error("请填写发送内容");
-    if (mode === "real_send" && !deviceId) throw new Error("真实发送必须选择具体设备，因为每台设备代表一个发送人");
     const payload = {
       family_id: (data.family_id || "").trim() || manualTaskFamilyId(target),
       target_name: target,
@@ -2052,6 +2095,13 @@ $("manualTaskForm").onsubmit = async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    if (mode === "real_send") {
+      const resolvedDeviceId = (preflight.resolved_device_id || preflight.device_id || deviceId || "").trim();
+      if (resolvedDeviceId) {
+        payload.device_id = resolvedDeviceId;
+        if ($("manualTaskDevice")) $("manualTaskDevice").value = resolvedDeviceId;
+      }
+    }
     if (!preflight.ok) {
       const detail = (preflight.reasons || []).join("\n");
       if (mode === "real_send") {
@@ -2078,7 +2128,8 @@ $("manualTaskForm").onsubmit = async (event) => {
       if (!keep) return;
     }
     if (mode === "real_send") {
-      const ok = window.confirm(`确认创建企微真实发送任务？\n目标：${target}\n设备：${deviceId}\n预检：${preflight.label}\n\n创建后会进入该设备真实发送队列，请确认目标、设备和内容无误。`);
+      if (!payload.device_id) throw new Error("真实发送必须绑定唯一负责设备；请先在设备监控配置负责会话或手动选择设备");
+      const ok = window.confirm(`确认创建企微真实发送任务？\n目标：${target}\n设备：${payload.device_id}\n预检：${preflight.label}\n\n创建后会进入该设备真实发送队列，请确认目标、设备和内容无误。`);
       if (!ok) return;
     }
     await api("/api/send-tasks", {

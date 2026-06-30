@@ -352,6 +352,76 @@ class SendTaskAuditLogTest(unittest.TestCase):
         self.assertEqual(self.db.query(SendTask).count(), 1)
         self.assertEqual(self.db.query(AuditLog).count(), 1)
 
+    def test_create_real_send_auto_binds_unique_target_device(self):
+        task = create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="一合学社",
+                scene="test",
+                content="唯一设备自动绑定",
+                send_mode="real_send",
+                confirm_real_send=True,
+            ),
+            db=self.db,
+        )
+
+        self.assertEqual(task["send_mode"], "real_send")
+        self.assertEqual(task["device_id"], "rpa-01")
+        self.assertEqual(self.db.get(SendTask, task["id"]).device_id, "rpa-01")
+
+    def test_create_real_send_requires_explicit_device_when_target_has_multiple_devices(self):
+        self.db.add(Device(device_id="rpa-02", token="token-2", conversations='["一合学社"]', allow_real_send=True))
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            create_send_task(
+                SendTaskIn(
+                    family_id="f1",
+                    target_name="一合学社",
+                    scene="test",
+                    content="多个设备必须选择发送人",
+                    send_mode="real_send",
+                    confirm_real_send=True,
+                ),
+                db=self.db,
+            )
+
+        self.assertIn("绑定了多个负责设备", ctx.exception.detail)
+
+    def test_preflight_resolves_unique_target_device_for_real_send(self):
+        result = build_send_task_preflight(
+            self.db,
+            SendTaskPreflightIn(
+                family_id="f1",
+                target_name="一合学社",
+                scene="test",
+                content="预检自动绑定",
+                send_mode="real_send",
+                confirm_real_send=True,
+            ),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["resolved_device_id"], "rpa-01")
+        self.assertEqual(result["device_id"], "rpa-01")
+        self.assertEqual([item["device_id"] for item in result["target_device_candidates"]], ["rpa-01"])
+
+    def test_queue_real_send_auto_binds_unique_target_device(self):
+        task = create_send_task(
+            SendTaskIn(
+                family_id="f1",
+                target_name="一合学社",
+                scene="test",
+                content="从待审核任务确认真实发送",
+            ),
+            db=self.db,
+        )
+
+        result = queue_task_real_send(task["id"], db=self.db)
+
+        self.assertEqual(result["send_mode"], "real_send")
+        self.assertEqual(result["device_id"], "rpa-01")
+
     def test_coach_role_cannot_create_real_send_task(self):
         with self.assertRaises(HTTPException) as ctx:
             create_send_task(

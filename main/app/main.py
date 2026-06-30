@@ -1090,6 +1090,28 @@ def validate_task_device_binding(db: Session, device_id: str, target_name: str) 
     return clean_device_id
 
 
+def target_bound_devices(db: Session, target_name: str) -> list[Device]:
+    clean_target = (target_name or "").strip()
+    if not clean_target:
+        return []
+    devices = db.query(Device).order_by(Device.device_id).all()
+    return [dev for dev in devices if clean_target in device_conversations(dev)]
+
+
+def resolve_real_send_device_binding(db: Session, device_id: str, target_name: str) -> str:
+    clean_device_id = validate_task_device_binding(db, device_id, target_name)
+    if clean_device_id:
+        return clean_device_id
+    devices = target_bound_devices(db, target_name)
+    if len(devices) == 1:
+        return devices[0].device_id
+    clean_target = (target_name or "").strip() or "未填写目标"
+    if not devices:
+        raise HTTPException(400, f"目标「{clean_target}」没有绑定唯一负责设备，请先在设备监控给对应人员设备配置负责会话")
+    names = "、".join(dev.device_id for dev in devices)
+    raise HTTPException(400, f"目标「{clean_target}」绑定了多个负责设备（{names}），请明确选择由哪台人员设备发送")
+
+
 def validate_real_send_device_binding(device_id: str) -> None:
     if not (device_id or "").strip():
         raise HTTPException(400, "企微真实发送必须指定发送设备；每台设备代表一个发送人，不能由系统随机派发")
@@ -1388,6 +1410,8 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
     target_name = (payload.target_name or "").strip()
     content = (payload.content or "").strip()
     device_id = (payload.device_id or "").strip()
+    requested_device_id = device_id
+    target_devices = target_bound_devices(db, target_name)
     mode = "dry_run"
     try:
         content = validate_send_task_content(content)
@@ -1414,7 +1438,14 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
         except HTTPException as exc:
             append_reason(reasons, exc.detail)
         if not device_id:
-            append_reason(reasons, "企微真实发送必须指定发送设备；每台设备代表一个发送人，不能由系统随机派发")
+            if len(target_devices) == 1:
+                dev = target_devices[0]
+                device_id = dev.device_id
+            elif not target_devices:
+                append_reason(reasons, f"目标「{target_name or '未填写目标'}」没有绑定唯一负责设备，请先在设备监控给对应人员设备配置负责会话")
+            else:
+                names = "、".join(item.device_id for item in target_devices)
+                append_reason(reasons, f"目标「{target_name}」绑定了多个负责设备（{names}），请明确选择由哪台人员设备发送")
         if content:
             try:
                 validate_real_send_risk(db, target_name, content)
@@ -1455,6 +1486,18 @@ def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request
         "conversation_check_hint": conversation_check_hint,
         "send_mode": mode,
         "device_id": device_id,
+        "requested_device_id": requested_device_id,
+        "resolved_device_id": device_id,
+        "target_device_candidates": [
+            {
+                "device_id": item.device_id,
+                "name": item.name,
+                "allow_real_send": item.allow_real_send,
+                "online": device_online(item),
+                "wecom_ok": item.wecom_ok,
+            }
+            for item in target_devices
+        ],
         "target_name": target_name,
     }
 
@@ -3275,13 +3318,15 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     scene = data.scene.strip() or output.source or output.agent_type
     if data.device_id:
         ensure_new_task_operation_allowed(request, "assign_device")
-    device_id = validate_task_device_binding(db, data.device_id, target_name)
     send_mode = validate_send_mode_submit(data.send_mode, data.confirm_real_send)
     validate_ai_output_send_boundary(output, content, send_mode)
     if send_mode == "real_send":
         ensure_new_task_operation_allowed(request, "confirm_real_send")
+        device_id = resolve_real_send_device_binding(db, data.device_id, target_name)
         validate_real_send_device_binding(device_id)
         validate_real_send_risk(db, target_name, content)
+    else:
+        device_id = validate_task_device_binding(db, data.device_id, target_name)
     task = SendTask(
         family_id=output.family_id,
         target_name=target_name,
@@ -3705,11 +3750,13 @@ def create_send_task(payload: SendTaskIn, request: Request = None, db: Session =
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
     if data.get("device_id"):
         ensure_new_task_operation_allowed(request, "assign_device")
-    data["device_id"] = validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
     if data["send_mode"] == "real_send":
         ensure_new_task_operation_allowed(request, "confirm_real_send")
+        data["device_id"] = resolve_real_send_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
         validate_real_send_device_binding(data["device_id"])
         validate_real_send_risk(db, data.get("target_name", ""), data["content"])
+    else:
+        data["device_id"] = validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
     task = SendTask(**data)
     ensure_real_send_readiness(db, task)
     add_send_task_with_audit(db, task, "create", actor_from_request(request), "控制端手动创建发送任务")
@@ -3752,10 +3799,12 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     send_mode = task.send_mode
     if payload.send_mode:
         send_mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send, task.send_mode)
-    clean_device_id = validate_task_device_binding(db, device_id or "", target_name)
     if send_mode == "real_send":
+        clean_device_id = resolve_real_send_device_binding(db, device_id or "", target_name)
         validate_real_send_device_binding(clean_device_id)
         validate_real_send_risk(db, target_name, content, exclude_task_id=task.id)
+    else:
+        clean_device_id = validate_task_device_binding(db, device_id or "", target_name)
     next_status = payload.status
     if previous_mode != "real_send" and send_mode == "real_send":
         next_status = "pending"
@@ -3829,7 +3878,7 @@ def queue_task_real_send(
     content_source = task.content if not payload or payload.content is None else payload.content
     content = validate_send_task_content(content_source)
     device_id = task.device_id if not payload or payload.device_id is None else payload.device_id
-    clean_device_id = validate_task_device_binding(db, device_id or "", task.target_name)
+    clean_device_id = resolve_real_send_device_binding(db, device_id or "", task.target_name)
     validate_real_send_device_binding(clean_device_id)
     validate_real_send_risk(db, task.target_name, content, exclude_task_id=task.id)
     before = send_task_snapshot(task)
@@ -3857,10 +3906,12 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
     if task.status != "failed":
         raise HTTPException(400, "只有 failed 状态的任务可以重试")
     content = validate_send_task_content(task.content)
-    clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
     if task.send_mode == "real_send":
+        clean_device_id = resolve_real_send_device_binding(db, task.device_id or "", task.target_name)
         validate_real_send_device_binding(clean_device_id)
         validate_real_send_risk(db, task.target_name, content, exclude_task_id=task.id)
+    else:
+        clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
     before = send_task_snapshot(task)
     now = datetime.utcnow()
     task.content = content
@@ -4154,9 +4205,11 @@ def device_view(dev: Device, db: Session) -> dict:
     online = device_online(dev)
     data["online"] = online
     try:
-        data["conversation_count"] = len(json.loads(dev.conversations or "[]"))
+        conversation_list = json.loads(dev.conversations or "[]")
     except Exception:
-        data["conversation_count"] = 0
+        conversation_list = []
+    data["conversation_list"] = [str(item).strip() for item in conversation_list if str(item).strip()]
+    data["conversation_count"] = len(data["conversation_list"])
     counts = {}
     for st in ("pending", "assigned", "sent", "failed"):
         counts[st] = db.query(SendTask).filter(SendTask.device_id == dev.device_id, SendTask.status == st).count()
