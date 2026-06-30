@@ -1882,7 +1882,7 @@ def run_once(config: dict):
         send_heartbeat(config)
         selected = request_json(base_url, f"/api/devices/{device_id}/claim?limit={limit}",
                                 method="POST", extra_headers=device_headers(config))
-        real_policy = selected[0].get("device_allow_real_send") if selected else "unknown"
+        real_policy = selected[0].get("device_allow_real_send") if selected else config.get("server_allow_real_send", "unknown")
         print(f"device={device_id}, claimed={len(selected)}, default_dry_run={config.get('dry_run', True)}, server_allow_real_send={real_policy}")
     else:
         tasks = request_json(base_url, "/api/send-tasks")
