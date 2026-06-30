@@ -1636,6 +1636,43 @@ def crop_window_region(image_path: Path, win_rect_img: dict, region_ratio, reaso
     return crop_path
 
 
+def crop_fullscreen_region(image_path: Path, region_ratio, reason: str) -> Path:
+    image = Image.open(image_path).convert("RGB")
+    img_w, img_h = image.size
+    x0 = int(max(0, min(region_ratio[0] * img_w, img_w)))
+    y0 = int(max(0, min(region_ratio[1] * img_h, img_h)))
+    x1 = int(max(0, min(region_ratio[2] * img_w, img_w)))
+    y1 = int(max(0, min(region_ratio[3] * img_h, img_h)))
+    if x1 <= x0 or y1 <= y0:
+        raise RpaError("发送后截图回读范围无效。")
+    safe_reason = re.sub(r"[^0-9A-Za-z一-鿿_-]+", "_", reason)[:24] or "shot"
+    crop_path = ROOT / f"debug_wecom_{safe_reason}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    image.crop((x0, y0, x1, y1)).save(crop_path)
+    return crop_path
+
+
+def fit_window_to_screenshot_bounds(window, config: dict) -> None:
+    if not config.get("post_send_verify_fit_window_to_screen", True):
+        return
+    try:
+        scale = 1.0
+        try:
+            scale = max(float(ctypes.windll.shcore.GetScaleFactorForDevice(0)) / 100.0, 1.0)
+        except Exception:
+            pass
+        screen_w = int(win32api.GetSystemMetrics(0) / scale)
+        screen_h = int(win32api.GetSystemMetrics(1) / scale)
+        if screen_w <= 0 or screen_h <= 0:
+            return
+        hwnd = int(window.handle)
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, 0, 0, screen_w, screen_h, win32con.SWP_SHOWWINDOW)
+        time.sleep(float(config.get("post_send_verify_fit_window_wait_seconds", 0.5)))
+        add_send_trace(config, f"发送后截图窗口适配:{screen_w}x{screen_h}")
+    except Exception as exc:
+        add_send_trace(config, f"发送后截图窗口适配异常:{exc}")
+
+
 def normalize_ark_chat_messages(data: dict, conversation: str, config: dict) -> list[dict]:
     rows = data.get("messages", []) if isinstance(data, dict) else []
     self_names = set(config.get("self_names", ["我", "本人", "陪跑师", "老师"]))
@@ -1702,9 +1739,11 @@ def extract_post_send_screenshot_messages(window, target: str, text: str, config
     img = None
     crop = None
     try:
-        region = tuple(config.get("post_send_verify_screenshot_region", [0.30, 0.10, 1.0, 0.94]))
-        img, rect = screenshot_wecom(window, config, f"post_send_shot_{target}")
-        crop = crop_window_region(img, rect, region, f"post_send_shot_{target}")
+        region = tuple(config.get("post_send_verify_screenshot_region", [0.35, 0.10, 1.0, 0.96]))
+        ensure_foreground_wecom(window, config)
+        fit_window_to_screenshot_bounds(window, config)
+        img = capture_fullscreen_image(f"post_send_shot_{target}", config)
+        crop = crop_fullscreen_region(img, region, f"post_send_shot_{target}")
         data = call_ark_vision_json(
             "你是企业微信发送结果核验助手。只输出 JSON，不要 Markdown。字段：found、text。"
             "在右侧聊天区截图中查找刚刚由我发送的消息气泡；若能看到目标文本或清晰连续片段，found=true，并把可见文本写入 text。"
