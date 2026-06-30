@@ -875,6 +875,8 @@ REAL_SEND_RETRYABLE_FAILURE_TERMS = (
     "无法在会话列表定位",
     "窗口临时丢失",
     "窗口不可点",
+    "BASELINE_READ_FAILED",
+    "发送前消息基线采集失败",
 )
 REAL_SEND_AFTER_HOTKEY_TERMS = (
     "真实发送热键已触发",

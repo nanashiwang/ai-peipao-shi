@@ -71,7 +71,7 @@ def sent_content_match_count(content: str, messages, recent_count: int = 8, spea
 
 def sent_content_confirmed_after_send(content: str, before_messages, after_messages, recent_count: int = 8) -> bool:
     if before_messages is None:
-        return sent_content_confirmed(content, after_messages, recent_count)
+        return False
     return sent_content_match_count(content, after_messages, recent_count) > sent_content_match_count(content, before_messages, recent_count)
 
 

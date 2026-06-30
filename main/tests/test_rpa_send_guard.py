@@ -100,10 +100,10 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertFalse(sent_content_confirmed_after_send("测试发送", before, unchanged, recent_count=12))
         self.assertTrue(sent_content_confirmed_after_send("测试发送", before, after, recent_count=12))
 
-    def test_sent_content_confirmation_falls_back_without_baseline(self):
+    def test_sent_content_confirmation_requires_baseline_for_real_send(self):
         after = [{"speaker": "我", "content": "测试发送"}]
 
-        self.assertTrue(sent_content_confirmed_after_send("测试发送", None, after, recent_count=12))
+        self.assertFalse(sent_content_confirmed_after_send("测试发送", None, after, recent_count=12))
 
     def test_real_send_enabled_requires_boolean_true(self):
         self.assertTrue(real_send_enabled({"allow_real_send": True}))

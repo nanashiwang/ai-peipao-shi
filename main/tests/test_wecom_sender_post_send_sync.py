@@ -61,6 +61,30 @@ class WecomSenderPostSendSyncTest(unittest.TestCase):
         self.assertIsNone(result)
         sync.assert_not_called()
 
+    def test_real_send_blocks_hotkey_when_baseline_read_fails(self):
+        config = {
+            "dry_run": False,
+            "server_allow_real_send": True,
+            "verify_sent_message_enabled": True,
+            "post_send_verify_compare_before_after": True,
+            "_current_target": "\u4e00\u5408\u5b66\u793e",
+        }
+
+        with (
+            patch.object(wecom_sender, "ensure_foreground_wecom") as foreground,
+            patch.object(wecom_sender, "extract_visible_chat_messages", side_effect=RuntimeError("read failed")),
+            patch.object(wecom_sender, "hotkey") as hotkey,
+            patch.object(wecom_sender, "focus_message_input") as focus_input,
+        ):
+            status, detail = wecom_sender.send_message(object(), "\u6d4b\u8bd5\u53d1\u9001", config)
+
+        self.assertEqual(status, "failed")
+        self.assertIn("BASELINE_READ_FAILED", detail)
+        self.assertEqual(config["_send_verification"]["verify_status"], "failed")
+        foreground.assert_called()
+        hotkey.assert_not_called()
+        focus_input.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

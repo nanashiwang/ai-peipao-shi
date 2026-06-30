@@ -147,6 +147,26 @@ class SendTaskRetryTest(unittest.TestCase):
         self.assertIsNotNone(task.next_retry_at)
         self.assertIn("auto_retry", {item.action for item in self.db.query(AuditLog).all()})
 
+    def test_real_send_baseline_read_failure_auto_retries_before_hotkey(self):
+        task = self.add_task(send_mode="real_send")
+
+        record_send_result(
+            task.id,
+            SendResultIn(
+                status="failed",
+                detail="BASELINE_READ_FAILED: baseline read failed before hotkey",
+                device_id="dev-a",
+            ),
+            db=self.db,
+        )
+        self.db.refresh(task)
+
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.device_id, "dev-a")
+        self.assertEqual(task.retry_count, 1)
+        self.assertIsNotNone(task.next_retry_at)
+        self.assertIn("auto_retry", {item.action for item in self.db.query(AuditLog).all()})
+
     def test_real_send_after_hotkey_failure_requires_manual_review(self):
         task = self.add_task(send_mode="real_send")
 

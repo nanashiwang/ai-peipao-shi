@@ -2001,6 +2001,7 @@ def send_message(window, content: str, config: dict):
         config["_send_verification"] = verification_payload("not_applicable", "真实发送未放行，未按发送键")
         return "skipped", real_send_block_detail()
     before_messages = None
+    baseline_error = ""
     if not config.get("dry_run", True) and config.get("verify_sent_message_enabled", True) and config.get("post_send_verify_compare_before_after", True):
         try:
             ensure_foreground_wecom(window, config)
@@ -2009,7 +2010,18 @@ def send_message(window, content: str, config: dict):
             before_messages = extract_visible_chat_messages(window, target, verify_config)
             add_send_trace(config, f"发送前消息基线:{len(before_messages)}")
         except Exception as exc:
+            baseline_error = str(exc)
             add_send_trace(config, f"发送前消息基线采集异常:{exc}")
+    if (
+        not config.get("dry_run", True)
+        and config.get("verify_sent_message_enabled", True)
+        and config.get("post_send_verify_compare_before_after", True)
+        and before_messages is None
+    ):
+        detail = f"BASELINE_READ_FAILED: 真实发送前未能采集目标会话消息基线，已阻止按发送键，避免把历史重复内容误判为发送成功。{baseline_error}"
+        config["_send_verification"] = verification_payload("failed", "发送前消息基线采集失败，未按发送键")
+        add_send_trace(config, "发送前基线缺失，已阻止真实发送")
+        return "failed", detail
     try:
         try:
             focus_message_input(window, config)
