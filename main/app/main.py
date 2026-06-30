@@ -294,6 +294,10 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ParentReportAckIn(BaseModel):
+    note: str = ""
+
+
 class ChatMessageIn(BaseModel):
     family_id: str
     username: str
@@ -1310,8 +1314,7 @@ def parent_dashboard_payload(db: Session, family: Family) -> dict:
     }
 
 
-@app.get("/api/parent/dashboard")
-def parent_dashboard(authorization: str = Header(""), db: Session = Depends(get_db)):
+def require_parent_account(db: Session, authorization: str):
     try:
         identity = verify_parent_token(bearer_token(authorization), admin_auth_secret())
     except (RuntimeError, ValueError) as exc:
@@ -1323,7 +1326,26 @@ def parent_dashboard(authorization: str = Header(""), db: Session = Depends(get_
     ).one_or_none()
     if not account:
         raise HTTPException(401, "家长端账号已失效，请重新登录")
+    return account, identity
+
+
+@app.get("/api/parent/dashboard")
+def parent_dashboard(authorization: str = Header(""), db: Session = Depends(get_db)):
+    account, identity = require_parent_account(db, authorization)
     return parent_dashboard_payload(db, require_family(db, identity.family_id))
+
+
+@app.post("/api/parent/reports/{report_id}/ack")
+def parent_ack_report(report_id: int, payload: ParentReportAckIn | None = None, authorization: str = Header(""), db: Session = Depends(get_db)):
+    account, identity = require_parent_account(db, authorization)
+    report = db.get(WeeklyReport, report_id)
+    if not report or report.family_id != identity.family_id or report.status != "approved":
+        raise HTTPException(404, "可签收周报不存在")
+    report.parent_ack_at = report.parent_ack_at or datetime.utcnow()
+    note = (payload or ParentReportAckIn()).note.strip()
+    report.parent_ack_note = note[:200]
+    db.commit()
+    return {"report": as_dict(report), "ack_by": account.display_name or account.username}
 
 
 @app.get("/api/test-chat/accounts")
@@ -2567,6 +2589,9 @@ def update_report(report_id: int, payload: ReportUpdate, request: Request = None
     if not report:
         raise HTTPException(404, "周报不存在")
     ensure_family_id_access(db, report.family_id, request)
+    if report.final_text != payload.final_text or report.status != payload.status:
+        report.parent_ack_at = None
+        report.parent_ack_note = ""
     report.final_text = payload.final_text
     report.status = payload.status
     db.commit()

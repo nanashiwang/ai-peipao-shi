@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import admin_auth_secret, parent_dashboard
+from app.main import ParentReportAckIn, ReportUpdate, admin_auth_secret, parent_ack_report, parent_dashboard, update_report
 from app.models import Family, ParentProfile, RawMessage, UserAccount, WeeklyReport
 from app.services.admin_auth import bearer_token, sign_parent_token, verify_parent_token
 
@@ -76,11 +76,44 @@ class ParentDashboardTest(unittest.TestCase):
         self.assertNotIn("不应展示", str(data))
         self.assertNotIn("其他家庭消息", str(data))
 
+    def test_parent_can_ack_approved_report(self):
+        report_id = self.db.query(WeeklyReport).filter(WeeklyReport.status == "approved").one().id
+
+        result = parent_ack_report(report_id, ParentReportAckIn(note="已阅读"), authorization=f"Bearer {self.token()}", db=self.db)
+        dashboard = parent_dashboard(authorization=f"Bearer {self.token()}", db=self.db)
+
+        self.assertEqual(result["ack_by"], "林妈妈")
+        self.assertIsNotNone(result["report"]["parent_ack_at"])
+        self.assertEqual(result["report"]["parent_ack_note"], "已阅读")
+        self.assertIsNotNone(dashboard["weekly_report"]["parent_ack_at"])
+
+    def test_report_edit_resets_parent_ack(self):
+        report = self.db.query(WeeklyReport).filter(WeeklyReport.status == "approved").one()
+        parent_ack_report(report.id, ParentReportAckIn(note="已阅读"), authorization=f"Bearer {self.token()}", db=self.db)
+
+        updated = update_report(report.id, ReportUpdate(final_text="更新后的正式周报", status="approved"), db=self.db)
+
+        self.assertIsNone(updated["parent_ack_at"])
+        self.assertEqual(updated["parent_ack_note"], "")
+
     def test_parent_dashboard_rejects_mismatched_account(self):
         with self.assertRaises(HTTPException) as blocked:
             parent_dashboard(authorization=f"Bearer {self.token('f2')}", db=self.db)
 
         self.assertEqual(blocked.exception.status_code, 401)
+
+    def test_parent_cannot_ack_other_family_or_draft_report(self):
+        draft_id = self.db.query(WeeklyReport).filter(WeeklyReport.status == "draft").one().id
+        with self.assertRaises(HTTPException) as draft_blocked:
+            parent_ack_report(draft_id, ParentReportAckIn(), authorization=f"Bearer {self.token()}", db=self.db)
+        self.assertEqual(draft_blocked.exception.status_code, 404)
+
+        other = WeeklyReport(family_id="f2", week_label="其他家庭", status="approved", final_text="其他家庭")
+        self.db.add(other)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as other_blocked:
+            parent_ack_report(other.id, ParentReportAckIn(), authorization=f"Bearer {self.token()}", db=self.db)
+        self.assertEqual(other_blocked.exception.status_code, 404)
 
 
 if __name__ == "__main__":

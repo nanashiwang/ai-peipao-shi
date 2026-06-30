@@ -544,6 +544,18 @@ async function refreshParentDashboard() {
   renderParentDashboard();
 }
 
+async function ackParentReport(reportId) {
+  return withAction("签收周报", async () => {
+    await api(`/api/parent/reports/${reportId}/ack`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: "家长已在看板确认查看" }),
+    });
+    toast("周报已签收");
+    await refreshParentDashboard();
+  });
+}
+
 function renderServiceFunnel() {
   const stages = state.workbenchOverview?.service_funnel?.stages || [];
   $("serviceFunnel").innerHTML = stages.length ? stages.map((stage) => `
@@ -640,6 +652,7 @@ function renderParentDashboard() {
     ["打卡记录", progress.checkin_count || 0],
     ["PBL 次数", family.pbl_count || 0],
     ["周报状态", report ? displayValue(report.send_status, "已审核") : "待陪跑师审核"],
+    ["家长签收", report ? (report.parent_ack_at ? "已签收" : "待签收") : "暂无周报"],
   ].map(([label, value]) => `<article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join("");
   contentEl.innerHTML = `
     <section>
@@ -663,6 +676,8 @@ function renderParentDashboard() {
           <p><strong>家长关注</strong>${esc(report.parent_focus || "未填写")}</p>
           <p><strong>下步建议</strong>${esc(report.teacher_suggestion || "未填写")}</p>
           <pre>${esc(report.final_text || "")}</pre>
+          <p class="muted">${report.parent_ack_at ? `已于 ${esc(report.parent_ack_at)} 签收` : "阅读后请点击签收，方便陪跑师确认家长已看到周报。"}</p>
+          ${report.parent_ack_at ? "" : `<button onclick="ackParentReport(${report.id})">我已查看周报</button>`}
         ` : emptyState("周报待审核", "陪跑师审核通过后，家长端才会展示正式周报。")}
       </article>
       <article class="detail-card">
@@ -1090,6 +1105,7 @@ function renderReports() {
           <strong>${esc(familyName(r.family_id))}</strong>
           ${badge(r.status, r.status === "approved" ? "ok" : "warn")}
           ${reportSendStatusBadge(r.send_status || "not_created")}
+          ${badge(r.parent_ack_at ? "家长已签收" : "家长未签收", r.parent_ack_at ? "ok" : "warn")}
           <span class="muted">${esc(r.week_label)}${r.send_task_id ? ` · 任务 #${esc(r.send_task_id)}` : ""}</span>
         </div>
         <button onclick="createReportTask(${r.id})">${r.send_task_id ? "同步发送任务" : "加入发送任务"}</button>

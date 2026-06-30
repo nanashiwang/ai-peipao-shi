@@ -121,6 +121,8 @@ class WeeklyReport(Base):
     send_task_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
     send_status: Mapped[str] = mapped_column(String(30), default="not_created", index=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    parent_ack_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    parent_ack_note: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

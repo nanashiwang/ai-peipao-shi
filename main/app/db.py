@@ -50,6 +50,8 @@ def ensure_columns():
             ("send_task_id", "INTEGER"),
             ("send_status", "VARCHAR(30)"),
             ("sent_at", "DATETIME"),
+            ("parent_ack_at", "DATETIME"),
+            ("parent_ack_note", "TEXT"),
         ],
         "send_tasks": [
             ("device_id", "VARCHAR(64)"),
@@ -82,6 +84,7 @@ def ensure_columns():
                     "send_task_id": "0",
                     "send_status": "'not_created'",
                     "sent_at": "NULL",
+                    "parent_ack_at": "NULL",
                     "pbl_count": "0",
                     "retry_count": "0",
                     "max_retries": "2",
