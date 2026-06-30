@@ -84,6 +84,7 @@ class OpsHealthDashboardTest(unittest.TestCase):
                 target_name="一合学社",
                 status="sent",
                 send_mode="real_send",
+                device_id="dev-a",
                 verify_status="confirmed",
                 detail="VERIFY_CONFIRMED: 目标会话回读命中",
                 sent_at=self.now - timedelta(hours=1),
@@ -94,6 +95,7 @@ class OpsHealthDashboardTest(unittest.TestCase):
                 target_name="测试2群",
                 status="failed",
                 send_mode="real_send",
+                device_id="dev-b",
                 verify_status="failed",
                 detail="SEND_CONFIRM_FAILED: 未在目标会话回读到本次内容",
                 sent_at=self.now - timedelta(hours=2),
@@ -111,6 +113,10 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.assertEqual(report["metrics"]["confirm_failed_24h"], 1)
         self.assertEqual(report["metrics"]["attempted_24h"], 2)
         self.assertEqual(report["metrics"]["confirm_rate"], 50.0)
+        self.assertIn("测试2群", report["detail"])
+        self.assertEqual(report["metrics"]["target_breakdown"][0]["target_name"], "测试2群")
+        self.assertEqual(report["metrics"]["target_breakdown"][0]["confirm_rate"], 0.0)
+        self.assertEqual(report["metrics"]["device_breakdown"][0]["device_id"], "dev-b")
 
     def test_health_reports_device_result_outbox_backlog(self):
         self.db.add(

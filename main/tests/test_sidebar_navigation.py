@@ -96,6 +96,9 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("conversation_proof_total", js)
         self.assertIn("conversation_proof_missing_targets", js)
         self.assertIn("缺失/过期", js)
+        self.assertIn("deviceRealSendStats", js)
+        self.assertIn("real_send_confirm_rate_24h", js)
+        self.assertIn("真发闭环", js)
 
     def test_control_auth_page_exposes_login_and_first_admin_registration(self):
         html = Path("app/static/index.html").read_text(encoding="utf-8")

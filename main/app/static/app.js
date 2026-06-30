@@ -1425,6 +1425,17 @@ function deviceConversationProofStatus(device) {
   return `${badge(label, ready ? "ok" : (total ? "warn" : ""))}${missing}${detail}`;
 }
 
+function deviceRealSendStats(device) {
+  const attempted = Number(device.real_send_attempted_24h || 0);
+  const failed = Number(device.real_send_confirm_failed_24h || 0);
+  const rate = Number(device.real_send_confirm_rate_24h ?? 100);
+  const kind = attempted <= 0 ? "" : (failed > 0 || rate < 100 ? "danger" : "ok");
+  const detail = attempted > 0
+    ? `<p class="muted">确认 ${esc(device.real_send_confirmed_24h || 0)}/${esc(attempted)}，失败/未知 ${esc(failed)}</p>`
+    : "";
+  return `${badge(device.real_send_success_label || "近24小时暂无真实发送", kind)}${detail}`;
+}
+
 // 渲染设备监控列表。
 function renderDevices() {
   $("deviceTable").innerHTML = table([
@@ -1434,6 +1445,7 @@ function renderDevices() {
     { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
     { label: "会话可读证明", render: deviceConversationProofStatus },
     { label: "结果补传", render: deviceOutboxStatus },
+    { label: "真发闭环", render: deviceRealSendStats },
     { label: "真实发送开关", render: deviceRealSendControl },
     { label: "会话范围", render: deviceConversationScopeControl },
     { label: "最后心跳", key: "last_heartbeat" },

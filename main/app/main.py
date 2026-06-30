@@ -384,6 +384,59 @@ def send_log_view(log: SendLog) -> dict:
     return data
 
 
+def is_real_send_attempt_log(log: SendLog) -> bool:
+    return bool(
+        log.send_mode == "real_send"
+        and (
+            log.status == "sent"
+            or log.verify_status in {"failed", "unknown"}
+            or "SEND_CONFIRM_FAILED" in (log.detail or "")
+        )
+    )
+
+
+def real_send_closure_metrics(logs: list[SendLog]) -> dict:
+    attempted_logs = [log for log in logs if is_real_send_attempt_log(log)]
+    attempted_count = len(attempted_logs)
+    sent_count = sum(1 for log in attempted_logs if log.status == "sent")
+    confirmed_count = sum(1 for log in attempted_logs if log.status == "sent" and log.verify_status == "confirmed")
+    unconfirmed_sent_count = sum(1 for log in attempted_logs if log.status == "sent" and log.verify_status != "confirmed")
+    confirm_failed_count = attempted_count - confirmed_count
+    rate = round((confirmed_count / attempted_count) * 100, 2) if attempted_count else 100.0
+    return {
+        "attempted_24h": attempted_count,
+        "real_sent_24h": sent_count,
+        "confirmed_24h": confirmed_count,
+        "unconfirmed_sent_24h": unconfirmed_sent_count,
+        "confirm_failed_24h": confirm_failed_count,
+        "confirm_rate": rate,
+    }
+
+
+def real_send_breakdown(logs: list[SendLog], key: str, limit: int = 10) -> list[dict]:
+    grouped: dict[str, list[SendLog]] = {}
+    for log in logs:
+        if not is_real_send_attempt_log(log):
+            continue
+        value = (getattr(log, key) or "未标记").strip() or "未标记"
+        grouped.setdefault(value, []).append(log)
+    rows = []
+    for value, items in grouped.items():
+        metrics = real_send_closure_metrics(items)
+        latest = max(items, key=lambda item: item.sent_at or datetime.min)
+        failed_items = [item for item in items if not (item.status == "sent" and item.verify_status == "confirmed")]
+        latest_issue = max(failed_items, key=lambda item: item.sent_at or datetime.min) if failed_items else None
+        rows.append(
+            {
+                key: value,
+                **metrics,
+                "last_sent_at": timeline_time(latest.sent_at),
+                "last_issue": (latest_issue.verify_detail or latest_issue.detail or "")[:160] if latest_issue else "",
+            }
+        )
+    return sorted(rows, key=lambda row: (row["confirm_rate"], -row["attempted_24h"], row.get(key, "")))[:limit]
+
+
 def current_runtime_config_report() -> dict:
     return runtime_config_report(
         os.getenv("APP_ENV"),
@@ -3966,6 +4019,22 @@ def device_view(dev: Device, db: Session) -> dict:
     data["conversation_proof_label"] = proof_summary["label"]
     data["last_conversation_proof_at"] = timeline_time(latest_check.verified_at) if latest_check else ""
     data["last_conversation_proof_target"] = latest_check.target_name if latest_check else ""
+    since = datetime.utcnow() - timedelta(hours=24)
+    real_logs = (
+        db.query(SendLog)
+        .filter(SendLog.send_mode == "real_send", SendLog.device_id == dev.device_id, SendLog.sent_at >= since)
+        .all()
+    )
+    real_metrics = real_send_closure_metrics(real_logs)
+    data["real_send_attempted_24h"] = real_metrics["attempted_24h"]
+    data["real_send_confirmed_24h"] = real_metrics["confirmed_24h"]
+    data["real_send_confirm_failed_24h"] = real_metrics["confirm_failed_24h"]
+    data["real_send_confirm_rate_24h"] = real_metrics["confirm_rate"]
+    data["real_send_success_label"] = (
+        f"近24小时真发 {real_metrics['attempted_24h']} 条，回读确认 {real_metrics['confirmed_24h']} 条，确认率 {real_metrics['confirm_rate']}%"
+        if real_metrics["attempted_24h"]
+        else "近24小时暂无真实发送"
+    )
     return data
 
 
@@ -4439,28 +4508,16 @@ def backup_artifact_stats() -> dict:
 def real_send_verification_report(db: Session, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     since = now - timedelta(hours=24)
-    base = db.query(SendLog).filter(SendLog.send_mode == "real_send", SendLog.sent_at >= since)
-    attempted_count = base.filter(
-        or_(
-            SendLog.status == "sent",
-            SendLog.verify_status.in_(["failed", "unknown"]),
-            SendLog.detail.contains("SEND_CONFIRM_FAILED"),
-        )
-    ).count()
-    sent_count = base.filter(SendLog.status == "sent").count()
-    confirmed_count = base.filter(SendLog.status == "sent", SendLog.verify_status == "confirmed").count()
-    unconfirmed_sent_count = base.filter(
-        SendLog.status == "sent",
-        or_(SendLog.verify_status != "confirmed", SendLog.verify_status.is_(None)),
-    ).count()
-    confirm_failed_count = base.filter(
-        or_(
-            SendLog.verify_status.in_(["failed", "unknown"]),
-            SendLog.detail.contains("SEND_CONFIRM_FAILED"),
-        )
-    ).count()
+    logs = db.query(SendLog).filter(SendLog.send_mode == "real_send", SendLog.sent_at >= since).all()
+    metrics = real_send_closure_metrics(logs)
+    attempted_count = metrics["attempted_24h"]
+    confirmed_count = metrics["confirmed_24h"]
+    unconfirmed_sent_count = metrics["unconfirmed_sent_24h"]
+    confirm_failed_count = metrics["confirm_failed_24h"]
+    target_breakdown = real_send_breakdown(logs, "target_name")
+    device_breakdown = real_send_breakdown(logs, "device_id")
     status = "critical" if unconfirmed_sent_count or confirm_failed_count else "ok"
-    rate = round((confirmed_count / attempted_count) * 100, 2) if attempted_count else 100.0
+    rate = metrics["confirm_rate"]
     detail = (
         f"近24小时真实发送闭环 {attempted_count} 条，成功落地回读 {confirmed_count} 条，确认率 {rate}%"
         if attempted_count
@@ -4468,17 +4525,17 @@ def real_send_verification_report(db: Session, now: datetime | None = None) -> d
     )
     if confirm_failed_count:
         detail += f"，回读失败/未知 {confirm_failed_count} 条"
+        issue_targets = [item for item in target_breakdown if item["confirm_failed_24h"]]
+        if issue_targets:
+            detail += f"，优先排查目标：{issue_targets[0]['target_name']}"
     return component_status(
         status,
         "真实发送回读确认",
         detail,
         {
-            "attempted_24h": attempted_count,
-            "real_sent_24h": sent_count,
-            "confirmed_24h": confirmed_count,
-            "unconfirmed_sent_24h": unconfirmed_sent_count,
-            "confirm_failed_24h": confirm_failed_count,
-            "confirm_rate": rate,
+            **metrics,
+            "target_breakdown": target_breakdown,
+            "device_breakdown": device_breakdown,
         },
     )
 

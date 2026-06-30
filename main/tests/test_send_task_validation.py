@@ -1003,6 +1003,51 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(set(view["conversation_proof_missing_targets"]), {"测试2群", "许宝月"})
         self.assertIn("1/3", view["conversation_proof_label"])
 
+    def test_device_view_reports_real_send_closure_metrics(self):
+        self.db.add_all([
+            SendLog(
+                task_id=101,
+                family_id="f-real-ok",
+                target_name="一合学社",
+                status="sent",
+                send_mode="real_send",
+                device_id="dev-a",
+                verify_status="confirmed",
+                verify_detail="VERIFY_CONFIRMED: 目标「一合学社」回读命中",
+                sent_at=datetime.utcnow(),
+            ),
+            SendLog(
+                task_id=102,
+                family_id="f-real-failed",
+                target_name="一合学社",
+                status="failed",
+                send_mode="real_send",
+                device_id="dev-a",
+                verify_status="failed",
+                detail="SEND_CONFIRM_FAILED: 未回读命中",
+                sent_at=datetime.utcnow(),
+            ),
+            SendLog(
+                task_id=103,
+                family_id="f-other-device",
+                target_name="一合学社",
+                status="sent",
+                send_mode="real_send",
+                device_id="dev-b",
+                verify_status="confirmed",
+                sent_at=datetime.utcnow(),
+            ),
+        ])
+        self.db.commit()
+
+        view = update_device("dev-a", DeviceUpdateIn(), db=self.db)
+
+        self.assertEqual(view["real_send_attempted_24h"], 2)
+        self.assertEqual(view["real_send_confirmed_24h"], 1)
+        self.assertEqual(view["real_send_confirm_failed_24h"], 1)
+        self.assertEqual(view["real_send_confirm_rate_24h"], 50.0)
+        self.assertIn("确认率 50.0%", view["real_send_success_label"])
+
     def test_real_send_claim_auto_prepares_missing_device_conversation_proof(self):
         task = SendTask(
             family_id="f-real-proof",
