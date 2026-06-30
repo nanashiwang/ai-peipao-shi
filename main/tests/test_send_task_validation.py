@@ -840,6 +840,51 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(dry_task.status, "pending")
         self.assertEqual(real_task_2.status, "pending")
 
+    def test_claim_waits_for_inflight_real_send_before_next_real_send(self):
+        active_real = SendTask(
+            family_id="f-real-active",
+            target_name="一合学社",
+            scene="real",
+            content="上一条真实发送执行中",
+            send_mode="real_send",
+            status="assigned",
+            device_id="dev-a",
+            scheduled_at=datetime.utcnow(),
+        )
+        next_real = SendTask(
+            family_id="f-real-next",
+            target_name="一合学社",
+            scene="real",
+            content="下一条真实发送必须等待",
+            send_mode="real_send",
+            status="pending",
+            device_id="dev-a",
+        )
+        dry_task = SendTask(
+            family_id="f-dry-while-real",
+            target_name="一合学社",
+            scene="dry",
+            content="试运行仍可领取",
+            send_mode="dry_run",
+            status="pending",
+        )
+        self.db.add_all([active_real, next_real, dry_task])
+        self.dev.allow_real_send = True
+        self.dev.wecom_ok = "Y"
+        self.dev.last_heartbeat = datetime.utcnow()
+        self.db.commit()
+
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.db.refresh(next_real)
+        self.db.refresh(dry_task)
+        row = next(item for item in list_send_tasks(db=self.db) if item["id"] == next_real.id)
+        self.assertEqual([item["id"] for item in claimed], [dry_task.id])
+        self.assertEqual(next_real.status, "pending")
+        self.assertEqual(dry_task.status, "assigned")
+        self.assertEqual(row["send_readiness"]["status"], "blocked")
+        self.assertIn("已有真实发送任务执行中", "；".join(row["send_readiness"]["reasons"]))
+
     def test_heartbeat_persists_outbox_state_for_device_monitoring(self):
         result = device_heartbeat(
             "dev-a",

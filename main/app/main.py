@@ -975,6 +975,17 @@ def device_ready_for_real_send(dev: Device, now: datetime | None = None) -> bool
     return bool(dev.allow_real_send and device_online(dev, now) and dev.wecom_ok == "Y" and (dev.outbox_pending_count or 0) == 0)
 
 
+def device_has_inflight_real_send(db: Session, dev: Device, exclude_task_id: int = 0) -> bool:
+    query = db.query(SendTask).filter(
+        SendTask.device_id == dev.device_id,
+        SendTask.send_mode == "real_send",
+        SendTask.status == "assigned",
+    )
+    if exclude_task_id:
+        query = query.filter(SendTask.id != exclude_task_id)
+    return query.first() is not None
+
+
 def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None) -> dict:
     """给控制端展示任务能否被指定设备稳定执行，不改变调度结果。"""
     now = now or datetime.utcnow()
@@ -1005,6 +1016,8 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
             reasons.append(f"设备「{dev.device_id}」真实发送开关未开启")
         if mode == "real_send" and (dev.outbox_pending_count or 0) > 0:
             reasons.append(f"设备「{dev.device_id}」还有 {dev.outbox_pending_count} 条发送结果待补传，已暂停领取新真实发送任务")
+        if mode == "real_send" and device_has_inflight_real_send(db, dev, exclude_task_id=task.id):
+            reasons.append(f"设备「{dev.device_id}」已有真实发送任务执行中，需等待上一条回写后再领取")
         if not dev.allow_any_conversation and task.target_name not in device_conversations(dev):
             reasons.append(f"目标「{task.target_name}」不在设备「{dev.device_id}」负责会话内")
     if status == "assigned" and task.scheduled_at and task.scheduled_at < now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS):
@@ -3879,6 +3892,8 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     if not dev.allow_real_send:
         candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
     elif not device_ready_for_real_send(dev, now):
+        candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
+    elif device_has_inflight_real_send(db, dev):
         candidates_query = candidates_query.filter(SendTask.send_mode != "real_send")
     candidates_query = candidates_query.order_by(SendTask.id).limit(safe_limit)
     candidates = apply_claim_row_lock(candidates_query, db).all()
