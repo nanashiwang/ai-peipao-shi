@@ -1428,6 +1428,7 @@ function renderDevices() {
     { label: "已发", render: (r) => r.task_counts?.sent ?? 0 },
     { label: "失败", render: (r) => r.task_counts?.failed ?? 0 },
     { label: "最近错误", key: "last_error" },
+    { label: "只读校验", render: (r) => `<button onclick="requestConversationProof('${esc(r.device_id)}')">刷新会话证明</button>` },
     { label: "接入包", render: (r) => `<a class="dl-link" href="/api/devices/${encodeURIComponent(r.device_id)}/package?server_url=${encodeURIComponent(location.origin)}">下载接入包</a>` },
   ], state.devices);
 }
@@ -2074,6 +2075,28 @@ async function toggleDeviceAnyConversation(deviceId, enabled) {
     });
     toast(enabled ? "设备会话范围已切到全会话" : "设备会话范围已切回白名单");
     await refreshAll();
+  });
+}
+
+async function requestConversationProof(deviceId) {
+  const device = state.devices.find((item) => item.device_id === deviceId);
+  let defaultTarget = "";
+  try {
+    defaultTarget = JSON.parse(device?.conversations || "[]")[0] || "";
+  } catch {
+    defaultTarget = "";
+  }
+  const target = (window.prompt(`输入要让设备 ${deviceId} 只读校验的群/私聊名称`, defaultTarget) || "").trim();
+  if (!target) return;
+  await withAction("刷新会话可读证明", async () => {
+    await api(`/api/devices/${encodeURIComponent(deviceId)}/conversation-checks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_name: target, family_id: manualTaskFamilyId(target) }),
+    });
+    toast(`已下发只读校验：${deviceId} -> ${target}；被控端会打开会话并回读，不会发送`);
+    await refreshAll();
+    switchTab("tasks");
   });
 }
 

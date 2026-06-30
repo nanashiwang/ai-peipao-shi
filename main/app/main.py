@@ -100,6 +100,7 @@ REAL_SEND_MIN_INTERVAL_SECONDS = 30
 SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
 DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS = 24
 WEEKLY_REPORT_SCENE = "周报发送"
+CONVERSATION_CHECK_SCENE = "会话可读校验"
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
 app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
@@ -234,6 +235,11 @@ class HeartbeatIn(BaseModel):
     conversations: list[str] = []
     outbox_pending_count: int = 0
     outbox_last_error: str = ""
+
+
+class DeviceConversationCheckRequestIn(BaseModel):
+    target_name: str
+    family_id: str = ""
 
 
 class RetentionPruneIn(BaseModel):
@@ -3977,6 +3983,42 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
 @app.get("/api/devices")
 def list_devices(db: Session = Depends(get_db)):
     return [device_view(dev, db) for dev in db.query(Device).order_by(Device.device_id).all()]
+
+
+@app.post("/api/devices/{device_id}/conversation-checks")
+def queue_device_conversation_check(
+    device_id: str,
+    payload: DeviceConversationCheckRequestIn,
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    ensure_new_task_operation_allowed(request, "assign_device")
+    dev = db.query(Device).filter(Device.device_id == device_id).first()
+    if not dev:
+        raise HTTPException(404, "设备不存在")
+    target_name = (payload.target_name or "").strip()
+    if not target_name:
+        raise HTTPException(400, "请填写要校验的群/私聊名称")
+    validate_device_conversation_scope(dev, target_name)
+    task = SendTask(
+        family_id=((payload.family_id or f"WECOM_{target_name}")[:64]),
+        target_name=target_name,
+        scene=CONVERSATION_CHECK_SCENE,
+        content="只读校验：打开目标会话并读取可见消息，不粘贴不发送。",
+        device_id=dev.device_id,
+        send_mode="dry_run",
+        status="pending",
+        scheduled_at=datetime.utcnow(),
+    )
+    add_send_task_with_audit(
+        db,
+        task,
+        "conversation_check",
+        actor_from_request(request),
+        f"下发设备「{dev.device_id}」只读校验「{target_name}」",
+    )
+    db.commit()
+    return send_task_view(task, request, db)
 
 
 # 修改设备显示名/备注和控制端设备策略。

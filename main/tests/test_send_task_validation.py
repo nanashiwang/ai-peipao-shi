@@ -14,6 +14,7 @@ from app.db import Base
 from app.main import (
     REAL_SEND_MIN_INTERVAL_SECONDS,
     DeviceUpdateIn,
+    DeviceConversationCheckRequestIn,
     HeartbeatIn,
     RpaConversationIn,
     RpaMessageIn,
@@ -31,6 +32,7 @@ from app.main import (
     list_audit_logs,
     list_send_tasks,
     queue_task_dry_run,
+    queue_device_conversation_check,
     queue_task_real_send,
     record_send_result,
     resolve_send_screenshot,
@@ -1098,6 +1100,23 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in claimed], [task.id])
         self.assertTrue(claimed[0]["server_allowed_target"])
         self.assertTrue(claimed[0]["device_allow_any_conversation"])
+
+    def test_control_panel_can_queue_readonly_conversation_check_for_device(self):
+        task = queue_device_conversation_check(
+            "dev-a",
+            DeviceConversationCheckRequestIn(target_name="一合学社", family_id="WECOM_一合学社"),
+            db=self.db,
+        )
+
+        self.assertEqual(task["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        self.assertEqual(task["send_mode"], "dry_run")
+        self.assertEqual(task["device_id"], "dev-a")
+        self.assertEqual(claim_tasks("dev-b", limit=5, dev=self.dev_b, db=self.db), [])
+        claimed = claim_tasks("dev-a", limit=5, dev=self.dev, db=self.db)
+
+        self.assertEqual([item["id"] for item in claimed], [task["id"]])
+        self.assertEqual(claimed[0]["scene"], main_module.CONVERSATION_CHECK_SCENE)
+        self.assertEqual(claimed[0]["target_name"], "一合学社")
 
     def test_claim_does_not_assign_same_task_twice_across_devices(self):
         task = SendTask(

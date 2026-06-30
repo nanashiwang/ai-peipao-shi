@@ -133,6 +133,7 @@ ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 DEFAULT_CONFIG = ROOT / "config.json"
 FALLBACK_CONFIG = ROOT / "config.example.json"
+CONVERSATION_CHECK_SCENE = "会话可读校验"
 
 # 企业微信 5.x 的聊天区可能由 FlutterPlugins.exe 承载，前台句柄经常不是 WXWork.exe。
 # 这里默认允许该子进程通过安全检查，但不放开 WeMail.exe 等文档/邮件子程序。
@@ -2049,6 +2050,41 @@ def config_with_device_policy(config: dict, task: dict) -> dict:
     return merged
 
 
+def is_conversation_check_task(task: dict) -> bool:
+    return (task.get("scene") or "").strip() == CONVERSATION_CHECK_SCENE
+
+
+def process_conversation_check_task(task: dict, config: dict) -> tuple[str, str, dict]:
+    target = task.get("target_name") or ""
+    task_config = config_for_task_send_mode(config, "dry_run")
+    task_config["_current_target"] = target
+    sync_config = {
+        **task_config,
+        "auto_generate_ai_reply": False,
+        "auto_create_reply_task": False,
+        "auto_generate_all_agents": False,
+    }
+    try:
+        window = find_wecom_window(task_config)
+        search_conversation(window, target, task_config)
+        verify_active_conversation(window, target, task_config)
+        messages = extract_chat_messages(window, target, task_config)
+        latest = next((msg["content"] for msg in reversed(messages) if msg.get("speaker") != "我"), messages[-1]["content"]) if messages else ""
+        result = sync_conversation_to_api(target, task.get("family_id") or f"WECOM_{target}", messages, sync_config, latest)
+        proof = result.get("conversation_check") or {}
+        if not messages:
+            detail = f"CONVERSATION_CHECK_FAILED: 目标「{target}」已打开但未读到可见聊天消息，已记录失败证明。"
+            return "failed", detail_with_send_trace(detail, task_config), verification_payload("not_applicable", "只读会话校验未发送消息")
+        detail = (
+            f"CONVERSATION_CHECK_OK: 目标「{target}」可读，"
+            f"message_count={len(messages)}, proof_status={proof.get('status', 'ok')}"
+        )
+        add_send_trace(task_config, f"只读校验消息:{len(messages)}")
+        return "dry_run", detail_with_send_trace(detail, task_config), verification_payload("not_applicable", "只读会话校验，不粘贴不发送")
+    except Exception as exc:
+        raise RpaError(detail_with_send_trace(str(exc), task_config)) from exc
+
+
 # 根据白名单判断是否允许发送，并走发送或跳过逻辑。
 def process_task(task: dict, config: dict):
     config = config_with_device_policy(config, task)
@@ -2057,6 +2093,8 @@ def process_task(task: dict, config: dict):
         return "skipped", target_not_allowed_detail(target), verification_payload("not_applicable", "目标不在本设备会话范围，未发送")
     if task.get("server_allowed_target"):
         add_send_trace(config, "服务端会话策略放行")
+    if is_conversation_check_task(task):
+        return process_conversation_check_task(task, config)
     mode = (task.get("send_mode") or "").strip()
     if real_send_requested(config, mode) and not real_send_enabled(config):
         return "skipped", real_send_block_detail(), verification_payload("not_applicable", "真实发送未放行，未按发送键")
