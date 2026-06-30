@@ -135,6 +135,10 @@ class FollowupIn(BaseModel):
     occurred_at: datetime | None = None
 
 
+class FamilyAIBundleIn(BaseModel):
+    source: str = "家庭详情一键生成"
+
+
 # 直接创建发送任务时的输入结构。
 class SendTaskIn(BaseModel):
     family_id: str
@@ -1943,6 +1947,40 @@ def generate_for_family(db: Session, family_id: str):
     return report_data
 
 
+def create_family_ai_bundle(db: Session, family_id: str, source: str = "家庭详情一键生成") -> dict:
+    family = require_family(db, family_id)
+    context = build_agent_context(db, family_id)
+    if not context["messages"]:
+        raise HTTPException(404, "该家庭还没有消息，无法生成 AI 操作区内容")
+
+    outputs = []
+    profile_result = run_family_profile_agent_service(context)
+    profile_output = save_ai_output(db, family_id, "family_profile", source, profile_result)
+    upsert_parent_profile_from_agent(db, family_id, profile_result)
+    outputs.append(profile_output)
+
+    weekly_result = run_weekly_report_agent_service(context)
+    weekly_output = save_ai_output(db, family_id, "weekly_report", source, weekly_result)
+    create_weekly_report_from_agent(db, family_id, weekly_result)
+    outputs.append(weekly_output)
+
+    reply_result = run_reply_agent_service(context, latest_parent_message(context), "standard")
+    reply_output = save_ai_output(db, family_id, "ai_reply", source, reply_result)
+    outputs.append(reply_output)
+
+    checkin_result = run_checkin_pbl_agent_service(context)
+    checkin_output = save_ai_output(db, family_id, "checkin_pbl", source, checkin_result)
+    checkin_records_created = create_checkin_records_from_context(db, context)
+    outputs.append(checkin_output)
+
+    return {
+        "family_id": family_id,
+        "family_name": family.parent_nickname or family.family_id,
+        "outputs": outputs,
+        "checkin_records_created": checkin_records_created,
+    }
+
+
 # 批量生成所有家庭的周报/画像。
 @app.post("/api/generate/all")
 def generate_all(db: Session = Depends(get_db)):
@@ -1962,6 +2000,17 @@ def generate_one(family_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "没有可生成的有效消息")
     db.commit()
     return result
+
+
+@app.post("/api/families/{family_id}/ai-bundle")
+def generate_family_ai_bundle(family_id: str, payload: FamilyAIBundleIn | None = None, request: Request = None, db: Session = Depends(get_db)):
+    result = create_family_ai_bundle(db, family_id, (payload or FamilyAIBundleIn()).source)
+    db.commit()
+    data = {
+        **{key: value for key, value in result.items() if key != "outputs"},
+        "outputs": [as_dict(output) for output in result["outputs"]],
+    }
+    return maybe_redact_for_request(data, request)
 
 
 # AI 输出列表接口，支持按家庭和 Agent 类型筛选。

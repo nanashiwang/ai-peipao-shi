@@ -877,7 +877,7 @@ async function refreshFamilyDetail() {
   state.selectedFamilyId = state.selectedFamilyId || state.families[0].family_id;
   $("familySelect").innerHTML = optionList();
   const data = await api(`/api/families/${encodeURIComponent(state.selectedFamilyId)}`);
-  const outputs = state.outputs.filter((item) => item.family_id === state.selectedFamilyId).slice(0, 4);
+  const outputs = state.outputs.filter((item) => item.family_id === state.selectedFamilyId).slice(0, 8);
   const timeline = data.timeline || [];
   const followups = data.followups || [];
   $("familyDetail").innerHTML = `
@@ -926,12 +926,13 @@ async function refreshFamilyDetail() {
     <section class="ai-pane">
       <h3>AI操作区</h3>
       <div class="agent-buttons">
+        <button onclick="runFamilyAiBundle('${esc(data.family.family_id)}')">一键生成并复核</button>
         <button onclick="runAgentForFamily('profile','${esc(data.family.family_id)}')">生成画像</button>
         <button onclick="runAgentForFamily('weekly','${esc(data.family.family_id)}')">生成周报</button>
         <button onclick="prepareReply('${esc(data.family.family_id)}')">生成回复</button>
         <button onclick="runAgentForFamily('checkin','${esc(data.family.family_id)}')">识别打卡/PBL</button>
       </div>
-      <div class="stack">${outputs.length ? outputs.map((item) => outputCard(item, true)).join("") : emptyState("暂无本家庭 AI 结果", "使用上方按钮生成画像、周报、回复或打卡/PBL 识别。")}</div>
+      <div class="stack">${outputs.length ? outputs.map((item) => outputCard(item, false)).join("") : emptyState("暂无本家庭 AI 结果", "使用上方按钮一键生成画像、周报、回复和打卡/PBL 后，可在这里直接复核。")}</div>
     </section>
   `;
 }
@@ -1223,6 +1224,20 @@ async function runAgentForFamily(kind, familyId = state.selectedFamilyId) {
     });
     state.selectedFamilyId = familyId;
     toast(`已生成：${result.family_name || familyId}`);
+    await refreshAll();
+  });
+}
+
+async function runFamilyAiBundle(familyId = state.selectedFamilyId) {
+  return withAction("一键生成AI操作区", async () => {
+    if (!familyId) return toast("请先选择家庭");
+    const result = await api(`/api/families/${encodeURIComponent(familyId)}/ai-bundle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: "家庭详情一键生成" }),
+    });
+    state.selectedFamilyId = familyId;
+    toast(`已生成 ${result.outputs?.length || 0} 个 AI 结果，待人工复核`);
     await refreshAll();
   });
 }
