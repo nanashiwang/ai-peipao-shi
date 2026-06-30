@@ -42,6 +42,7 @@ class DevicePackageTest(unittest.TestCase):
 
         self.assertIn("rpa/wecom_sender.py", names)
         self.assertIn("rpa/send_guard.py", names)
+        self.assertIn("rpa/send_batch_guard.py", names)
         self.assertIn("rpa/result_outbox.py", names)
         self.assertIn("watchdog.ps1", names)
         self.assertIn("install_autostart.bat", names)
@@ -70,6 +71,7 @@ class DevicePackageTest(unittest.TestCase):
         self.assertEqual(manifest["device_id"], "rpa-01")
         manifest_paths = {item["path"] for item in manifest["files"]}
         self.assertIn("rpa/config.json", manifest_paths)
+        self.assertIn("rpa/send_batch_guard.py", manifest_paths)
         self.assertIn("rpa/result_outbox.py", manifest_paths)
         self.assertIn("校验接入包.ps1", manifest_paths)
 

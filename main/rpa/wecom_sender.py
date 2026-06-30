@@ -22,6 +22,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
 
 try:
+    from rpa.send_batch_guard import send_until_blocked
+except ModuleNotFoundError:
+    from send_batch_guard import send_until_blocked
+
+try:
     from rpa.result_outbox import (
         enqueue_result,
         load_result_record,
@@ -1981,6 +1986,16 @@ def send_task_and_record(task: dict, config: dict):
     return status, detail
 
 
+def send_tasks_until_outbox_blocked(tasks: list[dict], config: dict, context: str) -> int:
+    return send_until_blocked(
+        tasks,
+        lambda task: send_task_and_record(task, config),
+        lambda stage: result_outbox_blocks_new_sends(config, f"{context}:{stage}"),
+        sleep_seconds=float(config.get("send_interval_seconds", 3)),
+        sleep_func=time.sleep,
+    )
+
+
 # 把本轮同步中自动创建的 AI 回复任务继续取出来发送。
 def send_created_reply_tasks(sync_results: list[dict], config: dict):
     flush_pending_send_results(config)
@@ -2001,8 +2016,7 @@ def send_created_reply_tasks(sync_results: list[dict], config: dict):
         if not task:
             print(f"task={task_id} status=missing")
             continue
-        send_task_and_record(task, config)
-        time.sleep(float(config.get("send_interval_seconds", 3)))
+        send_tasks_until_outbox_blocked([task], config, "send_created_reply_tasks")
 
 
     # 同步未读会话后，按开关决定是否继续自动发送 AI 回复。
@@ -2130,9 +2144,7 @@ def run_once(config: dict):
         pending = [task for task in tasks if task.get("status") == "pending"]
         selected = pending[:limit]
         print(f"pending={len(pending)}, selected={len(selected)}, default_dry_run={config.get('dry_run', True)}")
-    for task in selected:
-        send_task_and_record(task, config)
-        time.sleep(float(config.get("send_interval_seconds", 3)))
+    send_tasks_until_outbox_blocked(selected, config, "run_once")
 
 
     # 只检查窗口是否存在，方便排查企微是否已启动。

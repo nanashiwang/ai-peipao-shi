@@ -3770,6 +3770,7 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
     # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
     add_file(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
     add_file(ROOT / "rpa" / "send_guard.py", "rpa/send_guard.py")
+    add_file(ROOT / "rpa" / "send_batch_guard.py", "rpa/send_batch_guard.py")
     add_file(ROOT / "rpa" / "result_outbox.py", "rpa/result_outbox.py")
     add_file(ROOT / "app" / "services" / "ark_client.py", "app/services/ark_client.py")
     add_text("app/__init__.py", "")
