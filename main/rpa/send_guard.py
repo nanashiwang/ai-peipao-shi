@@ -44,13 +44,22 @@ def sent_content_confirmed(content: str, messages, recent_count: int = 8) -> boo
     return sent_content_match_count(content, messages, recent_count) > 0
 
 
-def sent_content_match_count(content: str, messages, recent_count: int = 8) -> int:
+def _message_speaker(message) -> str:
+    if isinstance(message, dict):
+        return str(message.get("speaker", "")).strip()
+    return ""
+
+
+def sent_content_match_count(content: str, messages, recent_count: int = 8, speaker: str = "") -> int:
     expected = normalize_confirmation_text(content)
     if not expected:
         return 0
+    expected_speaker = (speaker or "").strip()
     recent_messages = list(messages or [])[-max(int(recent_count or 1), 1):]
     count = 0
     for message in recent_messages:
+        if expected_speaker and _message_speaker(message) != expected_speaker:
+            continue
         if isinstance(message, dict):
             observed = normalize_confirmation_text(message.get("content", ""))
         else:

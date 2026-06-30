@@ -1778,7 +1778,9 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
     clipboard_count = None
     recent_count = _post_send_verify_recent_count(config)
     before_count = sent_content_match_count(text, before_messages, recent_count) if before_messages is not None else 0
+    before_self_count = sent_content_match_count(text, before_messages, recent_count, speaker="我") if before_messages is not None else 0
     after_count = 0
+    after_self_count = 0
     attempts = _post_send_verify_attempts(config)
     retry_interval = _post_send_verify_retry_interval(config)
     last_error = ""
@@ -1801,10 +1803,12 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             last_error = str(exc)
             add_send_trace(config, f"发送后第{attempt}次UIA回读异常:{exc}")
         after_count = sent_content_match_count(text, messages, recent_count)
+        after_self_count = sent_content_match_count(text, messages, recent_count, speaker="我")
         if sent_content_confirmed_after_send(text, before_messages, messages, recent_count):
             detail = (
                 f"VERIFY_CONFIRMED: 目标「{target}」第{attempt}/{attempts}次可见聊天记录回读命中本次内容，"
-                f"message_count={len(messages)}, before_match_count={before_count}, after_match_count={after_count}"
+                f"message_count={len(messages)}, before_match_count={before_count}, after_match_count={after_count}, "
+                f"self_before_match_count={before_self_count}, self_after_match_count={after_self_count}"
             )
             add_send_trace(config, f"发送后第{attempt}次消息回读命中")
             return True, verification_payload("confirmed", detail, True)
@@ -1823,11 +1827,13 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
             clipboard_messages = extract_chat_messages_by_clipboard(window, target, clipboard_config)
             clipboard_count = len(clipboard_messages)
             clipboard_after_count = sent_content_match_count(text, clipboard_messages, recent_count)
+            clipboard_self_after_count = sent_content_match_count(text, clipboard_messages, recent_count, speaker="我")
             if sent_content_confirmed_after_send(text, before_messages, clipboard_messages, recent_count):
                 detail = (
                     f"VERIFY_CONFIRMED: 目标「{target}」剪贴板聊天记录回读命中本次内容，"
                     f"attempts={attempts}, message_count={len(clipboard_messages)}, "
-                    f"before_match_count={before_count}, after_match_count={clipboard_after_count}"
+                    f"before_match_count={before_count}, after_match_count={clipboard_after_count}, "
+                    f"self_before_match_count={before_self_count}, self_after_match_count={clipboard_self_after_count}"
                 )
                 add_send_trace(config, "发送后剪贴板回读命中")
                 return True, verification_payload("confirmed", detail, True)
@@ -1838,7 +1844,8 @@ def confirm_sent_message(window, target: str, text: str, config: dict, before_me
     error_note = f"，last_error={last_error}" if last_error else ""
     detail = (
         f"目标「{target}」聊天记录经过 {attempts} 次回读仍未读到本次新增内容，uia_count={len(messages)}{clipboard_note}{error_note}，"
-        f"before_match_count={before_count}, after_match_count={after_count}"
+        f"before_match_count={before_count}, after_match_count={after_count}, "
+        f"self_before_match_count={before_self_count}, self_after_match_count={after_self_count}"
     )
     add_send_trace(config, "发送后消息回读未命中")
     return False, verification_payload("failed", detail, True)

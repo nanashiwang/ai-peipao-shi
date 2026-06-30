@@ -109,7 +109,30 @@ class OpsHealthDashboardTest(unittest.TestCase):
         self.assertEqual(report["metrics"]["confirmed_24h"], 1)
         self.assertEqual(report["metrics"]["unconfirmed_sent_24h"], 0)
         self.assertEqual(report["metrics"]["confirm_failed_24h"], 1)
-        self.assertEqual(report["metrics"]["confirm_rate"], 100.0)
+        self.assertEqual(report["metrics"]["attempted_24h"], 2)
+        self.assertEqual(report["metrics"]["confirm_rate"], 50.0)
+
+    def test_health_reports_device_result_outbox_backlog(self):
+        self.db.add(
+            Device(
+                device_id="dev-blocked",
+                token="t1",
+                wecom_ok="Y",
+                last_heartbeat=self.now,
+                outbox_pending_count=3,
+                outbox_last_error="API connection failed",
+            )
+        )
+        self.db.commit()
+
+        dashboard = build_ops_health_dashboard(self.db, now=self.now)
+        report = self.component(dashboard, "结果补传队列")
+
+        self.assertEqual(report["status"], "critical")
+        self.assertEqual(report["metrics"]["blocked_devices"], 1)
+        self.assertEqual(report["metrics"]["pending_results"], 3)
+        self.assertEqual(report["metrics"]["max_device_pending"], 3)
+        self.assertIn("dev-blocked", report["metrics"]["last_errors"][0])
 
     def test_health_ok_when_core_dependencies_are_ready(self):
         self.db.add(Device(device_id="dev-online", token="t1", wecom_ok="Y", last_heartbeat=self.now))

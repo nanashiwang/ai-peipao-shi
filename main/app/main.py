@@ -736,12 +736,31 @@ def infer_send_verify_status(status: str, detail: str, mode: str) -> str:
     return "unknown" if status == "sent" else ""
 
 
+def real_send_verify_detail_has_evidence(detail: str, target_name: str) -> bool:
+    clean_detail = (detail or "").strip()
+    if "VERIFY_CONFIRMED" not in clean_detail or "回读命中" not in clean_detail:
+        return False
+    clean_target = (target_name or "").strip()
+    return not clean_target or clean_target in clean_detail
+
+
 def normalize_send_verification(payload: SendResultIn, task: SendTask, finished_at: datetime) -> tuple[str, str, datetime | None]:
     mode = send_log_mode(task)
     verify_status = (payload.verify_status or "").strip() or infer_send_verify_status(payload.status, payload.detail, mode)
     if verify_status not in SEND_VERIFY_STATUSES:
         raise HTTPException(400, "verify_status 不合法")
     verify_detail = (payload.verify_detail or "").strip()
+    if (
+        mode == "real_send"
+        and payload.status == "sent"
+        and verify_status == "confirmed"
+        and not real_send_verify_detail_has_evidence(verify_detail, task.target_name)
+    ):
+        return (
+            "unknown",
+            "设备上报 confirmed，但缺少目标会话回读命中证据；必须回到目标群/私聊读取聊天记录并上报 VERIFY_CONFIRMED 明细",
+            payload.verified_at,
+        )
     if verify_status == "confirmed":
         verified_at = payload.verified_at or finished_at
         if not verify_detail:
@@ -4008,6 +4027,13 @@ def real_send_verification_report(db: Session, now: datetime | None = None) -> d
     now = now or datetime.utcnow()
     since = now - timedelta(hours=24)
     base = db.query(SendLog).filter(SendLog.send_mode == "real_send", SendLog.sent_at >= since)
+    attempted_count = base.filter(
+        or_(
+            SendLog.status == "sent",
+            SendLog.verify_status.in_(["failed", "unknown"]),
+            SendLog.detail.contains("SEND_CONFIRM_FAILED"),
+        )
+    ).count()
     sent_count = base.filter(SendLog.status == "sent").count()
     confirmed_count = base.filter(SendLog.status == "sent", SendLog.verify_status == "confirmed").count()
     unconfirmed_sent_count = base.filter(
@@ -4021,10 +4047,10 @@ def real_send_verification_report(db: Session, now: datetime | None = None) -> d
         )
     ).count()
     status = "critical" if unconfirmed_sent_count or confirm_failed_count else "ok"
-    rate = round((confirmed_count / sent_count) * 100, 2) if sent_count else 100.0
+    rate = round((confirmed_count / attempted_count) * 100, 2) if attempted_count else 100.0
     detail = (
-        f"近24小时真实发送 {sent_count} 条，回读确认 {confirmed_count} 条，确认率 {rate}%"
-        if sent_count or confirm_failed_count
+        f"近24小时真实发送闭环 {attempted_count} 条，成功落地回读 {confirmed_count} 条，确认率 {rate}%"
+        if attempted_count
         else "近24小时暂无真实发送，回读确认无异常"
     )
     if confirm_failed_count:
@@ -4034,11 +4060,40 @@ def real_send_verification_report(db: Session, now: datetime | None = None) -> d
         "真实发送回读确认",
         detail,
         {
+            "attempted_24h": attempted_count,
             "real_sent_24h": sent_count,
             "confirmed_24h": confirmed_count,
             "unconfirmed_sent_24h": unconfirmed_sent_count,
             "confirm_failed_24h": confirm_failed_count,
             "confirm_rate": rate,
+        },
+    )
+
+
+def device_outbox_report(devices: list[Device]) -> dict:
+    blocked = [dev for dev in devices if (dev.outbox_pending_count or 0) > 0]
+    pending_total = sum(dev.outbox_pending_count or 0 for dev in blocked)
+    max_pending = max((dev.outbox_pending_count or 0 for dev in blocked), default=0)
+    last_errors = [
+        f"{dev.device_id}: {dev.outbox_last_error}"
+        for dev in blocked
+        if (dev.outbox_last_error or "").strip()
+    ][:5]
+    status = "critical" if pending_total else "ok"
+    detail = (
+        f"{len(blocked)} 台设备存在 {pending_total} 条发送结果待补传，相关真实发送已暂停"
+        if pending_total
+        else "所有设备结果补传队列已清空"
+    )
+    return component_status(
+        status,
+        "结果补传队列",
+        detail,
+        {
+            "blocked_devices": len(blocked),
+            "pending_results": pending_total,
+            "max_device_pending": max_pending,
+            "last_errors": last_errors,
         },
     )
 
@@ -4078,6 +4133,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             f"{len(wecom_ok_devices)}/{len(online_devices)} 台在线设备企微正常",
             {"online": len(online_devices), "wecom_ok": len(wecom_ok_devices)},
         ),
+        device_outbox_report(devices),
         component_status(
             "critical" if stale_assigned_count else ("warn" if pending_count >= 50 else "ok"),
             "发送队列",

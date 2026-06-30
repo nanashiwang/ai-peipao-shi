@@ -73,6 +73,15 @@ class RpaSendGuardTest(unittest.TestCase):
         self.assertTrue(sent_content_confirmed("测试发送 第一行\n第二行", messages))
         self.assertFalse(sent_content_confirmed("另一条内容", messages))
 
+    def test_sent_content_match_count_can_filter_self_speaker(self):
+        messages = [
+            {"speaker": "家长", "content": "测试发送"},
+            {"speaker": "我", "content": "测试发送"},
+        ]
+
+        self.assertEqual(sent_content_match_count("测试发送", messages, recent_count=8), 2)
+        self.assertEqual(sent_content_match_count("测试发送", messages, recent_count=8, speaker="我"), 1)
+
     def test_sent_content_confirmation_only_checks_recent_messages(self):
         messages = [{"speaker": "我", "content": f"旧消息{i}"} for i in range(9)]
         messages[0]["content"] = "重复内容"
