@@ -1595,6 +1595,18 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_screenshot_dir = main_module.SEND_SCREENSHOT_DIR
         main_module.SEND_SCREENSHOT_DIR = Path(self.tmp.name)
+        self.device = Device(
+            device_id="rpa-01",
+            token="token",
+            conversations='["\\u4e00\\u5408\\u5b66\\u793e"]',
+            allow_real_send=True,
+        )
+        self.db.add(self.device)
+        self.db.commit()
+        self.device_request = SimpleNamespace(
+            headers={"x-device-id": self.device.device_id, "x-device-token": self.device.token},
+            state=SimpleNamespace(),
+        )
 
     def tearDown(self):
         main_module.SEND_SCREENSHOT_DIR = self.old_screenshot_dir
@@ -1630,6 +1642,14 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.db.commit()
         return proof
 
+    def test_record_send_result_requires_device_token(self):
+        task = self.add_task()
+
+        with self.assertRaises(HTTPException) as ctx:
+            record_send_result(task.id, SendResultIn(status="failed", device_id="rpa-01"), db=self.db)
+
+        self.assertEqual(ctx.exception.status_code, 401)
+
     def test_record_send_result_stores_server_screenshot(self):
         task = self.add_task()
         payload = SendResultIn(
@@ -1639,7 +1659,7 @@ class SendResultEvidenceTest(unittest.TestCase):
             screenshot_base64=base64.b64encode(self.PNG_BYTES).decode("ascii"),
         )
 
-        log = record_send_result(task.id, payload, db=self.db)
+        log = record_send_result(task.id, payload, request=self.device_request, db=self.db)
 
         self.assertEqual(log["status"], "failed")
         self.assertEqual(log["device_id"], "rpa-01")
@@ -1665,6 +1685,7 @@ class SendResultEvidenceTest(unittest.TestCase):
                 verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容，回读已落库 proof_status=ok",
                 verified_at=verified_at,
             ),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1688,8 +1709,8 @@ class SendResultEvidenceTest(unittest.TestCase):
             verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容，回读已落库 proof_status=ok",
         )
 
-        first = record_send_result(task.id, payload, db=self.db)
-        second = record_send_result(task.id, payload, db=self.db)
+        first = record_send_result(task.id, payload, request=self.device_request, db=self.db)
+        second = record_send_result(task.id, payload, request=self.device_request, db=self.db)
 
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(self.db.query(SendLog).filter(SendLog.task_id == task.id).count(), 1)
@@ -1700,6 +1721,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         log = record_send_result(
             task.id,
             SendResultIn(status="sent", detail="REAL_RPA: 已通过企业微信 PC 端发送。", device_id="rpa-01"),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1720,6 +1742,7 @@ class SendResultEvidenceTest(unittest.TestCase):
                 device_id="rpa-01",
                 verify_status="confirmed",
             ),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1741,6 +1764,7 @@ class SendResultEvidenceTest(unittest.TestCase):
                 verify_status="confirmed",
                 verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容",
             ),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1762,6 +1786,7 @@ class SendResultEvidenceTest(unittest.TestCase):
                 verify_status="confirmed",
                 verify_detail="VERIFY_CONFIRMED: 目标「一合学社」可见聊天记录回读命中本次内容，回读已落库 proof_status=ok",
             ),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1776,6 +1801,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         failed_log = record_send_result(
             task.id,
             SendResultIn(status="failed", detail="SEND_CONFIRM_FAILED: 真实发送热键已触发但自动回读失败", device_id="rpa-01"),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1803,6 +1829,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         failed_log = record_send_result(
             task.id,
             SendResultIn(status="failed", detail="SEND_CONFIRM_FAILED: 真实发送热键已触发但自动回读失败", device_id="rpa-01"),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1829,6 +1856,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         skipped_log = record_send_result(
             task.id,
             SendResultIn(status="skipped", detail="REAL_SEND_GUARD: 控制端未开启该设备真实发送开关", device_id="rpa-01"),
+            request=self.device_request,
             db=self.db,
         )
 
@@ -1850,7 +1878,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         task.send_mode = "dry_run"
         self.db.commit()
 
-        log = record_send_result(task.id, SendResultIn(status="dry_run"), db=self.db)
+        log = record_send_result(task.id, SendResultIn(status="dry_run"), request=self.device_request, db=self.db)
 
         self.assertEqual(log["status"], "dry_run")
         self.assertEqual(log["send_mode"], "dry_run")
@@ -1864,7 +1892,7 @@ class SendResultEvidenceTest(unittest.TestCase):
         )
 
         with self.assertRaises(HTTPException):
-            record_send_result(task.id, payload, db=self.db)
+            record_send_result(task.id, payload, request=self.device_request, db=self.db)
 
     def test_rejects_artifact_path_traversal(self):
         with self.assertRaises(HTTPException):

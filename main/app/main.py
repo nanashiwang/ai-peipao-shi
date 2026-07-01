@@ -4216,11 +4216,6 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         raise HTTPException(404, "任务不存在")
     if task.device_id and task.device_id != device.device_id:
         raise HTTPException(403, "无权回写他人设备的任务结果")
-    if task.status in ("sent", "cancelled"):
-        raise HTTPException(409, "任务已处于终态，不可重复回写结果")
-    ensure_task_family_access(db, task, request)
-    if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
-        raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
     client_result_id = (payload.client_result_id or "").strip()
     if client_result_id:
         existing_log = (
@@ -4230,6 +4225,11 @@ def record_send_result(task_id: int, payload: SendResultIn, request: Request = N
         )
         if existing_log:
             return send_log_view(existing_log)
+    if task.status in ("sent", "cancelled"):
+        raise HTTPException(409, "任务已处于终态，不可重复回写结果")
+    ensure_task_family_access(db, task, request)
+    if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
+        raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
     screenshot_path = store_send_screenshot(task.id, payload.screenshot_base64)
     before = send_task_snapshot(task)
     finished_at = datetime.utcnow()
