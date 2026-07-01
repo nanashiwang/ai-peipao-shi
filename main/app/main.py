@@ -41,6 +41,7 @@ from app.models import (
     SendTask,
     Template,
     UserAccount,
+    WecomArchiveState,
     WeeklyReport,
 )
 from app.services.agent_service import (
@@ -86,6 +87,14 @@ from app.services.send_task_operations import (
     role_allows_task_operation,
     send_task_operation_state,
     send_task_workflow_stage,
+)
+from app.services.wecom_archive import (
+    ArchiveEnvelope,
+    config_status as wecom_archive_config_status,
+    group_archive_messages,
+    normalize_archive_message,
+    pull_archive_messages,
+    read_wecom_archive_config,
 )
 from rpa.package_manifest import build_package_manifest
 
@@ -271,6 +280,7 @@ class RpaMessageIn(BaseModel):
     content: str
     message_time: str = ""
     source: str = "企业微信RPA"
+    external_id: str = ""
 
 
 # 一次同步一个会话，消息列表和是否自动生成回复都放在这里。
@@ -288,6 +298,14 @@ class RpaConversationIn(BaseModel):
     latest_message: str = ""
     conversation_opened: bool = False
     empty_conversation_ok: bool = False
+
+
+class WecomArchiveSyncIn(BaseModel):
+    limit: int | None = None
+    auto_generate_reply: bool = True
+    auto_create_reply_task: bool = False
+    auto_generate_all_agents: bool = False
+    messages: list[dict] = []
 
 
 # 更新发送任务的可编辑字段。
@@ -1624,6 +1642,10 @@ def ensure_weekly_report_send_task(db: Session, report: WeeklyReport, actor: str
 def parse_rpa_time(value: str) -> datetime:
     if not value:
         return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%m-%d %H:%M", "%H:%M"):
         try:
             parsed = datetime.strptime(value, fmt)
@@ -3469,10 +3491,18 @@ def run_checkin_pbl_agent(payload: AgentRequest, request: Request = None, db: Se
     return {**as_dict(output), "family_name": family.parent_nickname, "checkin_records_created": created}
 
 
-# RPA 同步企业微信会话消息，并可选自动生成回复任务。
-@app.post("/api/rpa/conversations/sync")
-def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, db: Session = Depends(get_db)):
-    dev = device_from_optional_headers(db, request)
+def speaker_is_self(speaker: str) -> bool:
+    return (speaker or "").strip() in {"我", "本人", "自己", "老师", "陪跑师"}
+
+
+def sync_conversation_payload(
+    db: Session,
+    payload: RpaConversationIn,
+    *,
+    actor: str = "企微同步",
+    source_prefix: str = "企微RPA",
+    dev: Device | None = None,
+) -> dict:
     family_id = payload.family_id.strip()
     family = None
     if family_id:
@@ -3516,40 +3546,47 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
         content = msg.content.strip()
         if not content:
             continue
-        exists = (
-            db.query(RawMessage)
-            .filter(
-                RawMessage.family_id == family_id,
-                RawMessage.speaker == (msg.speaker or payload.target_name),
-                RawMessage.content == content,
-                RawMessage.source == msg.source,
+        external_id = (msg.external_id or "").strip()
+        if external_id:
+            exists = db.query(RawMessage).filter(RawMessage.external_id == external_id).first()
+        else:
+            exists = (
+                db.query(RawMessage)
+                .filter(
+                    RawMessage.family_id == family_id,
+                    RawMessage.speaker == (msg.speaker or payload.target_name),
+                    RawMessage.content == content,
+                    RawMessage.source == msg.source,
+                )
+                .first()
             )
-            .first()
-        )
         if exists:
             continue
+        speaker = msg.speaker or payload.target_name
         db.add(
             RawMessage(
                 family_id=family_id,
                 message_time=parse_rpa_time(msg.message_time),
-                speaker=msg.speaker or payload.target_name,
+                speaker=speaker,
                 content=content,
                 source=msg.source,
+                external_id=external_id,
                 checkin_status=detect_checkin(content),
                 is_effective="Y" if len(content) >= 2 else "N",
             )
         )
         inserted += 1
-        latest_parent_message = content
+        if not speaker_is_self(speaker):
+            latest_parent_message = content
 
     ai_output = None
     task = None
     generated_outputs = []
-    if payload.auto_generate_reply and latest_parent_message:
+    if payload.auto_generate_reply and latest_parent_message and inserted > 0:
         db.flush()
         context = build_agent_context(db, family_id)
         result = run_reply_agent_service(context, latest_parent_message, "standard")
-        ai_output = save_ai_output(db, family_id, "ai_reply", f"企微RPA：{payload.target_name}", result)
+        ai_output = save_ai_output(db, family_id, "ai_reply", f"{source_prefix}：{payload.target_name}", result)
         generated_outputs.append(ai_output)
         if payload.auto_create_reply_task:
             task = SendTask(
@@ -3560,24 +3597,24 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
                 status="pending",
             )
             ai_output.status = "task_created"
-            add_send_task_with_audit(db, task, "create", actor_from_request(request, "企微RPA"), f"企微会话「{payload.target_name}」自动生成回复任务")
+            add_send_task_with_audit(db, task, "create", actor, f"企微会话「{payload.target_name}」自动生成回复任务")
 
     if payload.auto_generate_all_agents:
         db.flush()
         context = build_agent_context(db, family_id)
         if context["messages"]:
             profile_result = run_family_profile_agent_service(context)
-            profile_output = save_ai_output(db, family_id, "family_profile", f"企微RPA：{payload.target_name}", profile_result)
+            profile_output = save_ai_output(db, family_id, "family_profile", f"{source_prefix}：{payload.target_name}", profile_result)
             generated_outputs.append(profile_output)
             upsert_parent_profile_from_agent(db, family_id, profile_result)
 
             weekly_result = run_weekly_report_agent_service(context)
-            weekly_output = save_ai_output(db, family_id, "weekly_report", f"企微RPA：{payload.target_name}", weekly_result)
+            weekly_output = save_ai_output(db, family_id, "weekly_report", f"{source_prefix}：{payload.target_name}", weekly_result)
             generated_outputs.append(weekly_output)
             create_weekly_report_from_agent(db, family_id, weekly_result)
 
             checkin_result = run_checkin_pbl_agent_service(context)
-            checkin_output = save_ai_output(db, family_id, "checkin_pbl", f"企微RPA：{payload.target_name}", checkin_result)
+            checkin_output = save_ai_output(db, family_id, "checkin_pbl", f"{source_prefix}：{payload.target_name}", checkin_result)
             generated_outputs.append(checkin_output)
             create_checkin_records_from_context(db, context)
 
@@ -3593,6 +3630,18 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
     }
 
 
+# RPA 同步企业微信会话消息，并可选自动生成回复任务。
+@app.post("/api/rpa/conversations/sync")
+def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, db: Session = Depends(get_db)):
+    return sync_conversation_payload(
+        db,
+        payload,
+        actor=actor_from_request(request, "企微RPA"),
+        source_prefix="企微RPA",
+        dev=device_from_optional_headers(db, request),
+    )
+
+
 @app.get("/api/rpa/conversations/resolve")
 def resolve_rpa_conversation(target_name: str, db: Session = Depends(get_db)):
     family = db.query(Family).filter(Family.parent_nickname == target_name).one_or_none()
@@ -3603,6 +3652,118 @@ def resolve_rpa_conversation(target_name: str, db: Session = Depends(get_db)):
         "target_name": target_name,
         "family": as_dict(family) if family else None,
     }
+
+
+def archive_state_for_config(db: Session, corp_id: str) -> WecomArchiveState:
+    key = (corp_id or "default").strip() or "default"
+    state = db.query(WecomArchiveState).filter(WecomArchiveState.corp_id == key).one_or_none()
+    if not state:
+        state = WecomArchiveState(corp_id=key, seq=0)
+        db.add(state)
+        db.flush()
+    return state
+
+
+def archive_envelope_from_payload(item: dict) -> ArchiveEnvelope:
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else item
+    decrypted = item.get("decrypted") if isinstance(item.get("decrypted"), dict) else item
+    return ArchiveEnvelope(
+        seq=int(item.get("seq") or raw.get("seq") or decrypted.get("seq") or 0),
+        msgid=str(item.get("msgid") or raw.get("msgid") or decrypted.get("msgid") or ""),
+        raw=raw,
+        decrypted=decrypted,
+    )
+
+
+@app.get("/api/wecom-archive/status")
+def wecom_archive_status(db: Session = Depends(get_db)):
+    config = read_wecom_archive_config()
+    state = archive_state_for_config(db, config.corp_id)
+    db.commit()
+    return {
+        **wecom_archive_config_status(config),
+        "seq": state.seq,
+        "last_msg_time": timeline_time(state.last_msg_time) if state.last_msg_time else "",
+        "last_error": state.last_error,
+        "updated_at": timeline_time(state.updated_at),
+    }
+
+
+@app.post("/api/wecom-archive/sync")
+def sync_wecom_archive(payload: WecomArchiveSyncIn, request: Request = None, db: Session = Depends(get_db)):
+    config = read_wecom_archive_config()
+    state = archive_state_for_config(db, config.corp_id)
+    try:
+        if payload.messages:
+            envelopes = [archive_envelope_from_payload(item) for item in payload.messages]
+        else:
+            status = wecom_archive_config_status(config)
+            if not status["configured"]:
+                raise HTTPException(400, status["detail"])
+            envelopes = pull_archive_messages(state.seq, payload.limit, config)
+
+        normalized = []
+        for envelope in envelopes:
+            item = normalize_archive_message(envelope, config)
+            if item:
+                normalized.append(item)
+
+        results = []
+        for group in group_archive_messages(normalized):
+            conversation_payload = RpaConversationIn(
+                target_name=group["target_name"],
+                family_id=group["family_id"],
+                messages=[
+                    RpaMessageIn(
+                        speaker=msg.speaker,
+                        content=msg.content,
+                        message_time=msg.message_time.isoformat(),
+                        source=msg.source,
+                        external_id=msg.external_id,
+                    )
+                    for msg in group["messages"]
+                ],
+                latest_message=group["latest_message"],
+                auto_generate_reply=payload.auto_generate_reply,
+                auto_create_reply_task=payload.auto_create_reply_task,
+                auto_generate_all_agents=payload.auto_generate_all_agents,
+                conversation_opened=True,
+                empty_conversation_ok=False,
+            )
+            results.append(
+                sync_conversation_payload(
+                    db,
+                    conversation_payload,
+                    actor=actor_from_request(request, "企业微信存档"),
+                    source_prefix="企业微信存档",
+                )
+            )
+
+        if envelopes:
+            state.seq = max(state.seq or 0, max((item.seq for item in envelopes), default=state.seq or 0))
+        if normalized:
+            state.last_msg_time = max(item.message_time for item in normalized)
+        state.last_error = ""
+        state.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "status": "ok",
+            "pulled": len(envelopes),
+            "normalized": len(normalized),
+            "groups": len(results),
+            "seq": state.seq,
+            "results": results,
+        }
+    except HTTPException as exc:
+        state.last_error = str(exc.detail)
+        state.updated_at = datetime.utcnow()
+        db.commit()
+        raise
+    except Exception as exc:
+        state.last_error = str(exc)
+        state.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(500, f"企业微信会话存档同步失败：{exc}") from exc
 
 
 # 周报列表接口。

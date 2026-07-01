@@ -85,6 +85,7 @@ def ensure_columns():
             ("renewal_intent", "VARCHAR(40)"),
         ],
         "user_accounts": [("campus_names", "TEXT")],
+        "raw_messages": [("external_id", "VARCHAR(160)")],
         "devices": [
             ("allow_real_send", "BOOLEAN"),
             ("allow_any_conversation", "BOOLEAN"),

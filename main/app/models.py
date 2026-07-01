@@ -69,6 +69,7 @@ class RawMessage(Base):
     speaker: Mapped[str] = mapped_column(String(80), default="")
     content: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(80), default="导入")
+    external_id: Mapped[str] = mapped_column(String(160), default="", index=True)
     checkin_status: Mapped[str] = mapped_column(String(40), default="")
     is_effective: Mapped[str] = mapped_column(String(10), default="Y")
 
@@ -254,6 +255,18 @@ class DeviceConversationCheck(Base):
     source: Mapped[str] = mapped_column(String(80), default="")
     last_error: Mapped[str] = mapped_column(Text, default="")
     verified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# 企业微信会话内容存档同步游标。按 corp_id 维度保存 seq，防止重复拉取。
+class WecomArchiveState(Base):
+    __tablename__ = "wecom_archive_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corp_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    last_msg_time: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    last_error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
