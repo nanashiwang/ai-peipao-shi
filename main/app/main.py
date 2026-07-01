@@ -2101,7 +2101,18 @@ def on_startup():
     # 首页返回静态前端页面。
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    # 首页动态注入静态资源版本号(内容hash)，实现自动缓存失效。
+    import hashlib
+    from fastapi.responses import HTMLResponse
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    _h = hashlib.md5()
+    for _n in ("app.js", "style.css"):
+        _p = STATIC / _n
+        if _p.exists():
+            _h.update(_p.read_bytes())
+    _v = _h.hexdigest()[:8]
+    html = html.replace("/static/app.js", "/static/app.js?v=" + _v).replace("/static/style.css", "/static/style.css?v=" + _v)
+    return HTMLResponse(html)
 
 
 # 健康检查接口给 RPA 和前端都可以用。
