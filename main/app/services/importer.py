@@ -47,19 +47,7 @@ IMPORT_TEMPLATES = {
         "required_fields": ["family_id", "parent_nickname", "child_grade", "coach_name"],
         "optional_fields": ["parent_phone", "child_name", "campus_name", "course_stage", "service_status"],
         "headers": ["family_id", "parent_nickname", "parent_phone", "child_name", "child_grade", "campus_name", "coach_name", "course_stage", "service_status"],
-        "sample_rows": [
-            {
-                "family_id": "FAM001",
-                "parent_nickname": "林妈妈",
-                "parent_phone": "13800138000",
-                "child_name": "林同学",
-                "child_grade": "初一",
-                "campus_name": "重庆南坪校区",
-                "coach_name": "怡彤老师",
-                "course_stage": "S级陪跑第1阶段",
-                "service_status": "服务中",
-            }
-        ],
+        "sample_rows": [],
     },
     "chat_messages_v1": {
         "key": "chat_messages_v1",
@@ -71,20 +59,7 @@ IMPORT_TEMPLATES = {
         "required_fields": ["family_id", "message_time", "speaker", "content"],
         "optional_fields": ["parent_nickname", "child_grade", "campus_name", "coach_name", "source", "checkin_status"],
         "headers": ["family_id", "parent_nickname", "child_grade", "campus_name", "coach_name", "message_time", "speaker", "content", "source", "checkin_status"],
-        "sample_rows": [
-            {
-                "family_id": "FAM001",
-                "parent_nickname": "林妈妈",
-                "child_grade": "初一",
-                "campus_name": "重庆南坪校区",
-                "coach_name": "怡彤老师",
-                "message_time": "2026-06-30 19:30",
-                "speaker": "林妈妈",
-                "content": "老师，孩子今天已完成数学订正。",
-                "source": "企业微信群",
-                "checkin_status": "完成打卡",
-            }
-        ],
+        "sample_rows": [],
     },
     "checkin_records_v1": {
         "key": "checkin_records_v1",
@@ -96,18 +71,7 @@ IMPORT_TEMPLATES = {
         "required_fields": ["family_id", "message_time", "checkin_status", "content"],
         "optional_fields": ["parent_nickname", "source", "campus_name", "coach_name"],
         "headers": ["family_id", "parent_nickname", "message_time", "checkin_status", "content", "source", "campus_name", "coach_name"],
-        "sample_rows": [
-            {
-                "family_id": "FAM001",
-                "parent_nickname": "林妈妈",
-                "message_time": "2026-06-30 20:10",
-                "checkin_status": "完成打卡",
-                "content": "数学订正已完成，英语阅读未完成。",
-                "source": "打卡表",
-                "campus_name": "重庆南坪校区",
-                "coach_name": "怡彤老师",
-            }
-        ],
+        "sample_rows": [],
     },
     "leave_makeup_v1": {
         "key": "leave_makeup_v1",
@@ -119,19 +83,7 @@ IMPORT_TEMPLATES = {
         "required_fields": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan"],
         "optional_fields": ["owner", "status", "campus_name", "coach_name"],
         "headers": ["family_id", "parent_nickname", "leave_time", "leave_reason", "makeup_plan", "owner", "status", "campus_name", "coach_name"],
-        "sample_rows": [
-            {
-                "family_id": "FAM001",
-                "parent_nickname": "林妈妈",
-                "leave_time": "2026-07-01 19:00",
-                "leave_reason": "孩子校内活动请假",
-                "makeup_plan": "7月3日补课并同步资料",
-                "owner": "怡彤老师",
-                "status": "待补课",
-                "campus_name": "重庆南坪校区",
-                "coach_name": "怡彤老师",
-            }
-        ],
+        "sample_rows": [],
     },
     "course_stage_v1": {
         "key": "course_stage_v1",
@@ -143,20 +95,7 @@ IMPORT_TEMPLATES = {
         "required_fields": ["family_id", "parent_nickname", "course_stage", "unit_progress"],
         "optional_fields": ["child_grade", "pbl_count", "checkin_rate", "next_milestone", "campus_name", "coach_name"],
         "headers": ["family_id", "parent_nickname", "child_grade", "campus_name", "course_stage", "unit_progress", "pbl_count", "checkin_rate", "next_milestone", "coach_name"],
-        "sample_rows": [
-            {
-                "family_id": "FAM001",
-                "parent_nickname": "林妈妈",
-                "child_grade": "初一",
-                "campus_name": "重庆南坪校区",
-                "course_stage": "S级陪跑第1阶段",
-                "unit_progress": "Unit 3",
-                "pbl_count": "2",
-                "checkin_rate": "86%",
-                "next_milestone": "完成第3次PBL展示",
-                "coach_name": "怡彤老师",
-            }
-        ],
+        "sample_rows": [],
     },
 }
 

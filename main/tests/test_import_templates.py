@@ -39,14 +39,15 @@ class ImportTemplateCatalogTest(unittest.TestCase):
         }.issubset(template["headers"]))
         self.assertEqual(template["template_family"], "course_stage")
 
-    def test_template_csv_contains_utf8_bom_header_and_sample_row(self):
+    def test_template_csv_contains_utf8_bom_header_only(self):
         raw = import_template_csv_bytes("chat_messages_v1")
 
         self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
         text = raw.decode("utf-8-sig")
         rows = list(csv.DictReader(StringIO(text)))
-        self.assertEqual(rows[0]["family_id"], "FAM001")
-        self.assertIn("content", rows[0])
+        self.assertEqual(rows, [])
+        header = text.splitlines()[0]
+        self.assertIn("content", header)
 
     def test_unknown_template_rejected(self):
         with self.assertRaises(KeyError):

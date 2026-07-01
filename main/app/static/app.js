@@ -31,6 +31,7 @@ const state = {
   selectedCoachName: localStorage.getItem("coachFilter") || "",
   selectedChatFamilyId: "",
   selectedFamilyId: "",
+  expandedTaskIds: new Set(),
 };
 
 // 把后端返回的 Agent 类型映射成前端展示名称和颜色。
@@ -39,6 +40,10 @@ const AGENTS = {
   weekly_report: { name: "AI周报", className: "agent-weekly" },
   ai_reply: { name: "AI回复", className: "agent-reply" },
   checkin_pbl: { name: "打卡/PBL", className: "agent-checkin" },
+};
+
+const PENDING_TABS = {
+  parentDashboard: "家长画像功能待优化，当前暂不开放选择。",
 };
 
 // 统一封装 fetch，减少重复的错误处理代码。
@@ -125,6 +130,35 @@ function logoutCurrentUser() {
   setAuthGateVisible(true);
 }
 
+function accountSettingsEndpoint() {
+  return state.currentUser?.parent_token && !state.currentUser?.admin_token
+    ? "/api/parent/auth/me"
+    : "/api/admin/auth/me";
+}
+
+function openAccountSettings() {
+  if (!state.currentUser) {
+    toast("请先登录");
+    return;
+  }
+  const form = $("accountSettingsForm");
+  if (form) {
+    form.username.value = state.currentUser.username || "";
+    form.display_name.value = state.currentUser.display_name || "";
+    form.current_password.value = "";
+    form.new_password.value = "";
+  }
+  const dialog = $("accountSettingsDialog");
+  if (dialog?.showModal) dialog.showModal();
+  else if (dialog) dialog.setAttribute("open", "open");
+}
+
+function closeAccountSettings() {
+  const dialog = $("accountSettingsDialog");
+  if (dialog?.close) dialog.close();
+  else if (dialog) dialog.removeAttribute("open");
+}
+
 function userCampusText(user) {
   const value = Array.isArray(user?.campus_names) ? user.campus_names.join("、") : user?.campus_names;
   return String(value || "").trim();
@@ -195,7 +229,7 @@ function renderAuthState() {
   const authBar = $("authBar");
   if (authBar) {
     authBar.innerHTML = user
-      ? `<span>${userRoleBadge(user)} ${esc(user.display_name || user.username)}</span><button onclick="logoutCurrentUser()">退出</button>`
+      ? `<span>${userRoleBadge(user)} ${esc(user.display_name || user.username)}</span><button onclick="openAccountSettings()">账号设置</button><button onclick="logoutCurrentUser()">退出</button>`
       : `<button onclick="showAuth('login')">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
   }
   if ($("landingStatus")) {
@@ -473,6 +507,66 @@ function deviceSelect(task) {
   return `<select id="task-device-${task.id}" ${disabled}>${options.join("")}</select>`;
 }
 
+function toggleTaskDetails(id, open) {
+  const key = Number(id);
+  if (open) state.expandedTaskIds.add(key);
+  else state.expandedTaskIds.delete(key);
+}
+
+function taskActionButtons(task) {
+  return `
+    <div class="cell-actions">
+      ${taskCan(task, "edit") || taskCan(task, "confirm_real_send") ? `<button onclick="saveTask(${task.id})">保存/审核</button>` : ""}
+      ${taskCan(task, "dry_run") ? `<button title="只定位、粘贴并清空，不按发送键" onclick="queueTaskDryRun(${task.id})">企微试运行（不发送）</button>` : ""}
+      ${taskCan(task, "confirm_real_send") ? `<button class="danger-action" title="确认后加入企业微信真实发送队列" onclick="queueTaskRealSend(${task.id})">企微真实发送</button>` : ""}
+      ${taskCan(task, "retry") ? `<button onclick="retryTask(${task.id})">失败重试</button>` : ""}
+      ${taskCan(task, "web_send") ? `<button onclick="sendTask(${task.id})">网页发送</button>` : ""}
+      ${taskCan(task, "cancel") ? `<button onclick="cancelTask(${task.id})">取消</button>` : ""}
+      ${taskAllowedOperations(task).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
+    </div>
+  `;
+}
+
+function taskReviewCard(task) {
+  const expanded = state.expandedTaskIds.has(Number(task.id)) ? "open" : "";
+  const preview = (task.content || "").trim().replace(/\s+/g, " ").slice(0, 140);
+  const readiness = task.send_readiness || {};
+  const readinessKind = readiness.status === "ready" || readiness.status === "done" ? "ok" : (readiness.status === "blocked" || readiness.status === "review" ? "danger" : "warn");
+  const retryAlert = task.retry_alert ? badge("需人工告警", "danger") : "";
+  return `
+    <details class="task-card task-review-card" ${expanded} ontoggle="toggleTaskDetails(${task.id}, this.open)">
+      <summary class="task-card-summary">
+        <div class="task-summary-main">
+          <span class="muted">#${esc(task.id)} · ${esc(familyName(task.family_id))} · ${esc(task.scene || "未命名场景")}</span>
+          <strong>${esc(task.target_name || "未填写目标")}</strong>
+          <p>${esc(preview || "暂无内容")}</p>
+        </div>
+        <div class="task-summary-badges">
+          ${sendTaskStatusBadge(task.status)}
+          ${sendModeBadge(task.send_mode || "dry_run")}
+          ${readiness.label ? badge(readiness.label, readinessKind) : ""}
+          ${retryAlert}
+        </div>
+        <span class="task-expand-label"></span>
+      </summary>
+      <div class="task-card-detail">
+        <div class="task-detail-grid">
+          <section><span>操作分层</span>${taskOperationBadges(task)}</section>
+          <section><span>重试/告警</span>${taskRetryCell(task)}</section>
+          <section><span>发送准备</span>${taskReadinessCell(task)}</section>
+          <section><span>发送设备</span>${deviceSelect(task)}</section>
+          <section><span>企微模式</span>${sendModeSelect(task)}</section>
+        </div>
+        <label class="task-content-editor">
+          <span>最终内容</span>
+          <textarea id="task-${task.id}" ${taskCan(task, "edit") ? "" : "readonly"}>${esc(task.content)}</textarea>
+        </label>
+        ${taskActionButtons(task)}
+      </div>
+    </details>
+  `;
+}
+
 function manualTaskFamilyId(target) {
   const clean = String(target || "").trim().replace(/[^\u4e00-\u9fa5a-zA-Z0-9_-]+/g, "_").slice(0, 48);
   return `MANUAL_${clean || "TASK"}`.slice(0, 64);
@@ -600,6 +694,11 @@ function renderGlobalError(detail) {
 // 切换侧边栏标签页，并同步页面标题。
 let devicePollTimer = null;
 function switchTab(tabId) {
+  if (PENDING_TABS[tabId]) {
+    toast(PENDING_TABS[tabId]);
+    setActionStatus(PENDING_TABS[tabId]);
+    return false;
+  }
   document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
   document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
   const active = document.querySelector(`.sidebar button[data-tab="${tabId}"]`);
@@ -622,6 +721,7 @@ function switchTab(tabId) {
     poll();
     devicePollTimer = setInterval(poll, 5000);
   }
+  return true;
 }
 
 // 生成家庭下拉框选项。
@@ -1184,12 +1284,12 @@ function renderFamilies() {
   renderFamilySummary();
 }
 
-// 渲染网页通讯测试页。
+// 渲染陪跑会话工作台。
 function renderWebChat() {
   const campusText = userCampusText(state.currentUser);
   $("loginStatus").innerHTML = state.currentUser
     ? `${userRoleBadge(state.currentUser)}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}${campusText ? ` · 校区：${esc(campusText)}` : ""}</p>`
-    : emptyState("请先登录测试账号", "登录陪跑师或家长账号后，可以在网页会话里测试 AI 回复闭环。");
+    : emptyState("请先登录控制端账号", "登录后可查看真实企微同步会话，并在会话工作台直发或生成回复。");
   const rows = state.conversations.length ? state.conversations : state.families;
   $("chatConversations").innerHTML = rows.length ? rows.map((item) => `
     <button class="list-item ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}" onclick="selectChat('${esc(item.family_id)}')">
@@ -1197,9 +1297,48 @@ function renderWebChat() {
       <span>${esc(item.child_grade || "未知年级")} · ${esc(item.message_count || 0)} 条 · ${esc(item.last_speaker || "")}</span>
       <small>${esc(item.last_message || "")}</small>
     </button>
-  `).join("") : emptyState("暂无会话", "点击“生成模拟账号与对话”，或先导入家庭聊天记录。");
+  `).join("") : emptyState("暂无会话", "请先同步企业微信会话，或导入真实聊天记录。");
   renderChatMessages();
   renderChatOutputs();
+}
+
+function renderChatSendHint(family) {
+  const hint = $("chatSendHint");
+  const directBtn = document.querySelector("#chatForm .danger-action");
+  if (!hint || !directBtn) return;
+  directBtn.disabled = true;
+  if (!state.selectedChatFamilyId || !family) {
+    hint.textContent = "请选择会话后再输入内容；人工直发会跳过审核，直接进入对应电脑的企微真实发送队列。";
+    return;
+  }
+  if (!["admin", "coach"].includes(state.currentUser?.role || "")) {
+    hint.textContent = "当前角色不能直接真实发送；请使用控制端超管或陪跑师账号。";
+    return;
+  }
+  const target = (family.parent_nickname || "").trim();
+  if (!target) {
+    hint.textContent = "当前会话缺少企微目标名，无法定位到企业微信群/私聊。";
+    return;
+  }
+  const candidates = devicesForTarget(target);
+  if (candidates.length !== 1) {
+    hint.textContent = candidates.length
+      ? `目标「${target}」绑定了多个设备：${candidates.map((item) => item.device_id).join("、")}；为避免串号，请先在设备监控明确唯一负责设备。`
+      : `目标「${target}」还没有绑定负责设备；请先到设备监控给对应人员设备配置负责会话。`;
+    return;
+  }
+  const device = candidates[0];
+  const hardIssues = [];
+  if (!device.online) hardIssues.push("设备离线");
+  if (device.wecom_ok !== "Y") hardIssues.push(`企微${device.wecom_ok || "未知"}`);
+  if (!device.allow_real_send) hardIssues.push("真实发送开关未开启");
+  if (Number(device.outbox_pending_count || 0) > 0) hardIssues.push(`还有 ${device.outbox_pending_count} 条结果待补传`);
+  if (hardIssues.length) {
+    hint.textContent = `目标「${target}」对应设备 ${device.device_id} 暂不可真发：${hardIssues.join("、")}。`;
+    return;
+  }
+  directBtn.disabled = false;
+  hint.textContent = `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；不进入审核队列，发送后仍会回读确认。`;
 }
 
 // 渲染当前聊天消息，让它更接近真实陪跑师对话。
@@ -1207,6 +1346,7 @@ function renderChatMessages() {
   const family = state.families.find((item) => item.family_id === state.selectedChatFamilyId);
   $("chatTitle").textContent = family ? family.parent_nickname : "请选择会话";
   $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.campus_name || "未分配校区"} · ${family.coach_name || "未分配"}` : "";
+  renderChatSendHint(family);
   if (!state.selectedChatFamilyId) {
     $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧选择一个家庭后，这里会展示聊天上下文。");
     return;
@@ -1253,7 +1393,7 @@ function renderChatOutputs() {
     </article>
     <section class="assist-section">
       <div class="section-head compact-head">
-        <h3>待审核回复</h3>
+        <h3>待发送回复</h3>
         <button onclick="switchTab('tasks')">全部</button>
       </div>
       <div class="stack">
@@ -1269,7 +1409,7 @@ function renderChatOutputs() {
               ${taskAllowedOperations(task).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
             </div>
           </article>
-        `).join("") : emptyState("暂无待发送回复", "点击“快速生成回复”后，AI 回复会先进入审核发送队列。")}
+        `).join("") : emptyState("暂无待发送回复", "人工输入可直接发企微；AI 回复仍会先生成草稿，便于必要时编辑。")}
       </div>
     </section>
     <section class="assist-section">
@@ -1283,7 +1423,7 @@ async function selectChat(familyId) {
   return withAction("切换会话", async () => {
     state.selectedChatFamilyId = familyId;
     state.selectedFamilyId = familyId;
-    state.chatMessages = await api(`/api/test-chat/messages/${encodeURIComponent(familyId)}`);
+    state.chatMessages = await api(`/api/conversations/${encodeURIComponent(familyId)}/messages`);
     renderWebChat();
   });
 }
@@ -1339,7 +1479,7 @@ async function previewWecomFamily(familyId, remember = true) {
 async function refreshFamilyDetail() {
   if (!state.families.length) {
     $("familySelect").innerHTML = "";
-    $("familyDetail").innerHTML = emptyState("请先导入家庭数据", "导入 CSV/XLSX 或载入样例后，家庭档案会在这里展示。");
+    $("familyDetail").innerHTML = emptyState("请先导入家庭数据", "导入 CSV/XLSX 或同步企业微信后，家庭档案会在这里展示。");
     return;
   }
   state.selectedFamilyId = state.selectedFamilyId || state.families[0].family_id;
@@ -1487,30 +1627,13 @@ function renderTasks() {
     $("sendAllBtn").disabled = !canBulkSend;
     $("sendAllBtn").title = canBulkSend ? "发送全部可网页发送任务；不经过企微被控端" : "当前角色或任务状态不允许批量发送";
   }
-  $("taskTable").innerHTML = table([
-    { label: "ID", key: "id" },
-    { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
-    { label: "对象", key: "target_name" },
-    { label: "来源/场景", key: "scene" },
-    { label: "状态", render: (r) => sendTaskStatusBadge(r.status) },
-    { label: "操作分层", render: taskOperationBadges },
-    { label: "重试/告警", render: taskRetryCell },
-    { label: "发送准备", render: taskReadinessCell },
-    { label: "发送设备", render: (r) => deviceSelect(r) },
-    { label: "企微模式", render: (r) => sendModeSelect(r) },
-    { label: "最终内容", render: (r) => `<textarea id="task-${r.id}" ${taskCan(r, "edit") ? "" : "readonly"}>${esc(r.content)}</textarea>` },
-    { label: "操作", render: (r) => `
-      <div class="cell-actions">
-        ${taskCan(r, "edit") || taskCan(r, "confirm_real_send") ? `<button onclick="saveTask(${r.id})">保存/审核</button>` : ""}
-        ${taskCan(r, "dry_run") ? `<button title="只定位、粘贴并清空，不按发送键" onclick="queueTaskDryRun(${r.id})">企微试运行（不发送）</button>` : ""}
-        ${taskCan(r, "confirm_real_send") ? `<button class="danger-action" title="确认后加入企业微信真实发送队列" onclick="queueTaskRealSend(${r.id})">企微真实发送</button>` : ""}
-        ${taskCan(r, "retry") ? `<button onclick="retryTask(${r.id})">失败重试</button>` : ""}
-        ${taskCan(r, "web_send") ? `<button onclick="sendTask(${r.id})">网页发送</button>` : ""}
-        ${taskCan(r, "cancel") ? `<button onclick="cancelTask(${r.id})">取消</button>` : ""}
-        ${taskAllowedOperations(r).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
-      </div>
-    ` },
-  ], state.tasks);
+  const ids = new Set(state.tasks.map((task) => Number(task.id)));
+  Array.from(state.expandedTaskIds).forEach((id) => {
+    if (!ids.has(id)) state.expandedTaskIds.delete(id);
+  });
+  $("taskTable").innerHTML = state.tasks.length
+    ? `<div class="task-review-list">${state.tasks.map(taskReviewCard).join("")}</div>`
+    : emptyState("暂无待发送任务", "AI 回复、周报或手动企微任务创建后会出现在这里。");
 }
 
 // 渲染日志列表。
@@ -1729,8 +1852,8 @@ async function refreshAll() {
       adminOnly ? api(scopedPath("/api/admin/service-quality")) : Promise.resolve({}),
       api("/api/ai-outputs"),
       safeApi("/api/test-chat/accounts", []),
-      api("/api/test-chat/conversations"),
-      adminOnly ? api("/api/devices") : Promise.resolve([]),
+      api("/api/conversations"),
+      adminOnly ? api("/api/devices") : api("/api/conversations/send-devices"),
       adminOnly ? api("/api/ops/health") : Promise.resolve({}),
       adminOnly ? api("/api/ops/backups") : Promise.resolve([]),
       adminOnly ? api("/api/ops/retention") : Promise.resolve({}),
@@ -1743,7 +1866,7 @@ async function refreshAll() {
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
       try {
-        state.chatMessages = await api(`/api/test-chat/messages/${encodeURIComponent(state.selectedChatFamilyId)}`);
+        state.chatMessages = await api(`/api/conversations/${encodeURIComponent(state.selectedChatFamilyId)}/messages`);
       } catch {
         state.chatMessages = [];
       }
@@ -2116,15 +2239,6 @@ $("familySelect").onchange = (event) => {
 $("replyFamilySelect").onchange = (event) => {
   state.selectedFamilyId = event.target.value;
   renderReplyPage();
-};
-
-// 导入样例数据。
-$("sampleBtn").onclick = async () => {
-  await withAction("载入样例", async () => {
-    const res = await api("/api/sample-data", { method: "POST" });
-    toast(`样例已导入：${res.families} 个家庭，${res.messages} 条消息`);
-    await refreshAll();
-  });
 };
 
 // 生成所有数据。
@@ -2516,6 +2630,28 @@ $("adminRegisterForm").onsubmit = async (event) => {
   });
 };
 
+$("accountSettingsForm").onsubmit = async (event) => {
+  event.preventDefault();
+  await withAction("保存账号设置", async () => {
+    if (!state.currentUser) return toast("请先登录");
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    const user = await api(accountSettingsEndpoint(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    saveCurrentUser(user);
+    closeAccountSettings();
+    toast("账号设置已更新");
+    if (user.role === "parent") {
+      await refreshParentDashboard();
+      renderAll();
+      return;
+    }
+    await refreshAll();
+  });
+};
+
 // 网页通讯登录。
 $("loginForm").onsubmit = async (event) => {
   event.preventDefault();
@@ -2555,30 +2691,42 @@ $("registerForm").onsubmit = async (event) => {
   });
 };
 
-// 网页通讯发送消息。
+// 会话工作台人工直发：跳过审核，直接创建企微真实发送任务，由唯一负责设备执行。
 $("chatForm").onsubmit = async (event) => {
   event.preventDefault();
-  await withAction("发送消息", async () => {
-    if (!state.currentUser) return toast("请先登录账号");
+  await withAction("企微直发", async () => {
+    if (!state.currentUser) return toast("请先登录控制端账号");
     if (!state.selectedChatFamilyId) return toast("请先选择会话");
     const data = Object.fromEntries(new FormData(event.target).entries());
-    await api("/api/test-chat/messages", {
+    const content = (data.content || "").trim();
+    if (!content) throw new Error("请填写发送内容");
+    const res = await api(`/api/conversations/${encodeURIComponent(state.selectedChatFamilyId)}/direct-send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ family_id: state.selectedChatFamilyId, username: state.currentUser.username, content: data.content }),
+      body: JSON.stringify({ content }),
     });
     event.target.reset();
-    toast("消息已发送并写入数据库");
+    toast(`已直发入队：${res.device_id} -> ${res.target_name}`);
     await refreshAll();
     switchTab("webChat");
   });
 };
 
-// 生成一批账号和真实感聊天记录。
-$("seedChatBtn").onclick = async () => {
-  await withAction("生成模拟对话", async () => {
-    const res = await api("/api/test-chat/seed", { method: "POST" });
-    toast(`已生成 ${res.families} 个家庭、${res.messages} 条对话`);
+if ($("chatLocalOnlyBtn")) $("chatLocalOnlyBtn").onclick = async () => {
+  await withAction("仅记入系统", async () => {
+    if (!state.currentUser) return toast("请先登录账号");
+    if (!state.selectedChatFamilyId) return toast("请先选择会话");
+    const form = $("chatForm");
+    const data = Object.fromEntries(new FormData(form).entries());
+    const content = (data.content || "").trim();
+    if (!content) throw new Error("请填写消息内容");
+    await api("/api/conversations/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ family_id: state.selectedChatFamilyId, username: state.currentUser.username, content }),
+    });
+    form.reset();
+    toast("消息已仅写入系统，不触发企微发送");
     await refreshAll();
     switchTab("webChat");
   });

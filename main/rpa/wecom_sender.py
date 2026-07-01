@@ -12,6 +12,7 @@ import ctypes
 import io
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -208,6 +209,67 @@ def load_config(path: Path) -> dict:
 
 def save_config(config: dict, path: Path):
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+DEFAULT_HUMAN_DELAYS = {
+    "before_search_click": [0.2, 0.8],
+    "after_search_click": [0.4, 1.1],
+    "before_search_input": [0.2, 0.9],
+    "after_search_input": [1.2, 2.4],
+    "before_open_conversation_click": [0.3, 1.2],
+    "after_open_conversation": [0.8, 1.8],
+    "before_input_click": [0.3, 1.0],
+    "after_input_click": [0.3, 0.9],
+    "after_escape": [0.15, 0.45],
+    "before_paste": [0.4, 1.4],
+    "after_paste": [0.9, 2.6],
+    "before_send": [1.6, 5.2],
+    "between_tasks": [5.0, 14.0],
+}
+
+
+def safe_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def human_delay_range(config: dict, stage: str, fallback: list[float] | tuple[float, float]) -> tuple[float, float]:
+    if config.get("human_delay_enabled", True) is False:
+        return 0.0, 0.0
+    delays = config.get("human_delays", {})
+    value = delays.get(stage) if isinstance(delays, dict) else None
+    if value is None:
+        value = config.get(f"human_delay_{stage}_seconds")
+    if value is None:
+        value = fallback
+    if isinstance(value, (int, float)):
+        low = high = float(value)
+    elif isinstance(value, (list, tuple)) and value:
+        low = safe_float(value[0], float(fallback[0]))
+        high = safe_float(value[1] if len(value) > 1 else value[0], float(fallback[1]))
+    else:
+        low, high = float(fallback[0]), float(fallback[1])
+    scale = max(0.0, safe_float(config.get("human_delay_scale", 1.0), 1.0))
+    low, high = sorted((max(0.0, low * scale), max(0.0, high * scale)))
+    return low, high
+
+
+def human_sleep(config: dict, stage: str, fallback: list[float] | tuple[float, float] | None = None) -> float:
+    fallback = fallback or DEFAULT_HUMAN_DELAYS.get(stage, [0.0, 0.0])
+    low, high = human_delay_range(config, stage, fallback)
+    if high <= 0:
+        return 0.0
+    seconds = random.uniform(low, high)
+    time.sleep(seconds)
+    return seconds
+
+
+def sleep_with_jitter(config: dict, stage: str, base_seconds: float, ratio: float = 0.35) -> float:
+    base = max(0.0, float(base_seconds or 0.0))
+    fallback = [max(0.0, base * (1 - ratio)), base * (1 + ratio)]
+    return human_sleep(config, stage, fallback)
 
 
 # 强制直连后端，忽略被控端机器上的系统/环境代理（V2Ray/Clash 等）。
@@ -771,11 +833,12 @@ def click_matching_search_result(window, conversation: str) -> bool:
 # 打开搜索结果：只允许 UIA 精确命中；失败即中止，避免 Enter/坐标打开错误会话。
 def open_search_result(window, conversation: str, config: dict):
     ensure_foreground_wecom(window, config)
+    human_sleep(config, "before_open_conversation_click")
     if click_matching_search_result(window, conversation):
-        time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+        sleep_with_jitter(config, "after_open_conversation", float(config.get("open_conversation_wait_seconds", 1.0)))
         ensure_foreground_wecom(window, config)
         keyboard.send_keys("{ESC}")
-        time.sleep(0.2)
+        human_sleep(config, "after_escape")
         return
 
     raise RpaError(search_result_not_found_detail(conversation, "搜索结果"))
@@ -856,12 +919,14 @@ def click_visual_region_hit(
         x = int(left + rx * width)
         y = int(top + ry * height)
         ensure_foreground_wecom(window, config)
+        human_sleep(config, "before_open_conversation_click")
         mouse.click(button="left", coords=(x, y))
         print(
             f"visual_click rx={rx:.3f} ry={ry:.3f} x={x} y={y} "
             f"scale={scale:.3f} coordinate=screenshot"
         )
         return x, y
+    human_sleep(config, "before_open_conversation_click")
     x, y = click_window_ratio(window, rx, ry, config)
     print(f"visual_click rx={rx:.3f} ry={ry:.3f} x={x} y={y} coordinate=window")
     return x, y
@@ -1044,7 +1109,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
                     add_send_trace(config, "会话列表OCR命中")
                     print(f"locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f} score={hit['score']:.2f}")
                     click_conversation_hit(window, hit, rect, config, target)
-                    time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+                    sleep_with_jitter(config, "after_open_conversation", float(config.get("open_conversation_wait_seconds", 1.0)))
                     return True
             except RpaError as exc:
                 print(f"local_ocr_unavailable detail={exc}")
@@ -1053,7 +1118,7 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
             add_send_trace(config, "会话列表ARK命中")
             print(f"locate target={target} via=ark rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
             click_conversation_hit(window, hit, rect, config, target)
-            time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+            sleep_with_jitter(config, "after_open_conversation", float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
         _cleanup_debug_image(img, config)
@@ -1070,14 +1135,15 @@ def search_then_locate(window, target: str, config: dict) -> bool:
     activate(window, config)
     ensure_foreground_wecom(window, config)
     box = tuple(config.get("search_box_region", [0.0, 0.0, 0.30, 0.07]))
+    human_sleep(config, "before_search_click")
     click_window_ratio(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, config)
-    time.sleep(0.4)
+    human_sleep(config, "after_search_click")
     ensure_foreground_wecom(window, config)
     keyboard.send_keys("^a")
-    time.sleep(0.1)
+    human_sleep(config, "before_search_input")
     pyperclip.copy(target)
     keyboard.send_keys("^v")
-    time.sleep(float(config.get("search_wait_seconds", 1.5)))
+    sleep_with_jitter(config, "after_search_input", float(config.get("search_wait_seconds", 1.5)))
     region = tuple(config.get("search_result_region", [0.0, 0.07, 0.30, 1.0]))
     img, rect = screenshot_wecom(window, config, f"search_{target}")
     try:
@@ -1088,7 +1154,7 @@ def search_then_locate(window, target: str, config: dict) -> bool:
                     add_send_trace(config, "搜索结果OCR命中")
                     print(f"search_locate target={target} via=ocr rx={hit['rx']:.3f} ry={hit['ry']:.3f}")
                     click_search_result_hit(window, hit, rect, config, target)
-                    time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+                    sleep_with_jitter(config, "after_open_conversation", float(config.get("open_conversation_wait_seconds", 1.0)))
                     return True
             except RpaError as exc:
                 print(f"local_ocr_unavailable detail={exc}")
@@ -1097,7 +1163,7 @@ def search_then_locate(window, target: str, config: dict) -> bool:
             add_send_trace(config, "搜索结果ARK命中")
             print(f"search_locate target={target} via=ark")
             click_search_result_hit(window, hit, rect, config, target)
-            time.sleep(float(config.get("open_conversation_wait_seconds", 1.0)))
+            sleep_with_jitter(config, "after_open_conversation", float(config.get("open_conversation_wait_seconds", 1.0)))
             return True
     finally:
         _cleanup_debug_image(img, config)
@@ -1467,22 +1533,24 @@ def focus_message_input(window, config: dict):
     # 置顶企微，确保它显示在最上层、坐标点击落在它身上（绕过前台抢占限制）。
     if config.get("topmost_during_send", True):
         set_window_topmost(window, True)
-        time.sleep(0.2)
+        human_sleep(config, "before_input_click", [0.2, 0.7])
     rect = window.rectangle()
     x = int(rect.left + rect.width() * float(config.get("input_click_ratio_x", 0.45)))
     y = int(rect.top + rect.height() * float(config.get("input_click_ratio_y", 0.85)))
     # 先点一次输入框：这一下既激活企微（点击会把焦点交给被点的窗口）、又把光标放进输入框。
+    human_sleep(config, "before_input_click")
     mouse.click(button="left", coords=(x, y))
-    time.sleep(0.3)
+    human_sleep(config, "after_input_click")
     ensure_foreground_wecom(window, config)
     # 退出可能的消息多选模式：多选时底部是多选操作栏而非输入框，且 Ctrl+A 会“全选消息”。
     # 退完多选后再点一次输入框（多选退出后输入框才重新出现）。
     if config.get("esc_before_input", True):
         for _ in range(int(config.get("esc_repeat", 2))):
             keyboard.send_keys("{ESC}")
-            time.sleep(0.2)
+            human_sleep(config, "after_escape")
+        human_sleep(config, "before_input_click")
         mouse.click(button="left", coords=(x, y))
-        time.sleep(0.3)
+        human_sleep(config, "after_input_click")
         ensure_foreground_wecom(window, config)
 
 
@@ -2239,9 +2307,10 @@ def send_message(window, content: str, config: dict):
         if config.get("clear_input_before_paste", True):
             clear_message_input()
         pyperclip.copy(text)
+        human_sleep(config, "before_paste")
         ensure_foreground_wecom(window, config)
         keyboard.send_keys("^v")
-        time.sleep(0.4)
+        human_sleep(config, "after_paste")
         if not should_press_send_hotkey(config):
             ensure_foreground_wecom(window, config)
             clear_message_input()
@@ -2253,6 +2322,7 @@ def send_message(window, content: str, config: dict):
             add_send_trace(config, "发送后回读配置关闭，已阻止真实发送")
             return "failed", "SEND_GUARD: 发送后回读配置关闭，无法落地校验结果，已阻止真实发送。"
         ensure_foreground_wecom(window, config)
+        human_sleep(config, "before_send")
         hotkey(config.get("send_hotkey", ["enter"]))
         add_send_trace(config, "真实发送热键已触发")
         confirmed, verification = confirm_sent_message(window, config.get("_current_target", ""), text, config, before_messages)
@@ -2440,12 +2510,17 @@ def send_task_and_record(task: dict, config: dict):
 
 
 def send_tasks_until_outbox_blocked(tasks: list[dict], config: dict, context: str) -> int:
+    base_interval = float(config.get("send_interval_seconds", 3))
+
+    def sleep_between_tasks(seconds: float):
+        human_sleep(config, "between_tasks", [seconds, max(seconds, base_interval + 8.0)])
+
     return send_until_blocked(
         tasks,
         lambda task: send_task_and_record(task, config),
         lambda stage: result_outbox_blocks_new_sends(config, f"{context}:{stage}"),
-        sleep_seconds=float(config.get("send_interval_seconds", 3)),
-        sleep_func=time.sleep,
+        sleep_seconds=base_interval,
+        sleep_func=sleep_between_tasks,
     )
 
 
@@ -2678,9 +2753,9 @@ def watch_known(config: dict):
 # 创建一条测试任务，验证后端、白名单和 RPA 发送链路是否可用。
 def create_test_task(config: dict, target: str, content: str):
     payload = {
-        "family_id": "RPA_TEST",
+        "family_id": f"WECOM_{target}",
         "target_name": target,
-        "scene": "RPA真实发送测试",
+        "scene": "控制端手动验证",
         "content": content,
     }
     task = request_json(config["api_base_url"], "/api/send-tasks", method="POST", payload=payload)

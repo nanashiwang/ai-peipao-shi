@@ -99,7 +99,6 @@ from app.services.wecom_archive import (
 from rpa.package_manifest import build_package_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLES = ROOT / "samples"
 STATIC = Path(__file__).resolve().parent / "static"
 SEND_SCREENSHOT_DIR = ROOT / "data" / "send_screenshots"
 BACKUP_DIR = ROOT / "data" / "backups"
@@ -118,7 +117,7 @@ app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -369,6 +368,13 @@ class LoginIn(BaseModel):
     password: str
 
 
+class AccountProfileUpdateIn(BaseModel):
+    username: str = ""
+    display_name: str = ""
+    current_password: str = ""
+    new_password: str = ""
+
+
 class ParentReportAckIn(BaseModel):
     note: str = ""
 
@@ -382,6 +388,11 @@ class ChatMessageIn(BaseModel):
     family_id: str
     username: str
     content: str
+
+
+class ConversationDirectSendIn(BaseModel):
+    content: str
+    device_id: str = ""
 
 
 class ChatAiIn(BaseModel):
@@ -643,6 +654,13 @@ def ensure_new_task_operation_allowed(request: Request | None, operation: str) -
         label = OPERATION_LABELS.get(operation, operation)
         role_label = {"admin": "超管", "coach": "陪跑师", "readonly": "只读"}.get(role, role or "未知")
         raise HTTPException(403, f"当前角色不能执行「{label}」操作（角色：{role_label}）")
+
+
+def ensure_conversation_direct_send_allowed(request: Request | None) -> None:
+    role = operation_role_from_request(request)
+    if role not in {"admin", "coach"}:
+        role_label = {"admin": "超管", "coach": "陪跑师", "readonly": "只读"}.get(role, role or "未知")
+        raise HTTPException(403, f"当前角色不能在会话工作台直接真实发送（角色：{role_label}）")
 
 
 def actor_from_request(request: Request | None, fallback: str = "控制端") -> str:
@@ -1878,6 +1896,35 @@ def admin_account_payload(account: UserAccount) -> dict:
     return data
 
 
+def update_own_account_profile(db: Session, account: UserAccount, payload: AccountProfileUpdateIn) -> dict:
+    new_username = payload.username.strip() or account.username
+    new_display_name = payload.display_name.strip() or account.display_name or new_username
+    new_password = payload.new_password.strip()
+    changing_username = new_username != account.username
+    changing_password = bool(new_password)
+
+    if changing_username or changing_password:
+        if not payload.current_password:
+            raise HTTPException(400, "修改账号或密码前请输入当前密码")
+        if not verify_account_password(db, account, payload.current_password):
+            raise HTTPException(401, "当前密码不正确")
+    if changing_username:
+        exists = (
+            db.query(UserAccount)
+            .filter(UserAccount.username == new_username, UserAccount.id != account.id)
+            .one_or_none()
+        )
+        if exists:
+            raise HTTPException(400, "账号已存在")
+        account.username = new_username
+    account.display_name = new_display_name
+    if changing_password:
+        account.password = hash_password(new_password)
+    db.commit()
+    db.refresh(account)
+    return admin_account_payload(account)
+
+
 PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
 
 
@@ -1951,7 +1998,7 @@ def ensure_family(db: Session, family_id: str, parent_name: str, child_grade: st
         child_grade=child_grade,
         campus_name=campus_name,
         coach_name=coach_name,
-        service_status="网页通讯测试",
+        service_status="会话工作台",
     )
     db.add(family)
     db.flush()
@@ -1989,7 +2036,7 @@ def add_chat_message(db: Session, family_id: str, speaker: str, content: str, mi
         message_time=datetime.utcnow(),
         speaker=speaker,
         content=content,
-        source="网页通讯测试",
+        source="会话工作台",
         checkin_status=detect_checkin(content),
         is_effective="Y" if len(content.strip()) >= 2 else "N",
     )
@@ -2166,6 +2213,22 @@ def admin_me(authorization: str = Header("")):
     }
 
 
+@app.put("/api/admin/auth/me")
+def update_admin_me(payload: AccountProfileUpdateIn, authorization: str = Header(""), db: Session = Depends(get_db)):
+    try:
+        identity = verify_admin_token(bearer_token(authorization), admin_auth_secret())
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(401, str(exc)) from exc
+    account = (
+        db.query(UserAccount)
+        .filter(UserAccount.username == identity.username, UserAccount.role.in_(ADMIN_ROLES))
+        .one_or_none()
+    )
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    return update_own_account_profile(db, account, payload)
+
+
 def parent_dashboard_payload(db: Session, family: Family) -> dict:
     latest_report = (
         db.query(WeeklyReport)
@@ -2228,6 +2291,12 @@ def require_parent_account(db: Session, authorization: str):
     if not account:
         raise HTTPException(401, "家长端账号已失效，请重新登录")
     return account, identity
+
+
+@app.put("/api/parent/auth/me")
+def update_parent_me(payload: AccountProfileUpdateIn, authorization: str = Header(""), db: Session = Depends(get_db)):
+    account, _ = require_parent_account(db, authorization)
+    return update_own_account_profile(db, account, payload)
 
 
 def sync_parent_report_feedback(db: Session, report: WeeklyReport, score: int, note: str, actor: str) -> bool:
@@ -2321,6 +2390,7 @@ def list_accounts(db: Session = Depends(get_db)):
     return [account_payload(item) for item in db.query(UserAccount).order_by(UserAccount.role, UserAccount.username).all()]
 
 
+@app.get("/api/conversations")
 @app.get("/api/test-chat/conversations")
 def list_test_conversations(request: Request = None, db: Session = Depends(get_db)):
     rows = []
@@ -2337,6 +2407,49 @@ def list_test_conversations(request: Request = None, db: Session = Depends(get_d
     return rows
 
 
+def conversation_send_device_view(db: Session, dev: Device) -> dict:
+    proof = device_conversation_proof_summary(db, dev)
+    return {
+        "device_id": dev.device_id,
+        "name": dev.name,
+        "online": device_online(dev),
+        "wecom_ok": dev.wecom_ok,
+        "allow_real_send": dev.allow_real_send,
+        "allow_any_conversation": dev.allow_any_conversation,
+        "outbox_pending_count": dev.outbox_pending_count or 0,
+        "conversation_list": device_conversations(dev),
+        "conversation_count": proof["total"],
+        "conversation_proof_count": proof["ready_count"],
+        "conversation_proof_total": proof["total"],
+        "conversation_proof_missing_count": proof["missing_count"],
+        "conversation_proof_label": proof["label"],
+        "conversation_proof_ready": proof["ready"],
+        "conversation_proof_missing_targets": proof["missing_targets"],
+    }
+
+
+@app.get("/api/conversations/send-devices")
+def list_conversation_send_devices(request: Request = None, db: Session = Depends(get_db)):
+    role = operation_role_from_request(request)
+    if role not in {"admin", "coach"}:
+        return []
+    target_scope = None
+    if role == "coach":
+        target_scope = {
+            (family.parent_nickname or "").strip()
+            for family in scoped_family_query(db, request).all()
+            if (family.parent_nickname or "").strip()
+        }
+    rows = []
+    for dev in db.query(Device).order_by(Device.device_id).all():
+        conversations = set(device_conversations(dev))
+        if target_scope is not None and not conversations.intersection(target_scope):
+            continue
+        rows.append(conversation_send_device_view(db, dev))
+    return rows
+
+
+@app.get("/api/conversations/{family_id}/messages")
 @app.get("/api/test-chat/messages/{family_id}")
 def list_chat_messages(family_id: str, request: Request = None, db: Session = Depends(get_db)):
     require_family_for_request(db, family_id, request)
@@ -2344,6 +2457,7 @@ def list_chat_messages(family_id: str, request: Request = None, db: Session = De
     return [as_dict(item) for item in rows]
 
 
+@app.post("/api/conversations/messages")
 @app.post("/api/test-chat/messages")
 def send_chat_message(payload: ChatMessageIn, request: Request = None, db: Session = Depends(get_db)):
     family = require_family_for_request(db, payload.family_id, request)
@@ -2360,75 +2474,49 @@ def send_chat_message(payload: ChatMessageIn, request: Request = None, db: Sessi
     return as_dict(msg)
 
 
+@app.post("/api/conversations/{family_id}/direct-send")
+def direct_send_conversation_message(family_id: str, payload: ConversationDirectSendIn, request: Request = None, db: Session = Depends(get_db)):
+    """会话工作台人工输入直发：不生成 AI 审核草稿，直接进入对应设备真实发送队列。"""
+    ensure_conversation_direct_send_allowed(request)
+    family = require_family_for_request(db, family_id, request)
+    target_name = (family.parent_nickname or "").strip()
+    if not target_name:
+        raise HTTPException(400, "当前会话没有企微目标名，无法直接发送")
+    content = validate_send_task_content(payload.content)
+    device_id = resolve_real_send_device_binding(db, payload.device_id, target_name)
+    validate_real_send_device_binding(device_id)
+    validate_real_send_risk(db, target_name, content)
+    task = SendTask(
+        family_id=family.family_id,
+        target_name=target_name,
+        scene="会话工作台人工直发",
+        content=content,
+        device_id=device_id,
+        send_mode="real_send",
+        status="pending",
+        scheduled_at=datetime.utcnow(),
+    )
+    ensure_real_send_readiness(db, task)
+    add_send_task_with_audit(
+        db,
+        task,
+        "direct_real_send",
+        actor_from_request(request),
+        "会话工作台人工输入，跳过审核直接加入企微真实发送队列",
+    )
+    db.commit()
+    return {
+        "task": send_task_view(task, request, db),
+        "family_id": family.family_id,
+        "target_name": target_name,
+        "device_id": device_id,
+        "note": "已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。",
+    }
+
+
 @app.post("/api/test-chat/seed")
 def seed_test_chat(db: Session = Depends(get_db)):
-    family_ids = ["WEB_LIN", "WEB_ZHOU", "WEB_CHEN"]
-    for family_id in family_ids:
-        db.query(SendLog).filter(SendLog.family_id == family_id).delete()
-        db.query(SendTask).filter(SendTask.family_id == family_id).delete()
-        db.query(AIOutput).filter(AIOutput.family_id == family_id).delete()
-        db.query(WeeklyReport).filter(WeeklyReport.family_id == family_id).delete()
-        db.query(ParentProfile).filter(ParentProfile.family_id == family_id).delete()
-        db.query(CheckinRecord).filter(CheckinRecord.family_id == family_id).delete()
-        db.query(FollowupRecord).filter(FollowupRecord.family_id == family_id).delete()
-        db.query(RawMessage).filter(RawMessage.family_id == family_id).delete()
-        db.query(Family).filter(Family.family_id == family_id).delete()
-    for username in ["coach_yitong", "lin_mom", "zhou_dad", "chen_mom"]:
-        db.query(UserAccount).filter(UserAccount.username == username).delete()
-    db.flush()
-
-    ensure_account(db, "coach_yitong", "123456", "怡彤老师", "coach")
-    samples = [
-        (
-            "WEB_LIN",
-            "林妈妈",
-            "初一",
-            "coach_yitong",
-            [
-                ("林妈妈", "老师，孩子这两天作业启动很慢，写到很晚会有点崩。"),
-                ("怡彤老师", "我先帮您把任务拆小，今晚先保住英语阅读和数学订正两个核心动作。"),
-                ("林妈妈", "好的，他今天说不想打卡，觉得自己做不好。"),
-                ("怡彤老师", "可以，今天先不追求完整，完成一小项也算建立节奏。"),
-                ("林妈妈", "刚刚完成了数学订正，但是英语没来得及。"),
-                ("林妈妈", "我担心他又连续断掉，后面越来越抗拒。"),
-            ],
-        ),
-        (
-            "WEB_ZHOU",
-            "周爸爸",
-            "五年级",
-            "coach_yitong",
-            [
-                ("周爸爸", "孩子今天PBL小作品已经发群里了，想请你帮忙看看。"),
-                ("怡彤老师", "收到，我会重点看表达结构和例子是否具体。"),
-                ("周爸爸", "他自己说讲得有点乱，但愿意再改一版。"),
-                ("怡彤老师", "这个意愿很重要，我会先肯定亮点，再给一个改进点。"),
-                ("周爸爸", "另外这周打卡基本完成了，周三漏了一次。"),
-            ],
-        ),
-        (
-            "WEB_CHEN",
-            "陈妈妈",
-            "高一",
-            "coach_yitong",
-            [
-                ("陈妈妈", "最近孩子情绪波动比较大，我问学习他就不耐烦。"),
-                ("怡彤老师", "先别急着追问结果，我们先用更低压力的复盘方式。"),
-                ("陈妈妈", "我也担心是不是课程太难，他说听得懂但做题慢。"),
-                ("怡彤老师", "听懂和独立输出之间有距离，我会把练习拆成基础题和挑战题。"),
-                ("陈妈妈", "那今天要不要继续打卡？他现在有点烦。"),
-                ("陈妈妈", "如果需要我配合，我可以晚上九点再提醒一次。"),
-            ],
-        ),
-    ]
-    for family_id, parent_name, grade, coach_username, messages in samples:
-        ensure_family(db, family_id, parent_name, grade, "怡彤老师")
-        ensure_account(db, f"{family_id.lower()}_parent", "123456", parent_name, "parent", family_id)
-        for speaker, content in messages:
-            add_chat_message(db, family_id, speaker, content)
-
-    db.commit()
-    return {"accounts": db.query(UserAccount).count(), "families": len(family_ids), "messages": sum(len(item[4]) for item in samples)}
+    raise HTTPException(410, "mock 会话生成功能已移除，请使用真实企微同步或导入真实聊天记录")
 
 
 @app.post("/api/test-chat/ai")
@@ -2440,12 +2528,12 @@ def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Sessio
         raise HTTPException(404, "该会话还没有消息")
 
     profile_result = run_family_profile_agent_service(context)
-    profile_output = save_ai_output(db, family.family_id, "family_profile", "网页通讯测试", profile_result)
+    profile_output = save_ai_output(db, family.family_id, "family_profile", "会话工作台", profile_result)
     upsert_parent_profile_from_agent(db, family.family_id, profile_result)
 
     latest = latest_parent_message(context)
     reply_result = run_reply_agent_service(context, latest, "standard")
-    reply_output = save_ai_output(db, family.family_id, "ai_reply", "网页通讯测试", reply_result)
+    reply_output = save_ai_output(db, family.family_id, "ai_reply", "会话工作台", reply_result)
     task = None
     if payload.create_task:
         task = SendTask(
@@ -2526,12 +2614,10 @@ def download_import_template(template_key: str):
     )
 
 
-# 载入内置样例数据，方便演示和联调。
+# mock 样例数据入口已永久关闭，生产只允许真实企微同步或真实导入。
 @app.post("/api/sample-data")
 def load_sample_data(db: Session = Depends(get_db)):
-    sample = SAMPLES / "sample_messages.csv"
-    rows = rows_from_upload(sample.name, sample.read_bytes())
-    return import_rows(db, rows)
+    raise HTTPException(410, "mock 样例导入已移除，请导入真实数据或使用企业微信同步")
 
 
 # 家庭列表接口，顺带补充每个家庭的消息数。
