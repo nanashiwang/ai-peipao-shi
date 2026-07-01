@@ -3378,3 +3378,100 @@ main {
     grid-template-columns: 1fr;
   }
 }
+
+/* 控制台高密度表格：只压缩登录后的工作台列表行。 */
+body.view-app th,
+body.view-app td {
+  padding: 8px 10px;
+  vertical-align: middle;
+  font-size: 13px;
+  line-height: 1.32;
+}
+
+body.view-app th {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+body.view-app .task-review-header,
+body.view-app .reply-draft-header {
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+body.view-app .task-card-summary,
+body.view-app .reply-draft-summary {
+  gap: 6px;
+  min-height: 42px;
+  padding: 6px 10px;
+}
+
+body.view-app .task-summary-target strong,
+body.view-app .reply-draft-meta strong {
+  font-size: 13px;
+  line-height: 1.22;
+}
+
+body.view-app .task-summary-target small,
+body.view-app .task-summary-id,
+body.view-app .reply-draft-summary small {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+body.view-app .task-summary-preview,
+body.view-app .reply-draft-summary p {
+  font-size: 12px;
+  line-height: 1.28;
+}
+
+body.view-app .task-summary-status,
+body.view-app .task-summary-readiness,
+body.view-app .reply-draft-meta {
+  gap: 3px;
+}
+
+body.view-app .task-expand-label,
+body.view-app .reply-expand-label {
+  min-width: 54px;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+body.view-app .task-card-detail,
+body.view-app .reply-draft-body {
+  gap: 7px;
+  padding: 7px 10px 9px;
+}
+
+body.view-app .task-detail-table section,
+body.view-app .reply-draft-info section {
+  gap: 4px;
+  padding: 6px 8px;
+}
+
+body.view-app .task-detail-table section > span,
+body.view-app .task-content-editor > span,
+body.view-app .reply-draft-info span,
+body.view-app .reply-editor > span {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+body.view-app .reply-draft-info strong {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+body.view-app .task-card textarea,
+body.view-app .reply-editor textarea {
+  min-height: 72px;
+  padding: 7px 9px;
+  font-size: 13px;
+  line-height: 1.35;
+}
