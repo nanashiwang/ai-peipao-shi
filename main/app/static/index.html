@@ -6,28 +6,155 @@
   <title>陪跑师效率系统 MVP</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body class="auth-only">
-  <!-- 登录闸门：未登录时只显示这里，不进入业务系统。 -->
+<body class="view-landing">
+  <!-- 首页：系统介绍文档，未登录默认展示；右上角进入登录/注册。 -->
+  <div id="landing" class="landing">
+    <header class="landing-nav">
+      <div class="landing-brand">
+        <span class="landing-logo" aria-hidden="true"></span>
+        <div>
+          <strong>陪跑师效率系统</strong>
+          <span>重庆机构试点 · 总控台</span>
+        </div>
+      </div>
+      <nav class="landing-nav-links" aria-label="页面导航">
+        <a href="#feature-section">核心能力</a>
+        <a href="#flow-section">工作闭环</a>
+        <a href="#role-section">角色权限</a>
+      </nav>
+      <div class="landing-nav-actions">
+        <button class="ghost-btn" onclick="showAuth('login')">登录</button>
+        <button class="primary-btn" onclick="showAuth('register')">注册账号</button>
+      </div>
+    </header>
+
+    <section class="landing-hero">
+      <span class="eyebrow">全面洞察 · 精准沟通 · 提升满意 · 降低风险</span>
+      <h1>让每一位陪跑师<br />先处理最重要的家庭</h1>
+      <p>聚合家庭风险、服务满意度、沟通频次与待办任务，用 AI 生成周报、画像与回复，并通过企业微信真实发送的可信闭环，把服务动作稳稳落到每一个家长。</p>
+      <div class="landing-hero-actions">
+        <button class="primary-btn lg" onclick="showAuth('login')">进入控制台</button>
+        <button class="ghost-btn lg" onclick="showAuth('register')">首次使用 · 创建账号</button>
+      </div>
+      <div id="landingStatus" class="landing-status">正在检查账号状态…</div>
+    </section>
+
+    <section id="feature-section" class="landing-section">
+      <div class="landing-section-head">
+        <span class="eyebrow">核心能力</span>
+        <h2>一个总控台，覆盖陪跑服务全流程</h2>
+      </div>
+      <div class="landing-grid">
+        <article class="landing-card">
+          <span class="landing-card-icon">⌂</span>
+          <h3>工作台与看板</h3>
+          <p>工作台聚合今日优先处理、家庭速览与 AI 建议；家长看板只读呈现阶段进度；管理看板按陪跑师统计风险与发送闭环。</p>
+        </article>
+        <article class="landing-card">
+          <span class="landing-card-icon">◎</span>
+          <h3>AI 生成引擎</h3>
+          <p>接入豆包 / 通义 ARK，自动生成家长画像、每周周报、沟通回复草稿与打卡 PBL 识别，内置评测集约束质量与安全边界。</p>
+        </article>
+        <article class="landing-card">
+          <span class="landing-card-icon">✦</span>
+          <h3>真实发送可信闭环</h3>
+          <p>发送前校验会话只读证明，发送后按截图回读落库，配合人工核验与基线校验，杜绝“假发送”，每一条都可追溯。</p>
+        </article>
+        <article class="landing-card">
+          <span class="landing-card-icon">↗</span>
+          <h3>企微 PC 端 RPA</h3>
+          <p>多台被控真机操控企业微信，心跳调度与任务领取锁，一键签名接入包，支持试运行与真实发送两条通道。</p>
+        </article>
+        <article class="landing-card">
+          <span class="landing-card-icon">⚙</span>
+          <h3>设备与运营监控</h3>
+          <p>实时查看被控机在线状态、企微健康、发送开关与会话范围；发送日志、审计日志完整记录每一次动作。</p>
+        </article>
+        <article class="landing-card">
+          <span class="landing-card-icon">□</span>
+          <h3>数据安全与脱敏</h3>
+          <p>敏感数据脱敏导出、数据备份与恢复演练、日志与截图证据的保留策略，满足试点期的合规与风控要求。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="flow-section" class="landing-section landing-flow">
+      <div class="landing-section-head">
+        <span class="eyebrow">工作闭环</span>
+        <h2>从数据导入到可信送达，五步走通</h2>
+      </div>
+      <ol class="landing-steps">
+        <li><span>1</span><div><strong>导入与识别</strong><p>导入家庭 / 会话数据，自动识别打卡与场景。</p></div></li>
+        <li><span>2</span><div><strong>AI 生成</strong><p>批量生成画像、周报与回复草稿。</p></div></li>
+        <li><span>3</span><div><strong>人工审核</strong><p>陪跑师逐条审核确认，加入发送任务。</p></div></li>
+        <li><span>4</span><div><strong>真实发送</strong><p>被控端经企微试运行 / 真实发送，回读校验。</p></div></li>
+        <li><span>5</span><div><strong>闭环沉淀</strong><p>发送日志、审计与家长反馈回流看板。</p></div></li>
+      </ol>
+    </section>
+
+    <section id="role-section" class="landing-section">
+      <div class="landing-section-head">
+        <span class="eyebrow">角色权限</span>
+        <h2>按角色分层，权责清晰</h2>
+      </div>
+      <div class="landing-grid roles">
+        <article class="landing-card role">
+          <h3>超管</h3>
+          <p>负责真实发送、设备调度与账号创建，掌握全部校区数据与高风险操作。</p>
+        </article>
+        <article class="landing-card role">
+          <h3>陪跑师</h3>
+          <p>负责家庭审核与试运行，处理自己校区的家庭、AI 草稿与发送任务。</p>
+        </article>
+        <article class="landing-card role">
+          <h3>只读</h3>
+          <p>仅查看脱敏后的数据与看板，用于管理层巡检，不触发任何发送。</p>
+        </article>
+      </div>
+      <div class="landing-cta">
+        <h2>准备好了吗？</h2>
+        <p>登录进入控制台，或创建你的第一个账号。</p>
+        <div class="landing-hero-actions">
+          <button class="primary-btn lg" onclick="showAuth('login')">登录</button>
+          <button class="ghost-btn lg" onclick="showAuth('register')">注册账号</button>
+        </div>
+      </div>
+    </section>
+
+    <footer class="landing-footer">
+      <span>陪跑师效率系统 · 重庆机构试点 MVP</span>
+    </footer>
+  </div>
+
+  <!-- 登录/注册：从首页进入，居中卡片，登录与注册用标签切换。 -->
   <div id="authGate" class="auth-gate">
     <div class="auth-shell">
-      <section class="auth-hero">
-        <span class="eyebrow">陪跑师效率系统</span>
-        <h1>先登录，再进入总控台</h1>
-        <p>超管负责真实发送、设备调度和账号创建；陪跑师负责审核和试运行；只读账号仅查看脱敏数据。</p>
-        <div id="authGateStatus" class="auth-status-pill">正在检查账号状态</div>
-      </section>
+      <button type="button" class="auth-back" onclick="showLanding()">← 返回首页</button>
       <section class="auth-card">
-        <div class="section-head">
-          <h2>控制端登录</h2>
-          <span id="authHint" class="muted">正在检查账号状态</span>
+        <div class="auth-brand">
+          <span class="landing-logo" aria-hidden="true"></span>
+          <strong>陪跑师效率系统</strong>
         </div>
-        <form id="adminLoginForm" class="compact-form">
-          <input name="username" placeholder="账号" autocomplete="username" required />
-          <input name="password" type="password" placeholder="密码" autocomplete="current-password" required />
-          <button>登录进入系统</button>
-        </form>
-        <details class="secondary-box" open>
-          <summary>首次使用 / 创建账号</summary>
+        <div id="authGateStatus" class="auth-status-pill">正在检查账号状态</div>
+
+        <div class="auth-tabs" role="tablist">
+          <button type="button" id="authTabLogin" class="auth-tab active" role="tab" onclick="switchAuthTab('login')">登录</button>
+          <button type="button" id="authTabRegister" class="auth-tab" role="tab" onclick="switchAuthTab('register')">注册</button>
+        </div>
+
+        <!-- 登录面板 -->
+        <div id="authPanelLogin" class="auth-panel active">
+          <p id="authHint" class="muted auth-panel-hint">正在检查账号状态</p>
+          <form id="adminLoginForm" class="compact-form">
+            <input name="username" placeholder="账号" autocomplete="username" required />
+            <input name="password" type="password" placeholder="密码" autocomplete="current-password" required />
+            <button>登录进入系统</button>
+          </form>
+        </div>
+
+        <!-- 注册面板 -->
+        <div id="authPanelRegister" class="auth-panel">
+          <p id="adminRegisterNote" class="muted auth-panel-hint">如果系统还没有账号，首次注册会自动成为超管。</p>
           <form id="adminRegisterForm" class="compact-form">
             <input name="username" placeholder="账号" autocomplete="username" required />
             <input name="password" type="password" placeholder="密码" autocomplete="new-password" required />
@@ -38,10 +165,10 @@
               <option value="readonly">只读</option>
               <option value="admin">超管</option>
             </select>
-            <button>注册/创建账号</button>
+            <button>注册 / 创建账号</button>
           </form>
-          <p id="adminRegisterNote" class="muted">如果系统还没有账号，首次注册会自动成为超管。</p>
-        </details>
+        </div>
+
         <div id="authCurrentUser" class="login-status"></div>
       </section>
     </div>

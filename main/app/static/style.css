@@ -48,7 +48,12 @@ body {
   overflow-x: hidden;
 }
 
-body.auth-only {
+/* 三态视图：landing 首页介绍 / auth 登录注册 / app 业务系统，三者互斥。 */
+.landing { display: none; }
+body.view-landing .landing { display: block; }
+body.view-landing { display: block; }
+
+body.view-auth {
   display: block;
   background:
     linear-gradient(135deg, rgba(0, 122, 255, .08), rgba(52, 199, 89, .08)),
@@ -57,8 +62,10 @@ body.auth-only {
     var(--bg);
 }
 
-body.auth-only .sidebar,
-body.auth-only main {
+body.view-landing .sidebar,
+body.view-landing main,
+body.view-auth .sidebar,
+body.view-auth main {
   display: none;
 }
 
@@ -94,17 +101,16 @@ body.auth-only main {
   background: rgba(0, 122, 255, .14);
 }
 
-body.auth-only .auth-gate {
+body.view-auth .auth-gate {
   display: grid;
   place-items: center;
 }
 
 .auth-shell {
-  width: min(1040px, 100%);
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(340px, .95fr);
-  gap: clamp(22px, 4vw, 44px);
-  align-items: stretch;
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   position: relative;
   z-index: 1;
   animation: gate-rise .42s ease both;
@@ -2300,4 +2306,247 @@ main {
   .console-hero h1 {
     font-size: 25px;
   }
+}
+
+/* ==================== 登录/注册卡片（三态之 auth） ==================== */
+.auth-card {
+  align-self: stretch;
+  width: 100%;
+  padding: clamp(26px, 4vw, 36px);
+  background: rgba(255, 255, 255, .86);
+  border-radius: 28px;
+}
+
+.auth-back {
+  align-self: flex-start;
+  border: none;
+  background: rgba(255, 255, 255, .6);
+  color: var(--ink);
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .7);
+}
+.auth-back:hover { background: rgba(255, 255, 255, .9); }
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 5px;
+  margin: 16px 0 20px;
+  background: rgba(120, 120, 128, .10);
+  border-radius: 14px;
+}
+.auth-tab {
+  border: none;
+  background: transparent;
+  padding: 10px 0;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .18s ease, color .18s ease;
+}
+.auth-tab.active {
+  background: var(--panel-solid);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.auth-panel { display: none; }
+.auth-panel.active { display: block; animation: gate-rise .28s ease both; }
+.auth-panel-hint { margin: 0 0 14px; }
+
+/* ==================== 首页 landing ==================== */
+.landing {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(0, 122, 255, .10), transparent 34%),
+    radial-gradient(circle at 92% 6%, rgba(52, 199, 89, .10), transparent 30%),
+    var(--bg);
+  color: var(--ink);
+}
+
+.landing-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 16px clamp(20px, 5vw, 64px);
+  background: rgba(255, 255, 255, .72);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  border-bottom: 1px solid var(--soft-line);
+}
+.landing-brand { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+.landing-brand strong { display: block; font-size: 16px; font-weight: 800; }
+.landing-brand span { font-size: 12px; color: var(--muted); }
+.landing-logo {
+  width: 34px; height: 34px; border-radius: 11px;
+  background: linear-gradient(135deg, var(--blue), var(--green));
+  box-shadow: 0 6px 16px rgba(0, 122, 255, .28);
+}
+.landing-nav-links { display: flex; gap: 22px; }
+.landing-nav-links a { color: var(--muted); text-decoration: none; font-weight: 600; font-size: 14px; }
+.landing-nav-links a:hover { color: var(--ink); }
+.landing-nav-actions { display: flex; gap: 10px; }
+
+.primary-btn, .ghost-btn {
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.primary-btn {
+  background: var(--blue);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(0, 122, 255, .28);
+}
+.primary-btn:hover { transform: translateY(-1px); box-shadow: 0 12px 26px rgba(0, 122, 255, .36); }
+.ghost-btn {
+  background: rgba(255, 255, 255, .7);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.ghost-btn:hover { background: #fff; transform: translateY(-1px); }
+.primary-btn.lg, .ghost-btn.lg { padding: 14px 28px; font-size: 16px; }
+
+.landing-hero {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: clamp(56px, 9vw, 120px) clamp(20px, 5vw, 64px) clamp(40px, 6vw, 72px);
+  text-align: center;
+}
+.landing-hero h1 {
+  margin: 20px 0;
+  font-size: clamp(38px, 6.4vw, 74px);
+  line-height: 1.02;
+  letter-spacing: -.04em;
+  font-weight: 800;
+}
+.landing-hero p {
+  max-width: 640px;
+  margin: 0 auto;
+  font-size: clamp(16px, 2.1vw, 20px);
+  line-height: 1.75;
+  color: rgba(29, 29, 31, .72);
+}
+.landing-hero-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 30px;
+}
+.landing-status { margin-top: 22px; font-size: 14px; color: var(--muted); }
+
+.landing-section {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: clamp(40px, 6vw, 80px) clamp(20px, 5vw, 64px);
+}
+.landing-section-head { text-align: center; margin-bottom: 40px; }
+.landing-section-head h2 {
+  margin: 12px 0 0;
+  font-size: clamp(26px, 3.6vw, 40px);
+  letter-spacing: -.03em;
+  font-weight: 800;
+}
+.landing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+.landing-card {
+  padding: 28px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, .82);
+  border: 1px solid var(--soft-line);
+  box-shadow: var(--shadow);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.landing-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-hover); }
+.landing-card-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 46px; height: 46px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+  font-size: 20px;
+  background: linear-gradient(135deg, rgba(0, 122, 255, .14), rgba(52, 199, 89, .14));
+  color: var(--blue);
+}
+.landing-card h3 { margin: 0 0 8px; font-size: 18px; font-weight: 800; }
+.landing-card p { margin: 0; color: rgba(29, 29, 31, .70); line-height: 1.7; font-size: 15px; }
+.landing-grid.roles .landing-card.role h3 { color: var(--blue); }
+
+.landing-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 18px;
+}
+.landing-steps li {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 22px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, .7);
+  border: 1px solid var(--soft-line);
+}
+.landing-steps li > span {
+  flex: none;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border-radius: 999px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(135deg, var(--blue), var(--green));
+}
+.landing-steps li strong { display: block; margin-bottom: 4px; font-size: 15px; }
+.landing-steps li p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+.landing-cta {
+  margin-top: 56px;
+  text-align: center;
+  padding: clamp(36px, 5vw, 60px);
+  border-radius: 28px;
+  background: linear-gradient(135deg, rgba(0, 122, 255, .10), rgba(52, 199, 89, .10));
+  border: 1px solid var(--soft-line);
+}
+.landing-cta h2 { margin: 0 0 8px; font-size: clamp(24px, 3.4vw, 34px); font-weight: 800; }
+.landing-cta p { margin: 0; color: var(--muted); }
+.landing-cta .landing-hero-actions { margin-top: 24px; }
+
+.landing-footer {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--muted);
+  font-size: 13px;
+  border-top: 1px solid var(--soft-line);
+}
+
+@media (max-width: 720px) {
+  .landing-nav { gap: 12px; }
+  .landing-nav-links { display: none; }
 }

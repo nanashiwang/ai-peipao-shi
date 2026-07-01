@@ -87,10 +87,36 @@ function saveCurrentUser(user) {
   renderAuthState();
 }
 
+// 顶层视图切换：landing 首页介绍 / auth 登录注册 / app 业务系统，三态互斥。
+function showView(view) {
+  const body = document.body;
+  body.classList.remove("view-landing", "view-auth", "view-app");
+  body.classList.add("view-" + view);
+  if (view !== "app") window.scrollTo(0, 0);
+}
+
+function showLanding() {
+  showView("landing");
+}
+
+// 进入登录/注册页并定位到指定标签。
+function showAuth(tab) {
+  showView("auth");
+  switchAuthTab(tab === "register" ? "register" : "login");
+}
+
+// 在登录和注册面板之间切换。
+function switchAuthTab(name) {
+  const isRegister = name === "register";
+  $("authTabLogin")?.classList.toggle("active", !isRegister);
+  $("authTabRegister")?.classList.toggle("active", isRegister);
+  $("authPanelLogin")?.classList.toggle("active", !isRegister);
+  $("authPanelRegister")?.classList.toggle("active", isRegister);
+}
+
+// 兼容既有调用：true=退出业务系统回首页，false=进入业务系统。
 function setAuthGateVisible(visible) {
-  document.body.classList.toggle("auth-only", !!visible);
-  const gate = $("authGate");
-  if (gate) gate.hidden = !visible;
+  showView(visible ? "landing" : "app");
 }
 
 function logoutCurrentUser() {
@@ -170,7 +196,14 @@ function renderAuthState() {
   if (authBar) {
     authBar.innerHTML = user
       ? `<span>${userRoleBadge(user)} ${esc(user.display_name || user.username)}</span><button onclick="logoutCurrentUser()">退出</button>`
-      : `<button onclick="setAuthGateVisible(true)">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
+      : `<button onclick="showAuth('login')">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
+  }
+  if ($("landingStatus")) {
+    $("landingStatus").textContent = user
+      ? `已登录：${user.display_name || user.username}，点击进入控制台。`
+      : (status.bootstrap_required
+        ? "系统还没有账号，点击“注册账号”创建第一个超管。"
+        : "账号已就绪，登录即可进入控制台。");
   }
   if ($("authGateStatus")) {
     $("authGateStatus").textContent = user
