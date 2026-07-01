@@ -3475,3 +3475,17 @@ body.view-app .reply-editor textarea {
   font-size: 13px;
   line-height: 1.35;
 }
+
+
+/* landing tri-state fallback (override merge residue) */
+body.view-landing, body.view-auth { display: block; }
+.landing { display: none; }
+body.view-landing .landing { display: block; }
+body.view-landing .sidebar,
+body.view-landing main,
+body.view-auth .sidebar,
+body.view-auth main { display: none; }
+.auth-gate { display: none; }
+body.view-auth .auth-gate { display: grid; place-items: center; min-height: 100vh; }
+.auth-shell { width: min(440px, 100%); display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
+.auth-card { align-self: stretch; width: 100%; }
