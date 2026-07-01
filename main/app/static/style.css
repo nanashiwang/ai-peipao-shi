@@ -3153,442 +3153,228 @@ main {
   .landing-nav-links { display: none; }
 }
 
-/* 高密度显示：收紧字距、字号和留白，提升控制台首屏信息量。 */
-body.view-app,
-body.view-app :where(button, input, select, textarea) {
+/* 陪跑会话高密度工作台：只收紧会话页，不影响其他控制台模块。 */
+#webChat {
+  font-size: 13px;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+#webChat .section-head {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+#webChat .section-head h2,
+#webChat .chat-main .section-head h2,
+#webChat .chat-review h2,
+#webChat .chat-side h3 {
+  font-size: 16px;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+}
+
+#webChat .section-head .actions {
+  gap: 8px;
+}
+
+#webChat button,
+#webChat input,
+#webChat select,
+#webChat textarea {
   font-size: 13px;
   letter-spacing: 0;
 }
 
-body.view-app {
-  grid-template-columns: 196px minmax(0, 1fr);
-  line-height: 1.42;
-}
-
-body.view-app h2 {
-  font-size: 16px;
-  line-height: 1.25;
-}
-
-body.view-app h3 {
-  font-size: 14px;
-  line-height: 1.3;
-}
-
-body.view-app .sidebar {
-  padding: 12px 10px;
-}
-
-body.view-app .brand {
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 0 3px 12px;
-}
-
-body.view-app .brand-mark {
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-}
-
-body.view-app .brand-mark::after {
-  inset: 7px;
-}
-
-body.view-app .brand strong {
-  font-size: 15px;
-}
-
-body.view-app .brand span,
-body.view-app .sidebar-user small {
-  font-size: 10px;
-}
-
-body.view-app .sidebar nav {
-  gap: 9px;
-}
-
-body.view-app .nav-group {
-  gap: 4px;
-}
-
-body.view-app .nav-label {
-  padding: 4px 7px 2px;
-  font-size: 10px;
-  letter-spacing: 0;
-}
-
-body.view-app .sidebar button {
+#webChat .section-head button,
+#webChat .chat-send-actions button,
+#webChat .compact-form button {
   min-height: 32px;
-  padding: 0 8px;
-  gap: 7px;
-  border-radius: 9px;
+  padding: 6px 10px;
   font-size: 12px;
 }
 
-body.view-app .sidebar button::before {
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  font-size: 11px;
+#webChat .chat-shell {
+  grid-template-columns: 258px minmax(0, 1fr) 360px;
+  gap: 12px;
 }
 
-body.view-app .sidebar-user {
+#webChat .chat-side,
+#webChat .chat-main,
+#webChat .chat-review {
+  padding: 14px;
+  border-radius: 14px;
+}
+
+#webChat .chat-side .stack,
+#webChat .chat-review .stack,
+#webChat .compact-form {
   gap: 8px;
-  margin-top: 10px;
-  padding: 9px;
+}
+
+#webChat .compact-form {
+  margin-bottom: 12px;
+}
+
+#webChat .compact-form input,
+#webChat .compact-form select {
+  min-height: 32px;
+  padding: 7px 9px;
+}
+
+#webChat .secondary-box {
+  margin: 8px 0 12px;
+  padding: 10px;
   border-radius: 12px;
 }
 
-body.view-app .sidebar-avatar {
-  width: 29px;
-  height: 29px;
+#webChat .login-status {
+  margin: 10px 0 12px;
 }
 
-body.view-app .topbar {
-  min-height: 48px;
-  padding: 9px 14px 0;
+#webChat .login-status .empty,
+#webChat .chat-messages .empty,
+#webChat .chat-review .empty {
+  padding: 10px;
 }
 
-body.view-app .topbar strong {
-  font-size: 14px;
+#webChat .list-item {
+  min-height: 0;
+  padding: 9px 10px;
+  gap: 3px;
+  border-radius: 10px;
 }
 
-body.view-app .topbar span,
-body.view-app #health,
-body.view-app #actionStatus {
-  font-size: 12px;
-}
-
-body.view-app .panel {
-  padding: 12px 14px 16px;
-}
-
-body.view-app .dashboard-panel {
-  max-width: none;
-}
-
-body.view-app .section-head,
-body.view-app .card-top {
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-body.view-app .split,
-body.view-app .three-col,
-body.view-app .detail-layout,
-body.view-app .chat-shell,
-body.view-app .dashboard-triad,
-body.view-app .console-hero {
-  gap: 10px;
-}
-
-body.view-app .three-col {
-  grid-template-columns: 228px minmax(280px, 1fr) minmax(330px, 1fr);
-}
-
-body.view-app .stack {
-  gap: 9px;
-}
-
-body.view-app .kpi-grid,
-body.view-app .summary-grid,
-body.view-app .console-kpis,
-body.view-app .insight-grid {
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-body.view-app .kpi,
-body.view-app .summary,
-body.view-app .split > section,
-body.view-app .three-col > section,
-body.view-app .profile-pane,
-body.view-app .ai-pane,
-body.view-app .ai-card,
-body.view-app .report-card,
-body.view-app .chat-side,
-body.view-app .chat-main,
-body.view-app .chat-review,
-body.view-app .assist-card,
-body.view-app .assist-section,
-body.view-app .task-card,
-body.view-app .dashboard-card {
-  padding: 11px;
-}
-
-body.view-app .kpi span,
-body.view-app .summary span,
-body.view-app .metric-card span,
-body.view-app .hero-shortcuts span,
-body.view-app .muted {
-  font-size: 12px;
-}
-
-body.view-app .kpi strong,
-body.view-app .summary strong {
-  font-size: 23px;
+#webChat .list-item strong {
+  font-size: 13px;
+  line-height: 1.25;
   letter-spacing: 0;
 }
 
-body.view-app button,
-body.view-app .file,
-body.view-app select {
-  min-height: 30px;
-  padding: 5px 9px;
-  font-size: 12px;
+#webChat .list-item span,
+#webChat .list-item small,
+#webChat #chatMeta,
+#webChat #chatSendHint,
+#webChat .muted {
+  font-size: 11px;
+  line-height: 1.35;
+  letter-spacing: 0;
 }
 
-body.view-app textarea,
-body.view-app input {
-  padding: 7px 9px;
+#webChat .list-item small {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+#webChat .chat-messages {
+  height: clamp(480px, 62vh, 640px);
+  padding: 12px;
+  gap: 8px;
+  border-radius: 14px;
+}
+
+#webChat .bubble {
+  max-width: 82%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .035);
+}
+
+#webChat .bubble strong {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+#webChat .bubble p {
+  margin: 4px 0;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+#webChat .bubble span {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+#webChat .chat-compose {
+  grid-template-columns: minmax(0, 1fr) 118px;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+#webChat .chat-compose textarea {
+  min-height: 64px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+#webChat .chat-send-actions {
+  gap: 6px;
+}
+
+#webChat .assist-card,
+#webChat .assist-section,
+#webChat .task-card,
+#webChat .ai-card,
+#webChat .empty {
+  padding: 10px;
+  border-radius: 12px;
+}
+
+#webChat .assist-card .card-top,
+#webChat .ai-card .card-top,
+#webChat .task-card .card-top {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#webChat .assist-card dl {
+  gap: 6px 8px;
+}
+
+#webChat .assist-card dt,
+#webChat .assist-card dd {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#webChat .badge {
+  min-height: 19px;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+#webChat textarea[id^="chat-task-"] {
+  min-height: 88px;
+  padding: 8px 10px;
   font-size: 13px;
   line-height: 1.45;
 }
 
-body.view-app textarea {
-  min-height: 88px;
-}
-
-body.view-app th,
-body.view-app td {
-  padding: 8px 9px;
-  font-size: 12px;
-}
-
-body.view-app .badge {
-  min-height: 19px;
-  padding: 2px 6px;
-  font-size: 11px;
-}
-
-body.view-app .row-card {
-  padding: 10px 12px;
-  gap: 10px;
-}
-
-body.view-app .list-item {
-  min-height: 42px;
-  border-radius: 10px;
-}
-
-body.view-app .template-form,
-body.view-app .wecom-form {
-  padding: 11px;
-  gap: 8px;
-}
-
-body.view-app .console-hero {
-  grid-template-columns: minmax(250px, 1fr) minmax(430px, .86fr);
-  margin-bottom: 9px;
-}
-
-body.view-app .console-hero h1 {
-  font-size: clamp(22px, 2.25vw, 27px);
-  letter-spacing: -.01em;
-}
-
-body.view-app .console-hero p {
-  margin-top: 4px;
-  font-size: 12px;
-}
-
-body.view-app .eyebrow {
-  margin-bottom: 4px;
-  font-size: 11px;
-  letter-spacing: 0;
-}
-
-body.view-app .hero-shortcuts {
-  gap: 7px;
-}
-
-body.view-app .hero-shortcuts button {
-  min-height: 46px;
-  padding: 8px 9px;
-  border-radius: 11px;
-}
-
-body.view-app .hero-shortcuts button::before {
-  width: 17px;
-  height: 17px;
-  border-radius: 6px;
-}
-
-body.view-app .hero-shortcuts strong {
-  font-size: 12px;
-}
-
-body.view-app .console-kpis {
-  grid-template-columns: repeat(6, minmax(112px, 1fr));
-}
-
-body.view-app .metric-card,
-body.view-app .insight-card {
-  grid-template-columns: 32px minmax(0, 1fr);
-  gap: 8px;
-  min-height: 70px;
-  padding: 10px;
-}
-
-body.view-app .metric-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  font-size: 14px;
-}
-
-body.view-app .metric-card strong {
-  margin-top: 3px;
-  font-size: 22px;
-  letter-spacing: 0;
-}
-
-body.view-app .metric-card em,
-body.view-app .insight-card small {
-  margin-top: 4px;
-  font-size: 10px;
-}
-
-body.view-app .dashboard-triad {
-  grid-template-columns: minmax(280px, .9fr) minmax(390px, 1.38fr) minmax(260px, .86fr);
-}
-
-body.view-app .dashboard-card .section-head {
-  margin-bottom: 8px;
-}
-
-body.view-app .dashboard-card h2 {
-  font-size: 14px;
-}
-
-body.view-app .priority-panel .stack,
-body.view-app .ai-advice-panel .stack {
-  max-height: 330px;
-}
-
-body.view-app .priority-panel .row-card {
-  min-height: 50px;
-  padding: 9px;
-}
-
-body.view-app .priority-panel .row-card p {
-  margin-top: 2px;
-}
-
-body.view-app .family-brief-panel .funnel-row {
-  min-height: 70px;
-  padding: 8px;
-}
-
-body.view-app .family-brief-panel .funnel-top strong {
-  font-size: 19px;
-}
-
-body.view-app .family-brief-panel .todo-item {
-  min-height: 44px;
-  padding: 8px;
-}
-
-body.view-app .work-suggestions {
-  margin-top: 9px;
-  padding: 10px 12px;
-  font-size: 12px;
-}
-
-body.view-app .reply-metrics {
-  gap: 7px;
-  margin-bottom: 9px;
-}
-
-body.view-app .reply-summary-card {
-  min-height: 62px;
-  padding: 10px 11px;
-}
-
-body.view-app .reply-summary-card small {
-  margin-top: 4px;
-  font-size: 11px;
-}
-
-body.view-app .reply-workspace {
-  grid-template-columns: 210px minmax(270px, .88fr) minmax(400px, 1.36fr);
-  gap: 10px;
-}
-
-body.view-app .reply-family-panel .stack,
-body.view-app .reply-output-panel #replyOutputs {
-  max-height: 600px;
-}
-
-body.view-app .reply-context-panel textarea {
-  min-height: 72px;
-}
-
-body.view-app .reply-context-panel .messages {
-  max-height: 400px;
-}
-
-body.view-app .reply-draft-header,
-body.view-app .task-review-header {
-  padding: 8px 11px;
-  font-size: 11px;
-  letter-spacing: 0;
-}
-
-body.view-app .reply-draft-summary {
-  min-height: 48px;
-  gap: 8px;
-  padding: 8px 11px;
-}
-
-body.view-app .reply-draft-body {
-  gap: 9px;
-  padding: 9px 11px 11px;
-}
-
-body.view-app .reply-draft-info section {
-  padding: 7px 9px;
-}
-
-body.view-app .reply-editor textarea {
-  min-height: 100px;
-}
-
-body.view-app .reply-evidence pre {
-  max-height: 130px;
-}
-
-body.view-app .task-card-summary {
-  min-height: 48px;
-  gap: 8px;
-  padding: 8px 11px;
-}
-
-body.view-app .task-card-detail {
-  gap: 9px;
-  padding: 9px 11px 11px;
-}
-
-body.view-app .task-detail-table {
-  gap: 0;
-}
-
-body.view-app .task-card textarea {
-  min-height: 72px;
+@media (max-width: 1180px) {
+  #webChat .chat-shell {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 820px) {
-  body.view-app {
+  #webChat .chat-side,
+  #webChat .chat-main,
+  #webChat .chat-review {
+    padding: 12px;
+  }
+
+  #webChat .chat-messages {
+    height: min(58vh, 520px);
+  }
+
+  #webChat .chat-compose {
     grid-template-columns: 1fr;
   }
-
-  body.view-app .panel {
-    padding: 11px;
-  }
-
-  body.view-app .topbar {
-    padding: 9px 11px;
-  }
 }
-
