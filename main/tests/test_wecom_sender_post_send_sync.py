@@ -1,6 +1,6 @@
 import importlib.util
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 RPA_DEPS = ["pyperclip", "win32api", "win32con", "win32gui", "win32process", "pywinauto"]
 MISSING_RPA_DEPS = [name for name in RPA_DEPS if importlib.util.find_spec(name) is None]
@@ -84,6 +84,67 @@ class WecomSenderPostSendSyncTest(unittest.TestCase):
         foreground.assert_called()
         hotkey.assert_not_called()
         focus_input.assert_not_called()
+
+    def test_process_task_retries_transient_pre_send_error_before_hotkey(self):
+        task = {
+            "id": 46,
+            "target_name": "parent",
+            "family_id": "WECOM_parent",
+            "content": "hello",
+            "send_mode": "real_send",
+            "server_allowed_target": True,
+            "device_allow_real_send": True,
+        }
+        config = {"pre_send_retry_attempts": 2}
+        window = object()
+
+        with (
+            patch.object(wecom_sender.time, "sleep"),
+            patch.object(wecom_sender, "find_wecom_window", return_value=window),
+            patch.object(
+                wecom_sender,
+                "search_conversation",
+                side_effect=[RuntimeError("(-2147220991, 'event cannot invoke any subscribers')"), None],
+            ) as search,
+            patch.object(wecom_sender, "verify_active_conversation") as verify_title,
+            patch.object(wecom_sender, "send_message", return_value=("sent", "OK")) as send_message,
+        ):
+            status, detail, verification = wecom_sender.process_task(task, config)
+
+        self.assertEqual(status, "sent")
+        self.assertEqual(verification, {})
+        self.assertEqual(search.call_count, 2)
+        verify_title.assert_called_once_with(window, "parent", ANY)
+        send_message.assert_called_once()
+        self.assertIn("发送前瞬时异常重试:2/2", detail)
+
+    def test_process_task_does_not_retry_after_send_hotkey_trace(self):
+        task = {
+            "id": 47,
+            "target_name": "parent",
+            "family_id": "WECOM_parent",
+            "content": "hello",
+            "send_mode": "real_send",
+            "server_allowed_target": True,
+            "device_allow_real_send": True,
+        }
+        config = {"pre_send_retry_attempts": 2}
+
+        def fail_after_hotkey(_window, _content, task_config):
+            wecom_sender.add_send_trace(task_config, "真实发送热键已触发")
+            raise RuntimeError("(-2147220991, 'event cannot invoke any subscribers')")
+
+        with (
+            patch.object(wecom_sender.time, "sleep"),
+            patch.object(wecom_sender, "find_wecom_window", return_value=object()) as find_window,
+            patch.object(wecom_sender, "search_conversation"),
+            patch.object(wecom_sender, "verify_active_conversation"),
+            patch.object(wecom_sender, "send_message", side_effect=fail_after_hotkey),
+        ):
+            with self.assertRaises(wecom_sender.RpaError):
+                wecom_sender.process_task(task, config)
+
+        find_window.assert_called_once()
 
     def test_confirm_sent_message_reopens_target_and_persists_before_confirming(self):
         window = object()

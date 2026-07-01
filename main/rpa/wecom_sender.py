@@ -63,6 +63,7 @@ try:
         real_send_enabled,
         real_send_requested,
         search_result_not_found_detail,
+        send_trace_items,
         sent_content_confirmed_after_send,
         sent_content_match_count,
         should_press_send_hotkey,
@@ -85,6 +86,7 @@ except ModuleNotFoundError:
         real_send_enabled,
         real_send_requested,
         search_result_not_found_detail,
+        send_trace_items,
         sent_content_confirmed_after_send,
         sent_content_match_count,
         should_press_send_hotkey,
@@ -267,6 +269,11 @@ def capture_send_screenshot(config: dict, task_id: int, status: str) -> str:
     if not should_upload_send_screenshot(config, status):
         return ""
     try:
+        if config.get("refocus_wecom_before_result_screenshot", True):
+            try:
+                activate(find_wecom_window(config), config)
+            except Exception as exc:
+                print(f"screenshot_refocus_wecom_failed detail={exc}")
         path = capture_fullscreen_image(f"result_{status}_{task_id}", config)
         return screenshot_upload_payload(path, config)
     except Exception as exc:
@@ -2291,6 +2298,35 @@ def config_with_device_policy(config: dict, task: dict) -> dict:
     return merged
 
 
+TRANSIENT_PRE_SEND_ERROR_MARKERS = (
+    "-2147220991",
+    "事件无法调用任何订户",
+    "event cannot invoke",
+    "无法确认当前前台窗口",
+    "当前前台窗口不是企业微信",
+)
+
+
+def send_hotkey_already_triggered(config: dict, detail: str = "") -> bool:
+    trace_text = "；".join(send_trace_items(config))
+    return "真实发送热键已触发" in trace_text or "真实发送热键已触发" in (detail or "")
+
+
+def is_retryable_pre_send_exception(exc: Exception, config: dict, mode: str) -> bool:
+    if send_hotkey_already_triggered(config, str(exc)):
+        return False
+    text = str(exc).lower()
+    return any(marker.lower() in text for marker in TRANSIENT_PRE_SEND_ERROR_MARKERS)
+
+
+def pre_send_retry_attempts(config: dict, mode: str) -> int:
+    key = "real_send_pre_send_retry_attempts" if (mode or "").strip() == "real_send" else "dry_run_pre_send_retry_attempts"
+    try:
+        return max(1, int(config.get(key, config.get("pre_send_retry_attempts", 2)) or 2))
+    except Exception:
+        return 2
+
+
 def is_conversation_check_task(task: dict) -> bool:
     return (task.get("scene") or "").strip() == CONVERSATION_CHECK_SCENE
 
@@ -2352,17 +2388,27 @@ def process_task(task: dict, config: dict):
     if real_send_requested(config, mode) and not real_send_enabled(config):
         return "skipped", real_send_block_detail(), verification_payload("not_applicable", "真实发送未放行，未按发送键")
     content = validate_task_content(task.get("content") or "")
-    task_config = config_for_task_send_mode(config, mode)
-    task_config["_current_target"] = target
-    task_config["_current_family_id"] = task.get("family_id") or f"WECOM_{target}"
-    try:
-        window = find_wecom_window(task_config)
-        search_conversation(window, target, task_config)
-        verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
-        status, detail = send_message(window, content, task_config)
-        return status, detail_with_send_trace(detail, task_config), task_config.get("_send_verification", {})
-    except Exception as exc:
-        raise RpaError(detail_with_send_trace(str(exc), task_config)) from exc
+    attempts = pre_send_retry_attempts(config, mode)
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        task_config = config_for_task_send_mode(config, mode)
+        task_config["_current_target"] = target
+        task_config["_current_family_id"] = task.get("family_id") or f"WECOM_{target}"
+        if attempt > 1:
+            add_send_trace(task_config, f"发送前瞬时异常重试:{attempt}/{attempts}")
+        try:
+            window = find_wecom_window(task_config)
+            search_conversation(window, target, task_config)
+            verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
+            status, detail = send_message(window, content, task_config)
+            return status, detail_with_send_trace(detail, task_config), task_config.get("_send_verification", {})
+        except Exception as exc:
+            last_error = detail_with_send_trace(str(exc), task_config)
+            if attempt >= attempts or not is_retryable_pre_send_exception(exc, task_config, mode):
+                raise RpaError(last_error) from exc
+            print(f"pre_send_retry task={task.get('id')} target={target} attempt={attempt}/{attempts} detail={exc}")
+            time.sleep(float(config.get("pre_send_retry_interval_seconds", 1.0)))
+    raise RpaError(last_error or "发送前异常重试失败")
 
 
 # 发送单条任务并把结果回写到后端日志接口。
