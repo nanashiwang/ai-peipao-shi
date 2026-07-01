@@ -555,21 +555,24 @@ function taskReviewCard(task) {
   return `
     <details class="task-card task-review-card" ${expanded} ontoggle="toggleTaskDetails(${task.id}, this.open)">
       <summary class="task-card-summary">
-        <div class="task-summary-main">
-          <span class="muted">#${esc(task.id)} · ${esc(familyName(task.family_id))} · ${esc(task.scene || "未命名场景")}</span>
+        <span class="task-summary-id">#${esc(task.id)}</span>
+        <div class="task-summary-target">
           <strong>${esc(task.target_name || "未填写目标")}</strong>
-          <p>${esc(preview || "暂无内容")}</p>
+          <small>${esc(familyName(task.family_id))} · ${esc(task.scene || "未命名场景")}</small>
         </div>
-        <div class="task-summary-badges">
+        <p class="task-summary-preview" title="${esc(task.content || "")}">${esc(preview || "暂无内容")}</p>
+        <div class="task-summary-status">
           ${sendTaskStatusBadge(task.status)}
           ${sendModeBadge(task.send_mode || "dry_run")}
+        </div>
+        <div class="task-summary-readiness">
           ${readiness.label ? badge(readiness.label, readinessKind) : ""}
           ${retryAlert}
         </div>
         <span class="task-expand-label"></span>
       </summary>
       <div class="task-card-detail">
-        <div class="task-detail-grid">
+        <div class="task-detail-table">
           <section><span>操作分层</span>${taskOperationBadges(task)}</section>
           <section><span>重试/告警</span>${taskRetryCell(task)}</section>
           <section><span>发送准备</span>${taskReadinessCell(task)}</section>
@@ -1311,8 +1314,8 @@ function replyOutputCard(output) {
             ${output.need_human_review === "Y" ? badge("需人工", "warn") : ""}
             <strong>${esc(familyName(output.family_id))}</strong>
           </div>
-          <p>${esc(preview)}</p>
         </div>
+        <p class="reply-draft-preview" title="${esc(content || "")}">${esc(preview)}</p>
         <small>${esc(createdAt)}</small>
         <span class="reply-expand-label"></span>
       </summary>
@@ -1707,7 +1710,18 @@ function renderReplyPage() {
   `).join("") : emptyState("暂无家庭", "请先导入家庭数据或登记企微会话。");
   renderReplyMetrics(replyOutputs);
   renderReplyContext();
-  $("replyOutputs").innerHTML = replyOutputs.slice(0, 20).map((item) => replyOutputCard(item)).join("") || emptyState("暂无回复建议", "选择家庭并点击生成回复后，建议会进入这里等待审核。");
+  const replyRows = replyOutputs.slice(0, 20).map((item) => replyOutputCard(item)).join("");
+  $("replyOutputs").innerHTML = replyRows
+    ? `<div class="reply-draft-list">
+        <div class="reply-draft-header">
+          <span>状态 / 家庭</span>
+          <span>内容预览</span>
+          <span>时间</span>
+          <span>详情</span>
+        </div>
+        ${replyRows}
+      </div>`
+    : emptyState("暂无回复建议", "选择家庭并点击生成回复后，建议会进入这里等待审核。");
 }
 
 // 渲染回复上下文。
@@ -1741,7 +1755,17 @@ function renderTasks() {
     if (!ids.has(id)) state.expandedTaskIds.delete(id);
   });
   $("taskTable").innerHTML = state.tasks.length
-    ? `<div class="task-review-list">${state.tasks.map(taskReviewCard).join("")}</div>`
+    ? `<div class="task-review-list">
+        <div class="task-review-header">
+          <span>ID</span>
+          <span>对象 / 场景</span>
+          <span>内容预览</span>
+          <span>状态</span>
+          <span>准备度</span>
+          <span>详情</span>
+        </div>
+        ${state.tasks.map(taskReviewCard).join("")}
+      </div>`
     : emptyState("暂无待发送任务", "AI 回复、周报或手动企微任务创建后会出现在这里。");
 }
 
