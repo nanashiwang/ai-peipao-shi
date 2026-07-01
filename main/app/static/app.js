@@ -104,6 +104,11 @@ function userCampusText(user) {
   return String(value || "").trim();
 }
 
+function userInitial(user) {
+  const name = String(user?.display_name || user?.username || "访客").trim();
+  return name.slice(0, 1).toUpperCase();
+}
+
 // 把普通文本转成安全的 HTML 字符串，防止页面插入未转义内容。
 function esc(value) {
   return String(value ?? "")
@@ -188,6 +193,12 @@ function renderAuthState() {
     $("authCurrentUser").innerHTML = user
       ? `<strong>当前登录：</strong>${userRoleBadge(user)} ${esc(user.display_name || user.username)}<p class="muted">校区范围：${esc(userCampusText(user) || "全部校区")}</p>`
       : emptyState("未登录", "请先登录；如果是首次使用，请在右侧注册第一个超管账号。");
+  }
+  if ($("sidebarUser")) {
+    $("sidebarUser").innerHTML = user
+      ? `<div class="sidebar-avatar">${esc(userInitial(user))}</div>
+         <div><strong>${esc(user.display_name || user.username)}</strong><small>${userRoleBadge(user)} ${esc(userCampusText(user) || "全部校区")}</small></div>`
+      : `<div class="sidebar-avatar">访</div><div><strong>未登录</strong><small>请登录控制端账号</small></div>`;
   }
 }
 
@@ -664,35 +675,87 @@ function evidenceView(output) {
 function renderKpis() {
   const pendingTasks = state.tasks.filter((task) => task.status === "pending").length;
   const reviewOutputs = state.outputs.filter((item) => item.status === "needs_review").length;
+  const reviewReports = state.reports.filter((report) => report.status !== "approved").length;
   const highRisk = state.profiles.filter((item) => (item.service_risks || "").includes("退费") || (item.service_risks || "").includes("投诉")).length;
-  const approvedReports = state.reports.filter((item) => item.status === "approved").length;
-  if (highRisk > 0) {
-    $("kpis").innerHTML = riskState("存在高风险家庭", `当前有 ${highRisk} 个家庭出现退费/投诉等风险信号，请优先处理。`, '<button onclick="switchTab(\'adminDashboard\')">查看管理看板</button>');
-    $("kpis").innerHTML += [
-      ["待审核内容", reviewOutputs, "Agent 生成后待确认"],
-      ["待发送任务", pendingTasks, "审核后可发送"],
-      ["已确认周报", approvedReports, "可加入发送任务"],
-    ].map(([label, value, hint]) => `
-      <article class="kpi">
-        <span>${esc(label)}</span>
-        <strong>${esc(value)}</strong>
-        <small>${esc(hint)}</small>
-      </article>
-    `).join("");
-    return;
-  }
-  $("kpis").innerHTML = [
-    ["高风险家庭", highRisk, "需主管关注"],
-    ["待审核内容", reviewOutputs, "Agent 生成后待确认"],
-    ["待发送任务", pendingTasks, "审核后可发送"],
-    ["已确认周报", approvedReports, "可加入发送任务"],
-  ].map(([label, value, hint]) => `
-    <article class="kpi">
-      <span>${esc(label)}</span>
-      <strong>${esc(value)}</strong>
-      <small>${esc(hint)}</small>
+  const todoCount = (state.workbenchOverview?.todos?.categories || []).reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const totalMessages = state.families.reduce((sum, family) => sum + Number(family.message_count || 0), 0);
+  const satisfactionValues = state.profiles.map((profile) => {
+    const raw = String(profile.satisfaction_level || "").trim();
+    const numeric = Number.parseFloat(raw);
+    if (!Number.isNaN(numeric)) return numeric > 5 ? numeric / 20 : numeric;
+    if (raw.includes("低") || raw.includes("不满")) return 2.8;
+    if (raw.includes("高") || raw.includes("满意")) return 4.8;
+    if (raw.includes("中") || raw.includes("一般")) return 4.0;
+    return null;
+  }).filter((value) => value !== null);
+  const avgSatisfaction = satisfactionValues.length
+    ? (satisfactionValues.reduce((sum, value) => sum + value, 0) / satisfactionValues.length).toFixed(1)
+    : "—";
+  const metrics = [
+    { label: "高风险家庭", value: highRisk, unit: "户", hint: highRisk ? `今日需优先处理 ${highRisk}` : "当前无高风险", icon: "△", tone: highRisk ? "danger" : "ok" },
+    { label: "服务满意度", value: avgSatisfaction, unit: "分", hint: satisfactionValues.length ? "基于画像评级估算" : "生成画像后统计", icon: "☺", tone: "green" },
+    { label: "待跟进事项", value: todoCount || state.todayPriorities.length, unit: "项", hint: "PBL/请假/负面反馈", icon: "▣", tone: "blue" },
+    { label: "本周沟通频次", value: totalMessages, unit: "次", hint: "已归档聊天记录", icon: "▥", tone: "purple" },
+    { label: "待审核内容", value: reviewOutputs + reviewReports, unit: "条", hint: "AI 输出与周报", icon: "▤", tone: "orange" },
+    { label: "待发送任务", value: pendingTasks, unit: "条", hint: "需审核后触达", icon: "✈", tone: "sky" },
+  ];
+  $("kpis").innerHTML = metrics.map((item) => `
+    <article class="kpi metric-card metric-${esc(item.tone)}">
+      <div class="metric-icon">${esc(item.icon)}</div>
+      <div>
+        <span>${esc(item.label)}</span>
+        <strong>${esc(item.value)}<small>${esc(item.unit)}</small></strong>
+        <em>${esc(item.hint)}</em>
+      </div>
     </article>
   `).join("");
+}
+
+function renderInsightCards() {
+  const el = $("insightCards");
+  if (!el) return;
+  const noContact = state.families.filter((family) => !Number(family.message_count || 0)).length;
+  const negative = state.profiles.filter((profile) => /(退费|投诉|不满意|没效果|风险)/.test(profile.service_risks || "")).length;
+  const dropout = state.todayPriorities.filter((item) => item.level === "高" || (item.reasons || []).join("").includes("掉队")).length;
+  const styles = new Set(state.profiles.map((profile) => profile.communication_style).filter(Boolean));
+  const absence = (state.workbenchOverview?.todos?.categories || [])
+    .filter((category) => /请假|补课|缺课/.test(category.label || ""))
+    .reduce((sum, category) => sum + Number(category.count || 0), 0);
+  const riskSignals = state.profiles.filter((profile) => (profile.service_risks || "").trim()).length;
+  const cards = [
+    ["长期未沟通", noContact, "超过阈值需主动触达", "◷", "blue"],
+    ["家长负面反馈", negative, "投诉/退费/不满信号", "☹", "danger"],
+    ["学生掉队提醒", dropout, "高优先级家庭", "⚑", "green"],
+    ["家长沟通风格", styles.size || "—", "画像中已识别类型", "♡", "orange"],
+    ["缺课/请假", absence, "请假补课待确认", "▦", "purple"],
+    ["家长风险信号", riskSignals, "需人工复核", "⬟", "danger"],
+  ];
+  el.innerHTML = cards.map(([label, value, hint, icon, tone]) => `
+    <article class="insight-card insight-${esc(tone)}">
+      <div class="metric-icon">${esc(icon)}</div>
+      <div>
+        <strong>${esc(label)}</strong>
+        <span>${esc(value)} <small>${esc(hint)}</small></span>
+        <button onclick="${label === "缺课/请假" ? "switchTab('checkins')" : label.includes("风险") ? "switchTab('profiles')" : "switchTab('families')"}">查看全部</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderWorkSuggestions() {
+  const el = $("workSuggestions");
+  if (!el) return;
+  const pendingTasks = state.tasks.filter((task) => task.status === "pending").length;
+  const reviewOutputs = state.outputs.filter((item) => item.status === "needs_review").length;
+  const highRisk = state.profiles.filter((item) => /(退费|投诉|不满意|没效果)/.test(item.service_risks || "")).length;
+  const suggestions = [
+    highRisk ? `优先处理 ${highRisk} 个高风险家庭，先查时间线再决定是否主管介入。` : "保持当前风险巡检节奏，重点关注新导入家庭。",
+    pendingTasks ? `审核 ${pendingTasks} 条待发送任务，真实企微发送前先完成试运行。` : "今日暂无待发送任务，可先生成关键家庭回复草稿。",
+    reviewOutputs ? `复核 ${reviewOutputs} 条 AI 输出，避免未审核内容直接进入发送队列。` : "AI 输出已清空，可补充生成周报或家庭画像。",
+    "定期观察学习报告、增强家长信任感。",
+    "关注高风险家庭动态，提前预防风险。",
+  ];
+  el.innerHTML = `<strong>工作建议</strong>${suggestions.map((item) => `<span>${esc(item)}</span>`).join("")}`;
 }
 
 function renderCoachFilter() {
@@ -1594,6 +1657,8 @@ function renderAll() {
   renderParentDashboard();
   renderPriorityList();
   renderRecentOutputs();
+  renderInsightCards();
+  renderWorkSuggestions();
   renderWebChat();
   renderWecomPage();
   renderFamilies();

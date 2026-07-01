@@ -50,36 +50,40 @@
   <!-- 左侧导航负责切换不同业务页面。 -->
   <aside class="sidebar">
     <div class="brand">
-      <strong>陪跑师效率系统</strong>
-      <span>重庆机构试点</span>
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div>
+        <strong>陪跑师工作台</strong>
+        <span>重庆机构试点</span>
+      </div>
     </div>
     <nav aria-label="主导航">
       <div class="nav-group">
         <span class="nav-label">日常工作</span>
-        <button data-tab="dashboard" data-title="工作台" class="active">工作台</button>
-        <button data-tab="parentDashboard" data-title="家长看板">家长看板</button>
-        <button data-tab="webChat" data-title="陪跑会话">陪跑会话</button>
-        <button data-tab="familyDetailPanel" data-title="家庭档案">家庭档案</button>
-        <button data-tab="tasks" data-title="审核发送">审核发送</button>
+        <button data-tab="dashboard" data-title="工作台" data-icon="⌂" class="active">工作台</button>
+        <button data-tab="parentDashboard" data-title="家长看板" data-icon="◈">家长看板</button>
+        <button data-tab="webChat" data-title="陪跑会话" data-icon="●">陪跑会话</button>
+        <button data-tab="familyDetailPanel" data-title="家庭档案" data-icon="◇">家庭档案</button>
+        <button data-tab="tasks" data-title="审核发送" data-icon="✦">审核发送</button>
       </div>
       <div class="nav-group">
         <span class="nav-label">资料与 AI</span>
-        <button data-tab="families" data-title="家庭/学员">家庭/学员</button>
-        <button data-tab="profiles" data-title="AI画像">AI画像</button>
-        <button data-tab="reports" data-title="AI周报">AI周报</button>
-        <button data-tab="replies" data-title="AI回复">AI回复</button>
-        <button data-tab="checkins" data-title="打卡/PBL">打卡/PBL</button>
+        <button data-tab="families" data-title="家庭/学员" data-icon="♙">家庭/学员</button>
+        <button data-tab="profiles" data-title="AI画像" data-icon="◎">AI画像</button>
+        <button data-tab="reports" data-title="AI周报" data-icon="▣">AI周报</button>
+        <button data-tab="replies" data-title="AI回复" data-icon="◌">AI回复</button>
+        <button data-tab="checkins" data-title="打卡/PBL" data-icon="✓">打卡/PBL</button>
       </div>
       <div class="nav-group">
         <span class="nav-label">运营排障</span>
-        <button data-tab="adminDashboard" data-title="管理看板">管理看板</button>
-        <button data-tab="wecom" data-title="企微会话">企微会话</button>
-        <button data-tab="logs" data-title="发送日志">发送日志</button>
-        <button data-tab="audit" data-title="审计日志">审计日志</button>
-        <button data-tab="devices" data-title="设备监控">设备监控</button>
-        <button data-tab="templates" data-title="系统设置">系统设置</button>
+        <button data-tab="adminDashboard" data-title="管理看板" data-icon="▥">管理看板</button>
+        <button data-tab="wecom" data-title="企微会话" data-icon="↗">企微会话</button>
+        <button data-tab="logs" data-title="发送日志" data-icon="◷">发送日志</button>
+        <button data-tab="audit" data-title="审计日志" data-icon="□">审计日志</button>
+        <button data-tab="devices" data-title="设备监控" data-icon="⚙">设备监控</button>
+        <button data-tab="templates" data-title="系统设置" data-icon="⚒">系统设置</button>
       </div>
     </nav>
+    <div id="sidebarUser" class="sidebar-user"></div>
   </aside>
 
   <!-- 右侧主内容区承载仪表盘、家庭详情、任务和模板。 -->
@@ -103,49 +107,56 @@
       </div>
     </header>
 
-    <!-- 工作台：总览 KPI、待处理事项和最近的 AI 输出。 -->
-    <section id="dashboard" class="panel active">
-      <div id="kpis" class="kpi-grid"></div>
-      <div class="section-head">
-        <h2>服务状态与待办漏斗</h2>
-        <div class="actions left">
-          <select id="campusFilter" onchange="setCampusFilter(this.value)" aria-label="筛选校区"></select>
-          <select id="coachFilter" onchange="setCoachFilter(this.value)"></select>
-          <button onclick="refreshWorkbenchOverview()">刷新漏斗</button>
+    <!-- 工作台：按视觉稿重组为看板首页、指标、三栏任务与底部建议。 -->
+    <section id="dashboard" class="panel active dashboard-panel">
+      <div class="console-hero">
+        <div>
+          <span class="eyebrow">全面洞察 · 精准沟通 · 提升满意 · 降低风险</span>
+          <h1>陪跑师工作台 <em>| 家长看板</em></h1>
+          <p>聚合家庭风险、服务满意、沟通频次和待发送任务，让陪跑师先处理最重要的家庭。</p>
+        </div>
+        <div class="hero-shortcuts" aria-label="快捷入口">
+          <button onclick="switchTab('families')"><strong>以学生为中心</strong><span>关注成长全周期</span></button>
+          <button onclick="switchTab('webChat')"><strong>精细化沟通</strong><span>沉淀家长反馈</span></button>
+          <button onclick="switchTab('adminDashboard')"><strong>风险预警</strong><span>识别服务异常</span></button>
+          <button onclick="switchTab('reports')"><strong>数据驱动</strong><span>周报质量改进</span></button>
         </div>
       </div>
-      <div class="split ops-split">
-        <section>
+
+      <div id="kpis" class="kpi-grid console-kpis"></div>
+
+      <div class="dashboard-triad">
+        <section class="dashboard-card priority-panel">
           <div class="section-head compact-head">
-            <h2>家庭服务状态漏斗</h2>
-            <span class="muted">正常 / 需跟进 / 风险 / 续报 / 已结课</span>
-          </div>
-          <div id="serviceFunnel" class="funnel-list"></div>
-        </section>
-        <section>
-          <div class="section-head compact-head">
-            <h2>待办聚合</h2>
-            <span class="muted">PBL、请假补课、周报、负面反馈</span>
-          </div>
-          <div id="todoBoard" class="todo-board"></div>
-        </section>
-      </div>
-      <div class="split">
-        <section>
-          <div class="section-head">
             <h2>今日优先处理</h2>
-            <button onclick="refreshAll()">刷新</button>
+            <div class="actions left">
+              <button onclick="refreshAll()">刷新</button>
+            </div>
           </div>
           <div id="priorityList" class="stack"></div>
         </section>
-        <section>
-          <div class="section-head">
-            <h2>Agent 审核区</h2>
-            <span class="muted">所有 AI 输出先审核，再进入发送任务</span>
+        <section class="dashboard-card family-brief-panel">
+          <div class="section-head compact-head">
+            <h2>家庭列表速览</h2>
+            <div class="actions left">
+              <select id="campusFilter" onchange="setCampusFilter(this.value)" aria-label="筛选校区"></select>
+              <select id="coachFilter" onchange="setCoachFilter(this.value)" aria-label="筛选陪跑师"></select>
+            </div>
+          </div>
+          <div id="serviceFunnel" class="funnel-list"></div>
+          <div id="todoBoard" class="todo-board"></div>
+        </section>
+        <section class="dashboard-card ai-advice-panel">
+          <div class="section-head compact-head">
+            <h2>AI 今日建议</h2>
+            <button onclick="refreshWorkbenchOverview()">换一换</button>
           </div>
           <div id="recentOutputs" class="stack"></div>
         </section>
       </div>
+
+      <div id="insightCards" class="insight-grid"></div>
+      <div id="workSuggestions" class="work-suggestions"></div>
     </section>
 
     <!-- 家长看板：家长登录后只展示自己家庭的阶段进度、周报和沟通摘要。 -->
