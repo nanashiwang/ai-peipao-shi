@@ -44,7 +44,7 @@ def ark_config() -> dict[str, str]:
 @lru_cache
 def ark_client() -> OpenAI:
     config = ark_config()
-    return OpenAI(base_url=config["base_url"], api_key=config["api_key"])
+    return OpenAI(base_url=config["base_url"], api_key=config["api_key"], timeout=60.0, max_retries=2)
 
 
 # 读取 endpoint id。

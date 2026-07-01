@@ -4122,9 +4122,16 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
 
 @app.post("/api/send-tasks/{task_id}/result")
 def record_send_result(task_id: int, payload: SendResultIn, request: Request = None, db: Session = Depends(get_db)):
+    device = device_from_optional_headers(db, request)
+    if device is None:
+        raise HTTPException(401, "缺少设备令牌，禁止匿名回写发送结果")
     task = db.get(SendTask, task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    if task.device_id and task.device_id != device.device_id:
+        raise HTTPException(403, "无权回写他人设备的任务结果")
+    if task.status in ("sent", "cancelled"):
+        raise HTTPException(409, "任务已处于终态，不可重复回写结果")
     ensure_task_family_access(db, task, request)
     if payload.status not in {"sent", "failed", "skipped", "dry_run"}:
         raise HTTPException(400, "status 只能是 sent/failed/skipped/dry_run")
