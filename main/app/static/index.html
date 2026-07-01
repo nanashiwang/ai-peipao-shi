@@ -335,7 +335,7 @@
       <div id="reportList" class="stack"></div>
     </section>
 
-    <!-- AI回复：左侧是家庭列表，中间是上下文，右侧是建议。 -->
+    <!-- AI回复：左侧选家庭，中间看上下文，右侧折叠审核草稿。 -->
     <section id="replies" class="panel">
       <div class="section-head">
         <h2>AI回复</h2>
@@ -344,12 +344,13 @@
           <span class="muted">只生成 AI 草稿，人工审核后再加入发送任务</span>
         </div>
       </div>
-      <div class="three-col">
-        <section>
+      <div id="replyMetrics" class="reply-metrics summary-grid"></div>
+      <div class="three-col reply-workspace">
+        <section class="reply-family-panel">
           <h2>消息列表</h2>
           <div id="replyFamilies" class="stack"></div>
         </section>
-        <section>
+        <section class="reply-context-panel">
           <h2>聊天上下文</h2>
           <select id="replyFamilySelect"></select>
           <textarea id="replyMessage" placeholder="可粘贴家长最新消息；不填则读取该家庭最近一条消息"></textarea>
@@ -360,8 +361,13 @@
           </div>
           <div id="replyContext" class="messages"></div>
         </section>
-        <section>
-          <h2>AI回复建议</h2>
+        <section class="reply-output-panel">
+          <div class="section-head compact-head">
+            <div>
+              <h2>待审回复草稿</h2>
+              <span class="muted">默认折叠；展开后编辑、保存或加入发送任务</span>
+            </div>
+          </div>
           <div id="replyOutputs" class="stack"></div>
         </section>
       </div>

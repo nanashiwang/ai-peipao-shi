@@ -377,6 +377,22 @@ function sendTaskStatusBadge(status) {
   return badge(labels[status] || status || "未知", kind);
 }
 
+function aiOutputStatusBadge(status) {
+  const labels = {
+    needs_review: "待人工审核",
+    approved: "已保存审核稿",
+    task_created: "已建发送任务",
+  };
+  const kind = status === "needs_review" ? "warn" : (status === "approved" || status === "task_created" ? "ok" : "");
+  return badge(labels[status] || status || "未知状态", kind);
+}
+
+function aiRiskBadge(riskLevel) {
+  const level = riskLevel || "低";
+  const kind = level === "高" ? "danger" : (level === "中" ? "warn" : "ok");
+  return badge(`风险${level}`, kind);
+}
+
 function reportSendStatusBadge(status) {
   const labels = {
     not_created: "未建任务",
@@ -1241,6 +1257,87 @@ function outputCard(output, compact = false) {
   `;
 }
 
+function textPreview(value, limit = 96) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function renderReplyMetrics(replyOutputs) {
+  const el = $("replyMetrics");
+  if (!el) return;
+  const pendingCount = replyOutputs.filter((item) => item.status === "needs_review").length;
+  const taskCount = replyOutputs.filter((item) => item.status === "task_created").length;
+  const humanCount = replyOutputs.filter((item) => item.risk_level === "高" || item.need_human_review === "Y").length;
+  const familyCount = new Set(replyOutputs.map((item) => item.family_id).filter(Boolean)).size;
+  const cards = [
+    ["待审核草稿", pendingCount, "优先展开处理"],
+    ["已建发送任务", taskCount, "进入审核发送页"],
+    ["需人工关注", humanCount, "高风险或需人工"],
+    ["覆盖家庭", familyCount, "近 200 条 AI 回复"],
+  ];
+  el.innerHTML = cards.map(([label, value, detail]) => `
+    <article class="summary reply-summary-card">
+      <span>${esc(label)}</span>
+      <strong>${esc(value)}</strong>
+      <small>${esc(detail)}</small>
+    </article>
+  `).join("");
+}
+
+function replyOutputSort(a, b) {
+  const order = { needs_review: 0, approved: 1, task_created: 2 };
+  const statusDiff = (order[a.status] ?? 9) - (order[b.status] ?? 9);
+  if (statusDiff) return statusDiff;
+  return Number(b.id || 0) - Number(a.id || 0);
+}
+
+function replyOutputCard(output) {
+  const textId = `output-${output.id}`;
+  const content = output.edited_output || output.display_text || "";
+  const preview = textPreview(content || "暂无回复内容", 112);
+  const source = output.source || "AI回复";
+  const createdAt = output.created_at || output.updated_at || "";
+  const suggestions = String(output.suggested_actions || "").trim();
+  return `
+    <details class="reply-draft-card">
+      <summary class="reply-draft-summary">
+        <div class="reply-draft-main">
+          <div class="reply-draft-meta">
+            ${aiOutputStatusBadge(output.status)}
+            ${aiRiskBadge(output.risk_level)}
+            ${output.need_human_review === "Y" ? badge("需人工", "warn") : ""}
+            <strong>${esc(familyName(output.family_id))}</strong>
+          </div>
+          <p>${esc(preview)}</p>
+        </div>
+        <small>${esc(createdAt)}</small>
+        <span class="reply-expand-label"></span>
+      </summary>
+      <div class="reply-draft-body">
+        <div class="reply-draft-info">
+          <section><span>来源</span><strong>${esc(source)}</strong></section>
+          <section><span>家庭编号</span><strong>${esc(output.family_id)}</strong></section>
+          <section><span>输出编号</span><strong>#${esc(output.id)}</strong></section>
+        </div>
+        <label class="reply-editor">
+          <span>审核回复内容</span>
+          <textarea id="${textId}">${esc(content)}</textarea>
+        </label>
+        ${suggestions ? `<p class="reply-actions-hint"><strong>推荐动作</strong>${esc(suggestions)}</p>` : ""}
+        <details class="reply-evidence">
+          <summary>证据链与原始 JSON</summary>
+          ${evidenceView(output)}
+          <pre>${esc(output.raw_json)}</pre>
+        </details>
+        <div class="actions left">
+          <button onclick="saveOutput(${output.id})">保存审核稿</button>
+          <button onclick="createTaskFromOutput(${output.id})">加入发送任务</button>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
 // 渲染最近的输出结果。
 function renderRecentOutputs() {
   $("recentOutputs").innerHTML = state.outputs.length ? state.outputs.slice(0, 6).map((item) => outputCard(item, true)).join("") : emptyState("暂无 Agent 输出", "导入聊天记录后，可先批量分析或在家庭详情中生成画像、周报和回复。");
@@ -1590,15 +1687,24 @@ function renderReports() {
 
 // 渲染回复页面。
 function renderReplyPage() {
+  const replyOutputs = state.outputs
+    .filter((item) => item.agent_type === "ai_reply")
+    .sort(replyOutputSort);
+  const pendingByFamily = replyOutputs.reduce((acc, item) => {
+    if (item.status === "needs_review") acc[item.family_id] = (acc[item.family_id] || 0) + 1;
+    return acc;
+  }, {});
   $("replyFamilySelect").innerHTML = optionList(state.selectedFamilyId);
   $("replyFamilies").innerHTML = state.families.length ? state.families.map((family) => `
     <button class="list-item ${family.family_id === state.selectedFamilyId ? "selected" : ""}" onclick="prepareReply('${esc(family.family_id)}', false)">
       <strong>${esc(family.parent_nickname || family.family_id)}</strong>
       <span>${esc(family.message_count)} 条消息</span>
+      <small>${esc(pendingByFamily[family.family_id] || 0)} 条待审回复</small>
     </button>
   `).join("") : emptyState("暂无家庭", "请先导入家庭数据或登记企微会话。");
+  renderReplyMetrics(replyOutputs);
   renderReplyContext();
-  $("replyOutputs").innerHTML = state.outputs.filter((item) => item.agent_type === "ai_reply").slice(0, 8).map((item) => outputCard(item)).join("") || emptyState("暂无回复建议", "选择家庭并点击生成回复后，建议会进入这里等待审核。");
+  $("replyOutputs").innerHTML = replyOutputs.slice(0, 20).map((item) => replyOutputCard(item)).join("") || emptyState("暂无回复建议", "选择家庭并点击生成回复后，建议会进入这里等待审核。");
 }
 
 // 渲染回复上下文。
@@ -1960,9 +2066,15 @@ async function runReplyAgent(tone) {
 }
 
 // 保存输出。
+function outputTextarea(id) {
+  return document.querySelector(`.panel.active textarea#output-${id}`) || $(`output-${id}`);
+}
+
 async function saveOutput(id) {
   return withAction("保存审核稿", async () => {
-    const edited_output = $(`output-${id}`).value;
+    const textarea = outputTextarea(id);
+    if (!textarea) throw new Error("未找到审核内容");
+    const edited_output = textarea.value;
     await api(`/api/ai-outputs/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1976,7 +2088,7 @@ async function saveOutput(id) {
 // 从输出创建任务。
 async function createTaskFromOutput(id) {
   return withAction("加入发送任务", async () => {
-    const textarea = $(`output-${id}`);
+    const textarea = outputTextarea(id);
     const content = textarea ? textarea.value : "";
     await api(`/api/ai-outputs/${id}/send-task`, {
       method: "POST",
