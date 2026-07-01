@@ -121,7 +121,10 @@ function switchAuthTab(name) {
 
 // 兼容既有调用：true=退出业务系统回首页，false=进入业务系统。
 function setAuthGateVisible(visible) {
-  showView(visible ? "landing" : "app");
+  document.body.classList.toggle("auth-only", !!visible);
+  const gate = $("authGate");
+  if (gate) gate.hidden = !visible;
+  document.body.classList.toggle("view-app", !visible);
 }
 
 function logoutCurrentUser() {
@@ -230,7 +233,7 @@ function renderAuthState() {
   if (authBar) {
     authBar.innerHTML = user
       ? `<span>${userRoleBadge(user)} ${esc(user.display_name || user.username)}</span><button onclick="openAccountSettings()">账号设置</button><button onclick="logoutCurrentUser()">退出</button>`
-      : `<button onclick="showAuth('login')">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
+      : `<button onclick="setAuthGateVisible(true)">${status.bootstrap_required ? "注册超管" : "登录"}</button>`;
   }
   if ($("landingStatus")) {
     $("landingStatus").textContent = user
