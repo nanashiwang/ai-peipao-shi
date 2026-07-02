@@ -11,6 +11,7 @@ main/server.log
 main/server.err.log
 
 # Private local config
+config/
 main/.env
 main/config/ark.json
 main/config/*.so

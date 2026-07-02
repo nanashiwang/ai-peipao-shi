@@ -2228,13 +2228,24 @@ def index():
     from fastapi.responses import HTMLResponse
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     _h = hashlib.md5()
-    for _n in ("app.js", "style.css"):
+    for _n in ("security.js", "app.js", "style.css"):
         _p = STATIC / _n
         if _p.exists():
             _h.update(_p.read_bytes())
     _v = _h.hexdigest()[:8]
-    html = html.replace("/static/app.js", "/static/app.js?v=" + _v).replace("/static/style.css", "/static/style.css?v=" + _v)
-    return HTMLResponse(html)
+    html = (
+        html.replace("/static/security.js", "/static/security.js?v=" + _v)
+        .replace("/static/app.js", "/static/app.js?v=" + _v)
+        .replace("/static/style.css", "/static/style.css?v=" + _v)
+    )
+    return HTMLResponse(
+        html,
+        headers={
+            "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "same-origin",
+        },
+    )
 
 
 # 健康检查接口给 RPA 和前端都可以用。
