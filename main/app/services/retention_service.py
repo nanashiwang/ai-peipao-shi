@@ -16,6 +16,11 @@ from sqlalchemy.orm import Session
 from app.models import SendLog
 
 SCREENSHOT_RE = re.compile(r"(task_\d+_\d{8}_\d{6}_\d{6}|shot_[A-Za-z0-9_-]{32,})\.(png|jpg)")
+RPA_ARTIFACT_PATTERNS = (
+    ("rpa", "debug_*.png"),
+    ("rpa", "result_*.png"),
+    ("", ".tmp_rpa_*.json"),
+)
 ROTATED_LOG_PATTERNS = ("server*.log.*", "server*.err.log.*", "*.log.*")
 
 
@@ -32,6 +37,7 @@ def retention_policy_from_env(env: dict | None = None) -> dict:
     return {
         "send_log_days": _env_int(source, "SEND_LOG_RETENTION_DAYS", 365),
         "screenshot_days": _env_int(source, "SEND_SCREENSHOT_RETENTION_DAYS", 90),
+        "rpa_artifact_days": _env_int(source, "RPA_ARTIFACT_RETENTION_DAYS", 7),
         "runtime_log_days": _env_int(source, "RUNTIME_LOG_RETENTION_DAYS", 30),
     }
 
@@ -80,6 +86,26 @@ def screenshot_retention_plan(screenshot_dir: Path, now: datetime, days: int) ->
     }
 
 
+def _expired_rpa_artifacts(root: Path, cutoff: datetime) -> list[Path]:
+    expired: list[Path] = []
+    for dirname, pattern in RPA_ARTIFACT_PATTERNS:
+        base = root / dirname if dirname else root
+        expired.extend(_expired_files(base, pattern, cutoff))
+    return sorted({path.resolve(): path for path in expired}.values(), key=lambda item: item.stat().st_mtime)
+
+
+def rpa_artifact_retention_plan(root: Path, now: datetime, days: int) -> dict:
+    cutoff = now - timedelta(days=days)
+    expired = _expired_rpa_artifacts(root, cutoff)
+    return {
+        "retention_days": days,
+        "cutoff": cutoff.isoformat(sep=" ", timespec="seconds"),
+        "expired_count": len(expired),
+        "expired_bytes": sum(path.stat().st_size for path in expired),
+        "candidates": [_file_info(path, root) for path in expired[:50]],
+    }
+
+
 def runtime_log_retention_plan(root: Path, now: datetime, days: int) -> dict:
     cutoff = now - timedelta(days=days)
     expired: list[Path] = []
@@ -111,9 +137,10 @@ def retention_report(db: Session, screenshot_dir: Path, root: Path, policy: dict
     current = now or datetime.utcnow()
     send_logs = send_log_retention_plan(db, current, int(policy["send_log_days"]))
     screenshots = screenshot_retention_plan(screenshot_dir, current, int(policy["screenshot_days"]))
+    rpa_artifacts = rpa_artifact_retention_plan(root, current, int(policy["rpa_artifact_days"]))
     runtime_logs = runtime_log_retention_plan(root, current, int(policy["runtime_log_days"]))
-    expired_count = send_logs["expired_count"] + screenshots["expired_count"] + runtime_logs["expired_count"]
-    expired_bytes = screenshots["expired_bytes"] + runtime_logs["expired_bytes"]
+    expired_count = send_logs["expired_count"] + screenshots["expired_count"] + rpa_artifacts["expired_count"] + runtime_logs["expired_count"]
+    expired_bytes = screenshots["expired_bytes"] + rpa_artifacts["expired_bytes"] + runtime_logs["expired_bytes"]
     return {
         "generated_at": current.isoformat(sep=" ", timespec="seconds"),
         "policy": policy,
@@ -121,8 +148,9 @@ def retention_report(db: Session, screenshot_dir: Path, root: Path, policy: dict
         "expired_bytes": expired_bytes,
         "send_logs": send_logs,
         "screenshots": screenshots,
+        "rpa_artifacts": rpa_artifacts,
         "runtime_logs": runtime_logs,
-        "detail": f"过期发送日志 {send_logs['expired_count']} 条，截图/运行日志 {screenshots['expired_count'] + runtime_logs['expired_count']} 个",
+        "detail": f"过期发送日志 {send_logs['expired_count']} 条，截图/RPA产物/运行日志 {screenshots['expired_count'] + rpa_artifacts['expired_count'] + runtime_logs['expired_count']} 个",
     }
 
 
@@ -137,7 +165,7 @@ def prune_retention(
 ) -> dict:
     current = now or datetime.utcnow()
     report = retention_report(db, screenshot_dir, root, policy, current)
-    result = {"executed": execute, "report": report, "deleted": {"send_logs": 0, "screenshots": 0, "runtime_logs": 0}}
+    result = {"executed": execute, "report": report, "deleted": {"send_logs": 0, "screenshots": 0, "rpa_artifacts": 0, "runtime_logs": 0}}
     if not execute:
         return result
 
@@ -148,6 +176,11 @@ def prune_retention(
     for path in _expired_files(screenshot_dir, "task_*", screenshot_cutoff, lambda name: bool(SCREENSHOT_RE.fullmatch(name))):
         path.unlink(missing_ok=True)
         result["deleted"]["screenshots"] += 1
+
+    rpa_artifact_cutoff = current - timedelta(days=int(policy["rpa_artifact_days"]))
+    for path in _expired_rpa_artifacts(root, rpa_artifact_cutoff):
+        path.unlink(missing_ok=True)
+        result["deleted"]["rpa_artifacts"] += 1
 
     runtime_cutoff = current - timedelta(days=int(policy["runtime_log_days"]))
     deleted_runtime = set()

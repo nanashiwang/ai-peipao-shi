@@ -13,8 +13,13 @@ main/server.err.log
 # Private local config
 main/.env
 main/config/ark.json
+main/config/*.so
+main/config/*.pem
+main/config/*_private_key*
 main/rpa/config.json
 main/rpa/debug_*.png
+main/rpa/result_*.png
+main/.tmp_rpa_*.json
 
 # Build artifacts
 main/.docker_wheelhouse/

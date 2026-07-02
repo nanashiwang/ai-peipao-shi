@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
@@ -141,6 +141,8 @@ CONVERSATION_CHECK_SCENE = "会话可读校验"
 # 企业微信 5.x 的聊天区可能由 FlutterPlugins.exe 承载，前台句柄经常不是 WXWork.exe。
 # 这里默认允许该子进程通过安全检查，但不放开 WeMail.exe 等文档/邮件子程序。
 DEFAULT_WECOM_PROCESS_NAMES = ["WXWork.exe", "WXWorkWeb.exe", "FlutterPlugins.exe"]
+LOCAL_SCREENSHOT_ARTIFACT_PATTERNS = ("debug_*.png", "result_*.png")
+LOCAL_TEMP_ARTIFACT_PATTERNS = (".tmp_rpa_*.json",)
 
 
 # 统一的 RPA 异常类型，便于上层捕获并打印友好提示。
@@ -339,6 +341,17 @@ def should_upload_send_screenshot(config: dict, status: str) -> bool:
     return status in set(statuses)
 
 
+def should_keep_result_screenshot(config: dict) -> bool:
+    return bool(config.get("keep_result_screenshots", config.get("keep_debug_screenshots", False)))
+
+
+def _unlink_quietly(path) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def screenshot_upload_payload(path: Path, config: dict) -> str:
     max_bytes = int(config.get("send_screenshot_max_upload_bytes", 5 * 1024 * 1024))
     data = path.read_bytes()
@@ -364,6 +377,7 @@ def screenshot_upload_payload(path: Path, config: dict) -> str:
 def capture_send_screenshot(config: dict, task_id: int, status: str) -> str:
     if not should_upload_send_screenshot(config, status):
         return ""
+    path: Path | None = None
     try:
         if config.get("refocus_wecom_before_result_screenshot", True):
             try:
@@ -375,6 +389,9 @@ def capture_send_screenshot(config: dict, task_id: int, status: str) -> str:
     except Exception as exc:
         print(f"screenshot_upload_failed detail={exc}")
         return ""
+    finally:
+        if path and not should_keep_result_screenshot(config):
+            _unlink_quietly(path)
 
 
 # 健康检查后端服务是否可访问。
@@ -392,6 +409,62 @@ def validate_config(config: dict):
         print("WARN: auto_send_ai_replies=true 但 dry_run=true，本轮只会粘贴不真实发送。")
     if not config.get("dry_run", True) and not real_send_enabled(config):
         print("WARN: dry_run=false 但控制端/本机未开启真实发送开关，本轮会阻止真实发送。")
+    if real_send_enabled(config) and (
+        config.get("keep_debug_screenshots", False) or config.get("keep_result_screenshots", False)
+    ):
+        raise RpaError("真实发送模式禁止保留本地调试/结果截图，请关闭 keep_debug_screenshots 和 keep_result_screenshots。")
+
+
+def _safe_child(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _config_positive_int(config: dict, key: str, default: int) -> int:
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return max(value, 1)
+
+
+def prune_local_screenshot_artifacts(
+    config: dict,
+    *,
+    root: Path = ROOT,
+    project_root: Path = PROJECT_ROOT,
+    now: datetime | None = None,
+) -> dict:
+    if not config.get("local_screenshot_prune_enabled", True):
+        return {"enabled": False, "deleted_count": 0, "deleted_bytes": 0}
+    current = now or datetime.now()
+    days = _config_positive_int(config, "local_screenshot_retention_days", 7)
+    cutoff = current - timedelta(days=days)
+    deleted_count = 0
+    deleted_bytes = 0
+    scans = [(root, LOCAL_SCREENSHOT_ARTIFACT_PATTERNS), (project_root, LOCAL_TEMP_ARTIFACT_PATTERNS)]
+    for base, patterns in scans:
+        if not base.exists():
+            continue
+        for pattern in patterns:
+            for path in base.glob(pattern):
+                if not path.is_file() or not _safe_child(path, base):
+                    continue
+                try:
+                    if datetime.fromtimestamp(path.stat().st_mtime) >= cutoff:
+                        continue
+                    size = path.stat().st_size
+                    path.unlink(missing_ok=True)
+                    deleted_count += 1
+                    deleted_bytes += size
+                except Exception as exc:
+                    print(f"local_screenshot_prune_failed file={path.name} detail={exc}")
+    if deleted_count:
+        print(f"local_screenshot_pruned deleted={deleted_count} bytes={deleted_bytes} retention_days={days}")
+    return {"enabled": True, "deleted_count": deleted_count, "deleted_bytes": deleted_bytes, "retention_days": days}
 
 
 def launch_wecom(config: dict):
@@ -906,10 +979,7 @@ def get_screen_scale(image_width: int) -> float:
 def _cleanup_debug_image(path, config: dict):
     if config.get("keep_debug_screenshots", False):
         return
-    try:
-        Path(path).unlink()
-    except Exception:
-        pass
+    _unlink_quietly(path)
 
 
 def click_window_ratio(window, rx: float, ry: float, config: dict):
@@ -1168,14 +1238,23 @@ def locate_and_open_conversation(window, target: str, config: dict) -> bool:
     raise RpaError(f"无法在会话列表定位「{target}」（OCR/ARK 均未命中），已中止，绝不盲点坐标。")
 
 
+def search_box_click_point(config: dict, box: tuple[float, float, float, float]) -> tuple[float, float]:
+    """搜索框可点击区域比配置区域更窄，默认点真实输入框中心，避免点到上边缘不聚焦。"""
+    return (
+        float(config.get("search_box_click_ratio_x", 0.13)),
+        float(config.get("search_box_click_ratio_y", 0.052)),
+    )
+
+
 def search_then_locate(window, target: str, config: dict) -> bool:
     """阶段2：点击搜索框(不用 Ctrl+F) -> 输入会话名 -> 截图搜索结果区 -> OCR/ARK 定位 -> 点击。
     覆盖目标会话不在当前可见列表的情况。"""
     activate(window, config)
     ensure_foreground_wecom(window, config)
     box = tuple(config.get("search_box_region", [0.0, 0.0, 0.30, 0.07]))
+    click_rx, click_ry = search_box_click_point(config, box)
     human_sleep(config, "before_search_click")
-    click_window_ratio(window, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, config)
+    click_window_ratio(window, click_rx, click_ry, config)
     human_sleep(config, "after_search_click")
     ensure_foreground_wecom(window, config)
     keyboard.send_keys("^a")
@@ -2868,6 +2947,7 @@ def main():
         config["auto_create_reply_task"] = False
         config["auto_generate_all_agents"] = False
     validate_config(config)
+    prune_local_screenshot_artifacts(config)
     if args.diagnose:
         diagnose(config)
         return

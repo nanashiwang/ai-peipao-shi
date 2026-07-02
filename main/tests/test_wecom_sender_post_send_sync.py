@@ -1,5 +1,9 @@
 import importlib.util
+import os
+import tempfile
 import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import ANY, patch
 
 RPA_DEPS = ["pyperclip", "win32api", "win32con", "win32gui", "win32process", "pywinauto"]
@@ -12,6 +16,58 @@ else:
 
 @unittest.skipIf(wecom_sender is None, f"RPA dependencies missing: {', '.join(MISSING_RPA_DEPS)}")
 class WecomSenderPostSendSyncTest(unittest.TestCase):
+    def test_search_box_click_point_uses_actual_input_center(self):
+        box = (0.0, 0.0, 0.30, 0.07)
+
+        self.assertEqual(wecom_sender.search_box_click_point({}, box), (0.13, 0.052))
+        self.assertEqual(
+            wecom_sender.search_box_click_point({"search_box_click_ratio_x": 0.2, "search_box_click_ratio_y": 0.08}, box),
+            (0.2, 0.08),
+        )
+
+    def test_capture_send_screenshot_removes_local_result_image_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "debug_wecom_result_sent_1.png"
+            path.write_bytes(b"png-bytes")
+
+            with (
+                patch.object(wecom_sender, "find_wecom_window", return_value=object()),
+                patch.object(wecom_sender, "activate"),
+                patch.object(wecom_sender, "capture_fullscreen_image", return_value=path),
+                patch.object(wecom_sender, "screenshot_upload_payload", return_value="encoded"),
+            ):
+                payload = wecom_sender.capture_send_screenshot({"upload_send_screenshot": True}, 1, "sent")
+
+            self.assertEqual(payload, "encoded")
+            self.assertFalse(path.exists())
+
+    def test_prune_local_screenshot_artifacts_deletes_only_expired_controlled_files(self):
+        now = datetime(2026, 7, 3, 10, 0, 0)
+        with tempfile.TemporaryDirectory() as rpa_tmp, tempfile.TemporaryDirectory() as project_tmp:
+            rpa_root = Path(rpa_tmp)
+            project_root = Path(project_tmp)
+            old_debug = rpa_root / "debug_wecom_locate_20260601_100000_000000.png"
+            new_debug = rpa_root / "debug_wecom_locate_20260703_100000_000000.png"
+            ignored = rpa_root / "manual-note.png"
+            old_tmp = project_root / ".tmp_rpa_messages.json"
+            for path, age_days in [(old_debug, 10), (new_debug, 1), (ignored, 10), (old_tmp, 10)]:
+                path.write_bytes(b"x")
+                ts = (now - timedelta(days=age_days)).timestamp()
+                os.utime(path, (ts, ts))
+
+            result = wecom_sender.prune_local_screenshot_artifacts(
+                {"local_screenshot_retention_days": 7},
+                root=rpa_root,
+                project_root=project_root,
+                now=now,
+            )
+
+            self.assertEqual(result["deleted_count"], 2)
+            self.assertFalse(old_debug.exists())
+            self.assertFalse(old_tmp.exists())
+            self.assertTrue(new_debug.exists())
+            self.assertTrue(ignored.exists())
+
     def test_post_send_verification_syncs_readback_without_creating_reply(self):
         calls = []
 

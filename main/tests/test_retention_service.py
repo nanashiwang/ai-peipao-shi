@@ -22,7 +22,7 @@ class RetentionServiceTest(unittest.TestCase):
         self.screenshot_dir = self.root / "data" / "send_screenshots"
         self.screenshot_dir.mkdir(parents=True)
         self.now = datetime(2026, 6, 30, 10, 0, 0)
-        self.policy = {"send_log_days": 30, "screenshot_days": 30, "runtime_log_days": 30}
+        self.policy = {"send_log_days": 30, "screenshot_days": 30, "rpa_artifact_days": 7, "runtime_log_days": 30}
 
     def tearDown(self):
         self.db.close()
@@ -52,15 +52,22 @@ class RetentionServiceTest(unittest.TestCase):
         self.add_send_log(5)
         old_shot = self.touch(self.screenshot_dir / "task_1_20260501_100000_000000.png", 45)
         new_shot = self.touch(self.screenshot_dir / "task_2_20260629_100000_000000.png", 1)
+        old_debug = self.touch(self.root / "rpa" / "debug_wecom_locate_20260501_100000_000000.png", 10)
+        new_debug = self.touch(self.root / "rpa" / "debug_wecom_locate_20260629_100000_000000.png", 1)
+        old_tmp = self.touch(self.root / ".tmp_rpa_messages.json", 10)
         old_runtime_log = self.touch(self.root / "server.log.1", 45)
 
         report = retention_report(self.db, self.screenshot_dir, self.root, self.policy, self.now)
 
         self.assertEqual(report["send_logs"]["expired_count"], 1)
         self.assertEqual(report["screenshots"]["expired_count"], 1)
+        self.assertEqual(report["rpa_artifacts"]["expired_count"], 2)
         self.assertEqual(report["runtime_logs"]["expired_count"], 1)
         self.assertTrue(old_shot.exists())
         self.assertTrue(new_shot.exists())
+        self.assertTrue(old_debug.exists())
+        self.assertTrue(new_debug.exists())
+        self.assertTrue(old_tmp.exists())
         self.assertTrue(old_runtime_log.exists())
         self.assertEqual(self.db.query(SendLog).count(), 2)
 
@@ -70,6 +77,11 @@ class RetentionServiceTest(unittest.TestCase):
         old_shot = self.touch(self.screenshot_dir / "task_1_20260501_100000_000000.jpg", 45)
         new_shot = self.touch(self.screenshot_dir / "task_2_20260629_100000_000000.jpg", 1)
         ignored = self.touch(self.screenshot_dir / "manual-note.jpg", 45)
+        old_debug = self.touch(self.root / "rpa" / "debug_ark_20260501_100000_000000.png", 10)
+        old_result = self.touch(self.root / "rpa" / "result_sent_1.png", 10)
+        old_tmp = self.touch(self.root / ".tmp_rpa_export.json", 10)
+        new_debug = self.touch(self.root / "rpa" / "debug_ark_20260629_100000_000000.png", 1)
+        ignored_rpa = self.touch(self.root / "rpa" / "manual-note.png", 10)
         old_runtime_log = self.touch(self.root / "server.err.log.1", 45)
         current_log = self.touch(self.root / "server.err.log", 45)
 
@@ -78,11 +90,17 @@ class RetentionServiceTest(unittest.TestCase):
         self.assertTrue(result["executed"])
         self.assertEqual(result["deleted"]["send_logs"], 1)
         self.assertEqual(result["deleted"]["screenshots"], 1)
+        self.assertEqual(result["deleted"]["rpa_artifacts"], 3)
         self.assertEqual(result["deleted"]["runtime_logs"], 1)
         self.assertFalse(old_shot.exists())
+        self.assertFalse(old_debug.exists())
+        self.assertFalse(old_result.exists())
+        self.assertFalse(old_tmp.exists())
         self.assertFalse(old_runtime_log.exists())
         self.assertTrue(new_shot.exists())
+        self.assertTrue(new_debug.exists())
         self.assertTrue(ignored.exists())
+        self.assertTrue(ignored_rpa.exists())
         self.assertTrue(current_log.exists())
         self.assertEqual(self.db.query(SendLog).count(), 1)
 
