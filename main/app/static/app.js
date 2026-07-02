@@ -1564,13 +1564,22 @@ function renderChatSendHint(family) {
   if (!device.online) hardIssues.push("设备离线");
   if (device.wecom_ok !== "Y") hardIssues.push(`企微${device.wecom_ok || "未知"}`);
   if (!device.allow_real_send) hardIssues.push("真实发送开关未开启");
-  if (Number(device.outbox_pending_count || 0) > 0) hardIssues.push(`还有 ${device.outbox_pending_count} 条结果待补传`);
   if (hardIssues.length) {
     hint.textContent = `目标「${target}」对应设备 ${device.device_id} 暂不可真发：${hardIssues.join("、")}。`;
     return;
   }
   directBtn.disabled = false;
-  hint.textContent = `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；不进入审核队列，发送后仍会回读确认。`;
+  // 设备忙（在途任务/结果待补传）不再禁用直发：任务排队，设备空闲后依次领取。
+  const queued = state.tasks.filter((item) => item.device_id === device.device_id
+    && (item.send_mode || "") === "real_send"
+    && ["pending", "assigned"].includes(item.status)).length;
+  const outboxPending = Number(device.outbox_pending_count || 0);
+  const busyParts = [];
+  if (queued) busyParts.push(`前面还有 ${queued} 条排队/发送中`);
+  if (outboxPending) busyParts.push(`${outboxPending} 条结果待补传`);
+  hint.textContent = busyParts.length
+    ? `设备 ${device.device_id} 正忙（${busyParts.join("，")}）；新消息会自动排队，空闲后依次发送并回读确认。`
+    : `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；不进入审核队列，发送后仍会回读确认。`;
 }
 
 // 渲染当前聊天消息，让它更接近真实陪跑师对话。

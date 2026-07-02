@@ -204,7 +204,41 @@ def import_ark_vision():
 def load_config(path: Path) -> dict:
     if not path.exists():
         path = FALLBACK_CONFIG
-    return json.loads(path.read_text(encoding="utf-8"))
+    return apply_speed_profile(json.loads(path.read_text(encoding="utf-8")))
+
+
+# 速度档位：fast 用于试运行/自家测试群，normal 对外真发，cautious 更保守。
+# 档位只影响节奏参数；设置了 speed_profile 时以档位值为准（想精调就用 normal + 手工配置）。
+SPEED_PROFILES = {
+    "fast": {
+        "human_delay_scale": 0.4,
+        "search_wait_seconds": 0.8,
+        "open_conversation_wait_seconds": 0.6,
+        "screenshot_settle_seconds": 0.25,
+        "clipboard_copy_wait_seconds": 0.4,
+        "send_interval_seconds": 1.5,
+        "known_conversation_interval_seconds": 0.5,
+    },
+    "normal": {},
+    "cautious": {
+        "human_delay_scale": 1.5,
+        "send_interval_seconds": 6.0,
+    },
+}
+
+
+def apply_speed_profile(config: dict) -> dict:
+    profile = str(config.get("speed_profile", "") or "").strip().lower()
+    if not profile:
+        return config
+    overrides = SPEED_PROFILES.get(profile)
+    if overrides is None:
+        print(f"speed_profile_unknown value={profile}，按 normal 处理")
+        return config
+    config.update(overrides)
+    if overrides:
+        print(f"speed_profile={profile} 已应用：{overrides}")
+    return config
 
 
 def save_config(config: dict, path: Path):
@@ -643,8 +677,13 @@ def activate(window, config: dict | None = None):
             time.sleep(0.2)
     except Exception:
         pass
+    keep_max = bool((config or {}).get("keep_maximized_during_send", True))
     try:
-        window.restore()
+        # 全程最大化模式：activate 不再 restore 成小窗，避免定位/输入阶段窗口反复放大缩小。
+        if keep_max:
+            window.maximize()
+        else:
+            window.restore()
     except Exception:
         pass
     try:
@@ -659,7 +698,7 @@ def activate(window, config: dict | None = None):
         if foreground_thread:
             win32process.AttachThreadInput(current_thread, foreground_thread, True)
         win32process.AttachThreadInput(current_thread, target_thread, True)
-        win32gui.ShowWindow(int(window.handle), win32con.SW_RESTORE)
+        win32gui.ShowWindow(int(window.handle), win32con.SW_SHOWMAXIMIZED if keep_max else win32con.SW_RESTORE)
         win32gui.SetWindowPos(int(window.handle), win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
         win32gui.SetWindowPos(int(window.handle), win32con.HWND_NOTOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
         win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
@@ -1522,9 +1561,11 @@ def set_window_topmost(window, on: bool):
 
 
 def focus_message_input(window, config: dict):
-    # 定位/校验阶段把窗口最大化便于 OCR，但最大化状态下企微输入框会跑到可视区之外、
-    # input_click_ratio 点不到。发送前用 activate 强制企微前台并 restore 成非最大化。
-    if config.get("restore_before_input", True):
+    keep_max = bool(config.get("keep_maximized_during_send", True))
+    # 旧方案：定位阶段最大化、输入前 restore 成小窗（input_click_ratio 按小窗标定），
+    # 导致窗口反复放大缩小。全程最大化模式下不再 restore：输入框是"贴底、固定高度"
+    # 的元素，用距底边固定像素定位，任何分辨率下都落在输入区，且免去一次窗口跳变。
+    if not keep_max and config.get("restore_before_input", True):
         try:
             activate(window, config)
             time.sleep(float(config.get("restore_settle_seconds", 0.5)))
@@ -1536,7 +1577,15 @@ def focus_message_input(window, config: dict):
         human_sleep(config, "before_input_click", [0.2, 0.7])
     rect = window.rectangle()
     x = int(rect.left + rect.width() * float(config.get("input_click_ratio_x", 0.45)))
-    y = int(rect.top + rect.height() * float(config.get("input_click_ratio_y", 0.85)))
+    if keep_max:
+        offset = float(config.get("input_click_offset_bottom_px", 60))
+        try:
+            dpi_scale = float(ctypes.windll.user32.GetDpiForWindow(int(window.handle))) / 96.0
+        except Exception:
+            dpi_scale = 1.0
+        y = int(rect.bottom - offset * max(1.0, dpi_scale))
+    else:
+        y = int(rect.top + rect.height() * float(config.get("input_click_ratio_y", 0.85)))
     # 先点一次输入框：这一下既激活企微（点击会把焦点交给被点的窗口）、又把光标放进输入框。
     human_sleep(config, "before_input_click")
     mouse.click(button="left", coords=(x, y))
@@ -1740,6 +1789,13 @@ def crop_fullscreen_region(image_path: Path, region_ratio, reason: str) -> Path:
 
 def fit_window_to_screenshot_bounds(window, config: dict) -> None:
     if not config.get("post_send_verify_fit_window_to_screen", True):
+        return
+    # 全程最大化模式：窗口已占满屏幕，restore+resize 反而多一次尺寸跳变，确保最大化即可。
+    if config.get("keep_maximized_during_send", True):
+        try:
+            win32gui.ShowWindow(int(window.handle), win32con.SW_SHOWMAXIMIZED)
+        except Exception as exc:
+            add_send_trace(config, f"发送后截图窗口最大化异常:{exc}")
         return
     try:
         scale = 1.0
