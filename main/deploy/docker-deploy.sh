@@ -125,7 +125,7 @@ if [ -z "$ok" ]; then
   exit 1
 fi
 echo "health = ok"
-tls_port="${TLS_HTTPS_PORT:-8443}"
+tls_port="${TLS_HTTPS_PORT:-9443}"
 if curl -kfsS "https://127.0.0.1:${tls_port}/health" >/dev/null 2>&1; then
   echo "tls health = ok (https://127.0.0.1:${tls_port})"
 else

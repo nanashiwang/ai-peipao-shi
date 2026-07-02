@@ -21,7 +21,7 @@ def test_tls_proxy_publishes_encrypted_entrypoint():
     service = compose_config()["services"]["tls-proxy"]
 
     assert service["image"].startswith("caddy:")
-    assert "${TLS_BIND_HOST:-0.0.0.0}:${TLS_HTTPS_PORT:-8443}:443" in service["ports"]
+    assert "${TLS_BIND_HOST:-0.0.0.0}:${TLS_HTTPS_PORT:-9443}:443" in service["ports"]
     assert "./deploy/Caddyfile:/etc/caddy/Caddyfile:ro" in service["volumes"]
     assert service["depends_on"]["api"]["condition"] == "service_healthy"
 
