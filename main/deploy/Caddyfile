@@ -1,4 +1,4 @@
-:443 {
+https://{$TLS_SERVER_NAME:localhost} {
     tls internal
     encode gzip
     reverse_proxy api:8000

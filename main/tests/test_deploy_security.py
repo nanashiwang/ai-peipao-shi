@@ -21,6 +21,7 @@ def test_tls_proxy_publishes_encrypted_entrypoint():
     service = compose_config()["services"]["tls-proxy"]
 
     assert service["image"].startswith("caddy:")
+    assert service["environment"]["TLS_SERVER_NAME"] == "${TLS_SERVER_NAME:-localhost}"
     assert "${TLS_BIND_HOST:-0.0.0.0}:${TLS_HTTPS_PORT:-9443}:443" in service["ports"]
     assert "./deploy/Caddyfile:/etc/caddy/Caddyfile:ro" in service["volumes"]
     assert service["depends_on"]["api"]["condition"] == "service_healthy"
@@ -43,7 +44,7 @@ def test_compose_limits_json_log_growth_and_checks_api_health():
 def test_caddyfile_terminates_tls_and_proxies_to_api():
     caddyfile = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
 
-    assert ":443" in caddyfile
+    assert "https://{$TLS_SERVER_NAME:localhost}" in caddyfile
     assert "tls internal" in caddyfile
     assert "reverse_proxy api:8000" in caddyfile
     assert "Strict-Transport-Security" in caddyfile

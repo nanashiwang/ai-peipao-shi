@@ -77,6 +77,10 @@ ensure_env_key() {
 old_db_password=""
 ensure_env_key "ADMIN_AUTH_REQUIRED" "true"
 ensure_env_key "ADMIN_AUTH_SECRET" "$(random_hex_secret)"
+if ! grep -qE "^TLS_SERVER_NAME=" .env; then
+  public_ip="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+  ensure_env_key "TLS_SERVER_NAME" "${public_ip:-localhost}"
+fi
 if ! grep -qE "^POSTGRES_PASSWORD=" .env; then
   old_db_password="coach"
   ensure_env_key "POSTGRES_PASSWORD" "$(random_hex_secret)"
@@ -126,8 +130,9 @@ if [ -z "$ok" ]; then
 fi
 echo "health = ok"
 tls_port="${TLS_HTTPS_PORT:-9443}"
-if curl -kfsS "https://127.0.0.1:${tls_port}/health" >/dev/null 2>&1; then
-  echo "tls health = ok (https://127.0.0.1:${tls_port})"
+tls_server_name="$(env_value TLS_SERVER_NAME)"
+if curl -kfsS --resolve "${tls_server_name}:${tls_port}:127.0.0.1" "https://${tls_server_name}:${tls_port}/health" >/dev/null 2>&1; then
+  echo "tls health = ok (https://${tls_server_name}:${tls_port})"
 else
   echo "WARN: TLS 入口健康检查未通过，请检查 tls-proxy 日志和端口占用。"
 fi
