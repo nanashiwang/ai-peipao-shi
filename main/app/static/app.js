@@ -710,12 +710,15 @@ function switchTab(tabId) {
     setActionStatus(PENDING_TABS[tabId]);
     return false;
   }
+  localStorage.setItem("activeTab", tabId);
   const ownerTab = TAB_OWNERS[tabId] || tabId;
   document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === ownerTab));
   document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
   document.querySelectorAll(".subtabs button[data-tab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
   const active = document.querySelector(`.sidebar button[data-tab="${ownerTab}"]`);
   $("pageTitle").textContent = TAB_TITLES[tabId] || (active ? (active.dataset.title || active.textContent.trim()) : "工作台");
+  // Agent 评测很重，只在进入系统设置页时惰性运行，不占刷新关键路径。
+  if (tabId === "templates") refreshAgentEval();
   // 设备页每 5 秒轮询刷新在线状态；离开则停止。
   if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
   if (tabId === "devices") {
@@ -2222,6 +2225,28 @@ function renderAll() {
 }
 
 // 刷新所有内容。
+// Agent 评测只在进入系统设置页时运行一次，避免每次刷新都跑整套评测集。
+let agentEvalLoading = false;
+
+async function refreshAgentEval(force = false) {
+  if (!isAdminUser() || agentEvalLoading) return;
+  if (!force && state.agentEval?.total) {
+    renderAgentEval();
+    return;
+  }
+  agentEvalLoading = true;
+  const el = $("agentEvalBoard");
+  if (el && !state.agentEval?.total) el.innerHTML = loadingState("正在运行 Agent 评测", "固定样本评测场景识别、安全边界和回复质量。");
+  try {
+    state.agentEval = await api("/api/agent/evaluations/run", { method: "POST" });
+    renderAgentEval();
+  } catch (err) {
+    if (el) el.innerHTML = errorState("Agent 评测运行失败", String(err?.message || err), '<button onclick="refreshAgentEval(true)">重试</button>');
+  } finally {
+    agentEvalLoading = false;
+  }
+}
+
 async function refreshAll() {
   return withAction("刷新数据", async () => {
     if (isInitialDataEmpty()) renderGlobalLoading();
@@ -2246,7 +2271,7 @@ async function refreshAll() {
       adminOnly ? api("/api/ops/retention") : Promise.resolve({}),
       adminOnly ? safeApi("/api/ark-config", {}) : Promise.resolve({}),
       adminOnly ? api("/api/import/templates") : Promise.resolve([]),
-      adminOnly ? api("/api/agent/evaluations/run", { method: "POST" }) : Promise.resolve({}),
+      Promise.resolve(state.agentEval || {}),
       safeApi("/api/agent/reply-config", DEFAULT_REPLY_AGENT_CONFIG),
     ]);
     Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval, replyAgentConfig });
@@ -3239,8 +3264,25 @@ window.addEventListener("error", (event) => {
   setActionStatus(`页面错误：${event.message}`, "error");
 });
 
+// 恢复刷新前所在的页签；页签不存在或被禁用时回落工作台。
+function restoreActiveTab() {
+  const stored = localStorage.getItem("activeTab") || "";
+  if (!stored || stored === "dashboard") return;
+  if (PENDING_TABS[stored] || !document.querySelector(`.panel#${CSS.escape(stored)}`)) return;
+  switchTab(stored);
+}
+
 async function bootApp() {
   api("/health").then(() => $("health").textContent = "本地服务正常").catch(() => $("health").textContent = "服务异常");
+  // 本地有登录态就立即进入应用视图并恢复上次页签，数据后台加载；
+  // 否则刷新后会先闪首页、再等全部接口返回才切回来。token 失效时下面会退回登录页。
+  let restored = false;
+  if (state.currentUser && state.currentUser.role !== "parent") {
+    setAuthGateVisible(false);
+    renderGlobalLoading();
+    restoreActiveTab();
+    restored = true;
+  }
   try {
     await refreshAuthStatus();
     if (state.authStatus.auth_required && !state.currentUser) {
@@ -3256,6 +3298,7 @@ async function bootApp() {
     }
     await refreshAll();
     setAuthGateVisible(false);
+    if (!restored) restoreActiveTab();
   } catch (err) {
     if (String(err?.message || "").includes("401")) {
       saveCurrentUser(null);
