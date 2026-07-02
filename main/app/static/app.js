@@ -2766,7 +2766,7 @@ $("adminRegisterForm").onsubmit = async (event) => {
   });
 };
 
-$("accountSettingsForm").onsubmit = async (event) => {
+if ($("accountSettingsForm")) $("accountSettingsForm").onsubmit = async (event) => {
   event.preventDefault();
   await withAction("保存账号设置", async () => {
     if (!state.currentUser) return toast("请先登录");
