@@ -1790,13 +1790,8 @@ def crop_fullscreen_region(image_path: Path, region_ratio, reason: str) -> Path:
 def fit_window_to_screenshot_bounds(window, config: dict) -> None:
     if not config.get("post_send_verify_fit_window_to_screen", True):
         return
-    # 全程最大化模式：窗口已占满屏幕，restore+resize 反而多一次尺寸跳变，确保最大化即可。
-    if config.get("keep_maximized_during_send", True):
-        try:
-            win32gui.ShowWindow(int(window.handle), win32con.SW_SHOWMAXIMIZED)
-        except Exception as exc:
-            add_send_trace(config, f"发送后截图窗口最大化异常:{exc}")
-        return
+    # 注意：回读链路（截图裁剪/点击坐标）是按"restore 到逻辑屏幕尺寸"的窗口标定的，
+    # 即使全程最大化模式也必须做这一步，否则三个回读通道会全部读零（发送被误判失败）。
     try:
         scale = 1.0
         try:

@@ -1631,7 +1631,13 @@ function renderChatMessages() {
   const inflight = state.tasks.filter((task) => task.family_id === state.selectedChatFamilyId
     && (task.send_mode || "") === "real_send"
     && ["pending", "approved", "assigned"].includes(task.status));
-  if (!state.chatMessages.length && !inflight.length) {
+  // 发送失败的也要看得见（最近3条），否则消息会从"发送中"直接无声消失。
+  const failed = state.tasks
+    .filter((task) => task.family_id === state.selectedChatFamilyId
+      && (task.send_mode || "") === "real_send"
+      && task.status === "failed")
+    .slice(-3);
+  if (!state.chatMessages.length && !inflight.length && !failed.length) {
     $("chatMessages").innerHTML = emptyState("暂无消息", "当前会话还没有聊天记录，可以发送一条测试消息或同步企微。");
     return;
   }
@@ -1659,6 +1665,15 @@ function renderChatMessages() {
         <strong class="chat-message-speaker"><em class="chat-message-kind">${esc(label)}</em>我</strong>
         <p class="chat-message-content">${esc(task.content)}</p>
         <time class="chat-message-time">${esc(formatChatTime(task.scheduled_at || task.created_at || ""))}</time>
+      </article>
+    `);
+  });
+  failed.forEach((task) => {
+    parts.push(`
+      <article class="chat-message-row send-failed">
+        <strong class="chat-message-speaker"><em class="chat-message-kind">发送失败</em>我</strong>
+        <p class="chat-message-content">${esc(task.content)}<small>若已在企微看到本条，可到发送日志人工核验，核验后会补进会话记录</small></p>
+        <time class="chat-message-time"><button onclick="switchTab('logs')">详情</button></time>
       </article>
     `);
   });

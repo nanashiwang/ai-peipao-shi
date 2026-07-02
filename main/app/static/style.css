@@ -1663,6 +1663,26 @@ summary { cursor: pointer; color: var(--muted); }
 .chat-message-row.queued .chat-message-kind { background: rgba(224, 120, 0, .14); color: var(--warn); }
 .chat-message-row.queued .chat-message-content { color: var(--ink-2); }
 
+.chat-message-row.send-failed { background: rgba(222, 52, 66, .05); }
+.chat-message-row.send-failed .chat-message-kind { background: rgba(222, 52, 66, .12); color: var(--danger); }
+.chat-message-row.send-failed .chat-message-content { white-space: normal; }
+
+.chat-message-row.send-failed .chat-message-content small {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message-row.send-failed .chat-message-time button {
+  min-height: 22px;
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
 .chat-message-content {
   margin: 0;
   min-width: 0;
