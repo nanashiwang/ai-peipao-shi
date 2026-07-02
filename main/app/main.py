@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.db import DATABASE_URL, get_db, init_db
@@ -2971,6 +2971,107 @@ def family_scope_query(db: Session, coach_name: str = "", campus_name: str = "",
 
 
 def infer_family_service_stage(db: Session, family: Family, now: datetime | None = None) -> tuple[str, str]:
+    context = build_family_dashboard_context(db, [family.family_id])
+    return infer_family_service_stage_from_context(family, context, now)
+
+
+def build_family_dashboard_context(db: Session, family_ids: list[str]) -> dict:
+    ids = [family_id for family_id in family_ids if family_id]
+    if not ids:
+        return {
+            "profiles": {},
+            "open_followups": {},
+            "recent_messages": {},
+            "pending_task_counts": {},
+            "open_task_counts": {},
+            "review_output_counts": {},
+            "review_report_counts": {},
+            "send_log_status_counts": {},
+        }
+
+    profiles = {item.family_id: item for item in db.query(ParentProfile).filter(ParentProfile.family_id.in_(ids)).all()}
+
+    open_followups = {}
+    followups = (
+        db.query(FollowupRecord)
+        .filter(FollowupRecord.family_id.in_(ids), FollowupRecord.status != "已完成")
+        .order_by(FollowupRecord.family_id, FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc())
+        .all()
+    )
+    for followup in followups:
+        open_followups.setdefault(followup.family_id, followup)
+
+    recent_messages: dict[str, list[RawMessage]] = {family_id: [] for family_id in ids}
+    ranked_messages = (
+        db.query(
+            RawMessage.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=RawMessage.family_id,
+                order_by=(RawMessage.message_time.desc(), RawMessage.id.desc()),
+            )
+            .label("row_number"),
+        )
+        .filter(RawMessage.family_id.in_(ids))
+        .subquery()
+    )
+    messages = (
+        db.query(RawMessage)
+        .join(ranked_messages, RawMessage.id == ranked_messages.c.id)
+        .filter(ranked_messages.c.row_number <= 80)
+        .order_by(RawMessage.family_id, RawMessage.message_time.desc(), RawMessage.id.desc())
+        .all()
+    )
+    for message in messages:
+        recent_messages.setdefault(message.family_id, []).append(message)
+
+    pending_task_counts = dict(
+        db.query(SendTask.family_id, func.count(SendTask.id))
+        .filter(SendTask.family_id.in_(ids), SendTask.status == "pending")
+        .group_by(SendTask.family_id)
+        .all()
+    )
+    open_task_counts = dict(
+        db.query(SendTask.family_id, func.count(SendTask.id))
+        .filter(SendTask.family_id.in_(ids), SendTask.status.in_(["pending", "assigned"]))
+        .group_by(SendTask.family_id)
+        .all()
+    )
+    review_output_counts = dict(
+        db.query(AIOutput.family_id, func.count(AIOutput.id))
+        .filter(AIOutput.family_id.in_(ids), AIOutput.status == "needs_review")
+        .group_by(AIOutput.family_id)
+        .all()
+    )
+    review_report_counts = dict(
+        db.query(WeeklyReport.family_id, func.count(WeeklyReport.id))
+        .filter(WeeklyReport.family_id.in_(ids), WeeklyReport.status != "approved")
+        .group_by(WeeklyReport.family_id)
+        .all()
+    )
+
+    send_log_status_counts: dict[str, dict[str, int]] = {}
+    for family_id, status, count in (
+        db.query(SendLog.family_id, SendLog.status, func.count(SendLog.id))
+        .filter(SendLog.family_id.in_(ids))
+        .group_by(SendLog.family_id, SendLog.status)
+        .all()
+    ):
+        send_log_status_counts.setdefault(family_id, {})[status or ""] = int(count)
+
+    return {
+        "profiles": profiles,
+        "open_followups": open_followups,
+        "recent_messages": recent_messages,
+        "pending_task_counts": {key: int(value) for key, value in pending_task_counts.items()},
+        "open_task_counts": {key: int(value) for key, value in open_task_counts.items()},
+        "review_output_counts": {key: int(value) for key, value in review_output_counts.items()},
+        "review_report_counts": {key: int(value) for key, value in review_report_counts.items()},
+        "send_log_status_counts": send_log_status_counts,
+    }
+
+
+def infer_family_service_stage_from_context(family: Family, context: dict, now: datetime | None = None) -> tuple[str, str]:
     now = now or datetime.utcnow()
     explicit_status = family.service_status or ""
     if has_any(explicit_status, ("已结课", "结课", "结束服务")):
@@ -2978,25 +3079,14 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
     if has_any(explicit_status, RENEWAL_TERMS):
         return "续报", "服务状态已进入续报阶段"
 
-    open_followup = (
-        db.query(FollowupRecord)
-        .filter(FollowupRecord.family_id == family.family_id, FollowupRecord.status != "已完成")
-        .order_by(FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc())
-        .first()
-    )
+    open_followup = context["open_followups"].get(family.family_id)
     if open_followup:
         if open_followup.status == "需升级":
             return "风险", f"{open_followup.followup_type}跟进需升级"
         return "需跟进", f"{open_followup.followup_type}跟进待处理"
 
-    profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
-    recent_messages = (
-        db.query(RawMessage)
-        .filter(RawMessage.family_id == family.family_id)
-        .order_by(RawMessage.message_time.desc())
-        .limit(20)
-        .all()
-    )
+    profile = context["profiles"].get(family.family_id)
+    recent_messages = context["recent_messages"].get(family.family_id, [])[:20]
     signal_text = " ".join(
         [
             explicit_status,
@@ -3012,9 +3102,9 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
     if has_any(signal_text, RENEWAL_TERMS):
         return "续报", "出现续报/下一阶段沟通信号"
 
-    pending_tasks = db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status == "pending").count()
-    review_outputs = db.query(AIOutput).filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review").count()
-    review_reports = db.query(WeeklyReport).filter(WeeklyReport.family_id == family.family_id, WeeklyReport.status != "approved").count()
+    pending_tasks = context["pending_task_counts"].get(family.family_id, 0)
+    review_outputs = context["review_output_counts"].get(family.family_id, 0)
+    review_reports = context["review_report_counts"].get(family.family_id, 0)
     last_msg = recent_messages[0] if recent_messages else None
     silent_days = (now - last_msg.message_time).days if last_msg else 999
     if pending_tasks or review_outputs or review_reports:
@@ -3029,9 +3119,12 @@ def infer_family_service_stage(db: Session, family: Family, now: datetime | None
 def build_service_funnel(db: Session, coach_name: str = "", now: datetime | None = None, family_limit: int = 8, campus_name: str = "", campus_names: tuple[str, ...] | None = None) -> dict:
     now = now or datetime.utcnow()
     buckets = {stage: [] for stage in SERVICE_FUNNEL_STAGES}
-    for family in family_scope_query(db, coach_name, campus_name, campus_names).all():
-        stage, reason = infer_family_service_stage(db, family, now)
-        last_msg = latest_family_message(db, family.family_id)
+    families = family_scope_query(db, coach_name, campus_name, campus_names).all()
+    context = build_family_dashboard_context(db, [family.family_id for family in families])
+    for family in families:
+        stage, reason = infer_family_service_stage_from_context(family, context, now)
+        messages = context["recent_messages"].get(family.family_id, [])
+        last_msg = messages[0] if messages else None
         buckets[stage].append({
             "family_id": family.family_id,
             "family_name": family.parent_nickname or family.family_id,
@@ -3084,14 +3177,53 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
         "send_failed": {"label": "发送失败", "items": []},
     }
 
-    for family in family_scope_query(db, coach_name, campus_name, campus_names).all():
-        messages = (
-            db.query(RawMessage)
-            .filter(RawMessage.family_id == family.family_id)
-            .order_by(RawMessage.message_time.desc())
-            .limit(80)
+    families = family_scope_query(db, coach_name, campus_name, campus_names).all()
+    family_ids = [family.family_id for family in families]
+    context = build_family_dashboard_context(db, family_ids)
+
+    pending_weeklies = {}
+    if family_ids:
+        weekly_rows = (
+            db.query(WeeklyReport)
+            .filter(
+                WeeklyReport.family_id.in_(family_ids),
+                WeeklyReport.status == "approved",
+                or_(
+                    WeeklyReport.send_status.notin_(["sent", "dry_run"]),
+                    WeeklyReport.send_status.is_(None),
+                    WeeklyReport.send_status == "",
+                ),
+            )
+            .order_by(WeeklyReport.family_id, WeeklyReport.updated_at.desc(), WeeklyReport.id.desc())
             .all()
         )
+        for weekly in weekly_rows:
+            pending_weeklies.setdefault(weekly.family_id, weekly)
+
+    review_outputs = {}
+    if family_ids:
+        output_rows = (
+            db.query(AIOutput)
+            .filter(AIOutput.family_id.in_(family_ids), AIOutput.status == "needs_review")
+            .order_by(AIOutput.family_id, AIOutput.updated_at.desc(), AIOutput.id.desc())
+            .all()
+        )
+        for output in output_rows:
+            review_outputs.setdefault(output.family_id, output)
+
+    failed_logs = {}
+    if family_ids:
+        log_rows = (
+            db.query(SendLog)
+            .filter(SendLog.family_id.in_(family_ids), SendLog.status == "failed")
+            .order_by(SendLog.family_id, SendLog.sent_at.desc(), SendLog.id.desc())
+            .all()
+        )
+        for log in log_rows:
+            failed_logs.setdefault(log.family_id, log)
+
+    for family in families:
+        messages = context["recent_messages"].get(family.family_id, [])
         for msg in messages:
             content = msg.content or ""
             if "PBL" in content.upper() and has_any(content, ("没", "未", "还没", "未提交", "没提交", "未完成", "没完成", "忘了")):
@@ -3105,25 +3237,12 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
                 categories["leave_makeup"]["items"].append(todo_item(family, "请假/补课事项待确认", content, msg.id, msg.message_time))
                 break
 
-        weekly = (
-            db.query(WeeklyReport)
-            .filter(
-                WeeklyReport.family_id == family.family_id,
-                WeeklyReport.status == "approved",
-                or_(
-                    WeeklyReport.send_status.notin_(["sent", "dry_run"]),
-                    WeeklyReport.send_status.is_(None),
-                    WeeklyReport.send_status == "",
-                ),
-            )
-            .order_by(WeeklyReport.updated_at.desc())
-            .first()
-        )
+        weekly = pending_weeklies.get(family.family_id)
         if weekly:
             reason = "周报已审核但尚未完成发送闭环"
             categories["weekly_pending_send"]["items"].append(todo_item(family, reason, weekly.final_text, weekly.id, weekly.updated_at))
 
-        profile = db.query(ParentProfile).filter(ParentProfile.family_id == family.family_id).one_or_none()
+        profile = context["profiles"].get(family.family_id)
         risk_text = " ".join([profile.service_risks if profile else "", profile.suggested_actions if profile else ""])
         risk_msg = next((msg for msg in messages if has_any(msg.content or "", RISK_TERMS)), None)
         if has_any(risk_text, RISK_TERMS) or risk_msg:
@@ -3131,32 +3250,17 @@ def build_workbench_todos(db: Session, coach_name: str = "", limit: int = 8, now
                 todo_item(family, "出现退费/投诉/不满等负面信号", risk_msg.content if risk_msg else risk_text, risk_msg.id if risk_msg else 0, risk_msg.message_time if risk_msg else None)
             )
 
-        followup = (
-            db.query(FollowupRecord)
-            .filter(FollowupRecord.family_id == family.family_id, FollowupRecord.status != "已完成")
-            .order_by(FollowupRecord.occurred_at.desc(), FollowupRecord.id.desc())
-            .first()
-        )
+        followup = context["open_followups"].get(family.family_id)
         if followup:
             reason = "跟进记录需升级" if followup.status == "需升级" else "跟进记录待处理"
             evidence = "；".join([item for item in [followup.content, followup.next_action] if item])
             categories["followup_pending"]["items"].append(todo_item(family, reason, evidence, followup.id, followup.occurred_at))
 
-        output = (
-            db.query(AIOutput)
-            .filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review")
-            .order_by(AIOutput.updated_at.desc())
-            .first()
-        )
+        output = review_outputs.get(family.family_id)
         if output:
             categories["ai_review"]["items"].append(todo_item(family, "AI 输出需要人工审核", output.edited_output or output.display_text, output.id, output.updated_at or output.created_at))
 
-        failed_log = (
-            db.query(SendLog)
-            .filter(SendLog.family_id == family.family_id, SendLog.status == "failed")
-            .order_by(SendLog.sent_at.desc())
-            .first()
-        )
+        failed_log = failed_logs.get(family.family_id)
         if failed_log:
             categories["send_failed"]["items"].append(todo_item(family, "发送失败需要复核", failed_log.detail, failed_log.task_id, failed_log.sent_at))
 
@@ -3202,7 +3306,14 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
     }
     grouped: dict[str, list[Family]] = {}
     campus_grouped: dict[str, list[Family]] = {}
-    for family in family_scope_query(db, coach_name, campus_name, campus_names).all():
+    families = family_scope_query(db, coach_name, campus_name, campus_names).all()
+    context = build_family_dashboard_context(db, [family.family_id for family in families])
+    stage_by_family = {}
+    reason_by_family = {}
+    for family in families:
+        stage, reason = infer_family_service_stage_from_context(family, context, now)
+        stage_by_family[family.family_id] = stage
+        reason_by_family[family.family_id] = reason
         grouped.setdefault(family.coach_name or "未分配", []).append(family)
         campus_grouped.setdefault(family.campus_name or "未分配校区", []).append(family)
 
@@ -3228,7 +3339,8 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
             "risk_families": [],
         }
         for family in families:
-            stage, reason = infer_family_service_stage(db, family, now)
+            stage = stage_by_family[family.family_id]
+            reason = reason_by_family[family.family_id]
             if stage == "正常":
                 row["normal_count"] += 1
             elif stage == "需跟进":
@@ -3245,14 +3357,14 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
             elif stage == "已结课":
                 row["closed_family_count"] += 1
 
-            row["pending_task_count"] += db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status.in_(["pending", "assigned"])).count()
-            row["review_output_count"] += db.query(AIOutput).filter(AIOutput.family_id == family.family_id, AIOutput.status == "needs_review").count()
-            row["review_report_count"] += db.query(WeeklyReport).filter(WeeklyReport.family_id == family.family_id, WeeklyReport.status != "approved").count()
-            logs = db.query(SendLog).filter(SendLog.family_id == family.family_id).all()
-            row["send_log_count"] += len(logs)
-            row["sent_count"] += sum(1 for log in logs if log.status == "sent")
-            row["dry_run_count"] += sum(1 for log in logs if log.status == "dry_run")
-            row["failed_count"] += sum(1 for log in logs if log.status == "failed")
+            row["pending_task_count"] += context["open_task_counts"].get(family.family_id, 0)
+            row["review_output_count"] += context["review_output_counts"].get(family.family_id, 0)
+            row["review_report_count"] += context["review_report_counts"].get(family.family_id, 0)
+            log_counts = context["send_log_status_counts"].get(family.family_id, {})
+            row["send_log_count"] += sum(log_counts.values())
+            row["sent_count"] += log_counts.get("sent", 0)
+            row["dry_run_count"] += log_counts.get("dry_run", 0)
+            row["failed_count"] += log_counts.get("failed", 0)
 
         completed = row["sent_count"] + row["dry_run_count"]
         if row["send_log_count"]:
@@ -3273,11 +3385,8 @@ def build_admin_service_quality_dashboard(db: Session, coach_name: str = "", now
             "campus_name": campus,
             "family_count": len(families),
             "coach_count": len({family.coach_name or "未分配" for family in families}),
-            "risk_family_count": sum(1 for family in families if infer_family_service_stage(db, family, now)[0] == "风险"),
-            "pending_task_count": sum(
-                db.query(SendTask).filter(SendTask.family_id == family.family_id, SendTask.status.in_(["pending", "assigned"])).count()
-                for family in families
-            ),
+            "risk_family_count": sum(1 for family in families if stage_by_family[family.family_id] == "风险"),
+            "pending_task_count": sum(context["open_task_counts"].get(family.family_id, 0) for family in families),
         }
         for campus, families in sorted(campus_grouped.items())
     ]

@@ -1,19 +1,19 @@
 import unittest
 from datetime import datetime, timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import build_service_funnel, build_workbench_todos
-from app.models import AIOutput, Family, FollowupRecord, ParentProfile, RawMessage, SendLog, WeeklyReport
+from app.main import build_service_funnel, build_workbench_overview, build_workbench_todos
+from app.models import AIOutput, Family, FollowupRecord, ParentProfile, RawMessage, SendLog, SendTask, WeeklyReport
 
 
 class WorkbenchOperationsTest(unittest.TestCase):
     def setUp(self):
-        engine = create_engine("sqlite:///:memory:", future=True)
-        Base.metadata.create_all(bind=engine)
-        self.db = sessionmaker(bind=engine, future=True)()
+        self.engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=self.engine)
+        self.db = sessionmaker(bind=self.engine, future=True)()
         self.now = datetime(2026, 6, 30, 10, 0, 0)
 
     def tearDown(self):
@@ -115,6 +115,31 @@ class WorkbenchOperationsTest(unittest.TestCase):
 
         self.assertEqual(counts["需跟进"], 1)
         self.assertEqual(counts["风险"], 1)
+
+    def test_workbench_overview_query_count_is_bounded_for_many_families(self):
+        for index in range(20):
+            family_id = f"f{index:02d}"
+            self.add_family(family_id, f"家庭{index}")
+            self.add_message(family_id, "孩子的PBL作品还没提交，想请假补课。")
+            self.db.add(SendTask(family_id=family_id, target_name=f"家庭{index}", scene="回复", content="待发送", status="pending"))
+            self.db.add(WeeklyReport(family_id=family_id, status="approved", final_text="本周周报"))
+            self.db.add(AIOutput(family_id=family_id, agent_type="ai_reply", status="needs_review", display_text="待审核"))
+            self.db.add(SendLog(task_id=index + 20, family_id=family_id, target_name=f"家庭{index}", status="failed", detail="发送失败", sent_at=self.now))
+        self.db.commit()
+
+        statements = []
+
+        def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", before_cursor_execute)
+        try:
+            overview = build_workbench_overview(self.db, now=self.now)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", before_cursor_execute)
+
+        self.assertEqual(overview["service_funnel"]["total_families"], 20)
+        self.assertLessEqual(len(statements), 22)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,10 @@ jobs:
           tests/test_db_migrations.py
           tests/test_backup_service.py
           tests/test_ops_health.py
+          tests/test_admin_service_quality.py
+          tests/test_workbench_operations.py
+          tests/test_coach_data_scope.py
+          tests/test_today_priorities.py
           tests/test_deploy_security.py
           tests/test_health_probe.py
           tests/test_frontend_security.py

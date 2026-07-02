@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
@@ -11,9 +11,9 @@ from app.models import AIOutput, Family, ParentProfile, RawMessage, SendLog, Sen
 
 class AdminServiceQualityDashboardTest(unittest.TestCase):
     def setUp(self):
-        engine = create_engine("sqlite:///:memory:", future=True)
-        Base.metadata.create_all(bind=engine)
-        self.db = sessionmaker(bind=engine, future=True)()
+        self.engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(bind=self.engine)
+        self.db = sessionmaker(bind=self.engine, future=True)()
         self.now = datetime(2026, 6, 30, 10, 0, 0)
 
     def tearDown(self):
@@ -82,6 +82,30 @@ class AdminServiceQualityDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard["totals"]["campus_count"], 1)
         self.assertEqual(dashboard["totals"]["family_count"], 1)
         self.assertEqual(dashboard["campuses"][0]["campus_name"], "观音桥校区")
+
+    def test_dashboard_query_count_is_bounded_for_many_families(self):
+        for index in range(20):
+            family_id = f"f{index:02d}"
+            self.add_family(family_id, f"家庭{index}", "怡彤老师" if index % 2 else "其他老师")
+            self.db.add(SendTask(family_id=family_id, target_name=f"家庭{index}", scene="回复", content="待发送", status="pending"))
+            self.db.add(AIOutput(family_id=family_id, agent_type="ai_reply", status="needs_review", display_text="待审核"))
+            self.db.add(WeeklyReport(family_id=family_id, status="needs_review", final_text="周报待审核"))
+            self.db.add(SendLog(task_id=index + 10, family_id=family_id, target_name=f"家庭{index}", status="failed", sent_at=self.now))
+        self.db.commit()
+
+        statements = []
+
+        def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", before_cursor_execute)
+        try:
+            dashboard = build_admin_service_quality_dashboard(self.db, now=self.now)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", before_cursor_execute)
+
+        self.assertEqual(dashboard["totals"]["family_count"], 20)
+        self.assertLessEqual(len(statements), 12)
 
 
 if __name__ == "__main__":
