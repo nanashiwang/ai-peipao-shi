@@ -7,7 +7,10 @@ services:
       - "8000:8000"
     environment:
       APP_ENV: ${APP_ENV:-pilot}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:-coach}@postgres:5432/${POSTGRES_DB:-coach_mvp}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-coach_mvp}
+    # 运行时密钥从 .env 注入（.env 已在 .gitignore，不入库）。
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -22,7 +25,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-coach_mvp}
       POSTGRES_USER: ${POSTGRES_USER:-coach}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coach}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

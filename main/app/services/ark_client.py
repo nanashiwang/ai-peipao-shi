@@ -5,6 +5,7 @@
 
 import json
 import base64
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from openai import OpenAI
 ROOT = Path(__file__).resolve().parents[2]
 ARK_CONFIG = ROOT / "config" / "ark.json"
 ARK_EXAMPLE_CONFIG = ROOT / "config" / "ark.example.json"
+PLACEHOLDER_KEYS = {"", "your-api-key", "sk-your-api-key", "changeme", "change-me"}
 
 
 # 环境变量缺失时抛出这个异常，方便上层回退到本地 mock 逻辑。
@@ -24,13 +26,25 @@ class ArkNotConfigured(RuntimeError):
 
 @lru_cache
 def ark_config() -> dict[str, str]:
+    env_api_key = os.getenv("ARK_API_KEY", "").strip()
+    env_endpoint_id = (os.getenv("ARK_ENDPOINT_ID", "") or os.getenv("ARK_MODEL_NAME", "")).strip()
+    if env_api_key or env_endpoint_id:
+        if env_api_key.lower() in PLACEHOLDER_KEYS or not env_endpoint_id:
+            raise ArkNotConfigured("ARK_API_KEY and ARK_ENDPOINT_ID must be configured together")
+        return {
+            "base_url": os.getenv("ARK_BASE_URL", "").strip() or "https://ark.cn-beijing.volces.com/api/v3",
+            "api_key": env_api_key,
+            "endpoint_id": env_endpoint_id,
+            "model_name": os.getenv("ARK_MODEL_NAME", "").strip() or env_endpoint_id,
+        }
+
     path = ARK_CONFIG if ARK_CONFIG.exists() else ARK_EXAMPLE_CONFIG
     if not path.exists():
         raise ArkNotConfigured("config/ark.json is not configured")
     data = json.loads(path.read_text(encoding="utf-8"))
     api_key = str(data.get("api_key", "")).strip()
     endpoint_id = str(data.get("endpoint_id", "")).strip()
-    if not api_key or not endpoint_id:
+    if api_key.lower() in PLACEHOLDER_KEYS or not endpoint_id:
         raise ArkNotConfigured("config/ark.json requires api_key and endpoint_id")
     return {
         "base_url": str(data.get("base_url") or "https://ark.cn-beijing.volces.com/api/v3"),

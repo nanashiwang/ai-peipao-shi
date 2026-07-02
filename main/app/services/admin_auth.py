@@ -18,6 +18,18 @@ from pathlib import Path
 
 ADMIN_ROLES = {"admin", "coach", "readonly"}
 WRITE_ROLES = {"admin", "coach"}
+DEPLOYED_ENVS = {"pilot", "staging", "docker", "production", "prod"}
+WEAK_SECRET_VALUES = {
+    "",
+    "admin",
+    "change-me",
+    "change-me-before-production",
+    "changeme",
+    "coach",
+    "local-dev-admin-secret",
+    "password",
+    "secret",
+}
 ADMIN_ONLY_PREFIXES = (
     "/api/admin",
     "/api/audit-logs",
@@ -32,7 +44,6 @@ PUBLIC_PATHS = {
     "/api/admin/auth/status",
     "/api/admin/auth/login",
     "/api/admin/auth/register",
-    "/api/test-chat/login",
 }
 
 
@@ -56,11 +67,22 @@ class ParentIdentity:
 def admin_auth_required(env: dict | None = None) -> bool:
     source = env or os.environ
     explicit = str(source.get("ADMIN_AUTH_REQUIRED", "")).strip().lower()
+    app_env = str(source.get("APP_ENV", "")).strip().lower()
     if explicit in {"1", "true", "yes", "on"}:
         return True
     if explicit in {"0", "false", "no", "off"}:
-        return False
-    return str(source.get("APP_ENV", "")).strip().lower() in {"pilot", "staging", "docker", "production", "prod"}
+        return app_env in DEPLOYED_ENVS
+    return app_env in DEPLOYED_ENVS
+
+
+def weak_admin_secret_reason(secret: str) -> str:
+    value = (secret or "").strip()
+    lowered = value.lower()
+    if lowered in WEAK_SECRET_VALUES or "change-me" in lowered:
+        return "ADMIN_AUTH_SECRET 不能使用空值、默认值或占位符"
+    if len(value) < 32:
+        return "ADMIN_AUTH_SECRET 至少需要 32 个字符"
+    return ""
 
 
 def admin_auth_secret(env: dict | None = None) -> str:
@@ -68,9 +90,13 @@ def admin_auth_secret(env: dict | None = None) -> str:
     secret = str(source.get("ADMIN_AUTH_SECRET", "")).strip()
     app_env = str(source.get("APP_ENV", "")).strip().lower()
     if secret:
+        if app_env in DEPLOYED_ENVS:
+            reason = weak_admin_secret_reason(secret)
+            if reason:
+                raise RuntimeError(reason)
         return secret
-    if admin_auth_required(source) and app_env in {"production", "prod"}:
-        raise RuntimeError("正式管理端鉴权必须设置 ADMIN_AUTH_SECRET")
+    if admin_auth_required(source) and app_env in DEPLOYED_ENVS:
+        raise RuntimeError("部署环境必须显式设置强随机 ADMIN_AUTH_SECRET")
     if env is not None:
         return "local-dev-admin-secret"
     return persisted_dev_secret()
@@ -201,8 +227,6 @@ def bearer_token(authorization: str) -> str:
 
 def is_public_admin_path(path: str) -> bool:
     if path in PUBLIC_PATHS:
-        return True
-    if path.startswith("/api/send-artifacts/"):
         return True
     if path.startswith("/api/parent/"):
         return True

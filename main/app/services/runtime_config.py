@@ -12,8 +12,20 @@ from urllib.parse import urlsplit
 
 PRODUCTION_ENVS = {"production", "prod"}
 PILOT_ENVS = {"pilot", "staging", "docker"}
+DEPLOYED_ENVS = {*PILOT_ENVS, *PRODUCTION_ENVS}
 KNOWN_ENVS = {"local", "development", "dev", "test", "pilot", "staging", "docker", *PRODUCTION_ENVS}
 PLACEHOLDER_KEYS = {"", "your-api-key", "sk-your-api-key", "changeme", "change-me"}
+PLACEHOLDER_SECRETS = {
+    "",
+    "admin",
+    "change-me",
+    "change-me-before-production",
+    "changeme",
+    "coach",
+    "local-dev-admin-secret",
+    "password",
+    "secret",
+}
 
 
 def normalize_app_env(value: str | None) -> str:
@@ -62,21 +74,68 @@ def read_ark_config_status(ark_config_path: Path) -> dict:
     return {"configured": True, "detail": "ARK 已配置", "endpoint_id": endpoint_id}
 
 
+def read_ark_config_status_from_env_or_file(ark_config_path: Path, env: dict | None = None) -> dict:
+    source = env or {}
+    api_key = str(source.get("ARK_API_KEY") or "").strip()
+    endpoint_id = str(source.get("ARK_ENDPOINT_ID") or source.get("ARK_MODEL_NAME") or "").strip()
+    if api_key or endpoint_id:
+        if api_key.lower() in PLACEHOLDER_KEYS or not endpoint_id:
+            return {"configured": False, "detail": "ARK 环境变量 api_key 或 endpoint_id 未配置完整", "source": "env"}
+        return {"configured": True, "detail": "ARK 已通过环境变量配置", "endpoint_id": endpoint_id, "source": "env"}
+    status = read_ark_config_status(ark_config_path)
+    return {**status, "source": "file"}
+
+
+def weak_secret_reason(name: str, value: str, min_length: int) -> str:
+    clean = (value or "").strip()
+    lowered = clean.lower()
+    if lowered in PLACEHOLDER_SECRETS or "change-me" in lowered:
+        return f"{name} 不能使用空值、默认值或占位符"
+    if len(clean) < min_length:
+        return f"{name} 至少需要 {min_length} 个字符"
+    return ""
+
+
+def database_password(database_url: str) -> str:
+    if not (database_url or "").strip() or (database_url or "").startswith("sqlite"):
+        return ""
+    return urlsplit(database_url).password or ""
+
+
+def explicit_bool_disabled(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"0", "false", "no", "off"}
+
+
 def runtime_config_report(
     app_env: str | None,
     database_url: str,
     ark_config_path: Path,
     *,
     database_url_explicit: bool,
+    env: dict | None = None,
 ) -> dict:
+    source = env or {}
     env = normalize_app_env(app_env)
     kind = database_kind(database_url)
-    ark = read_ark_config_status(ark_config_path)
+    ark = read_ark_config_status_from_env_or_file(ark_config_path, source)
     critical: list[str] = []
     warnings: list[str] = []
 
     if env not in KNOWN_ENVS:
         warnings.append(f"未知 APP_ENV：{env}")
+    if env in DEPLOYED_ENVS:
+        if explicit_bool_disabled(source.get("ADMIN_AUTH_REQUIRED")):
+            critical.append("部署环境禁止设置 ADMIN_AUTH_REQUIRED=false")
+        admin_secret = str(source.get("ADMIN_AUTH_SECRET") or "").strip()
+        admin_reason = weak_secret_reason("ADMIN_AUTH_SECRET", admin_secret, 32)
+        if admin_reason:
+            critical.append(admin_reason)
+        if kind == "sqlite":
+            critical.append("部署环境禁止使用 SQLite，请配置 PostgreSQL")
+        elif kind == "postgresql":
+            db_reason = weak_secret_reason("数据库口令", database_password(database_url), 12)
+            if db_reason:
+                critical.append(db_reason)
     if is_production_env(env):
         if not database_url_explicit:
             critical.append("正式环境必须显式设置 DATABASE_URL")
@@ -101,6 +160,7 @@ def runtime_config_report(
             "ark_config_path": str(ark_config_path),
             "ark_configured": ark["configured"],
             "ark_detail": ark["detail"],
+            "ark_source": ark.get("source", "file"),
             "critical": critical,
             "warnings": warnings,
         },

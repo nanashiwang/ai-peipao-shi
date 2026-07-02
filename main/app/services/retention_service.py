@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models import SendLog
 
-SCREENSHOT_RE = re.compile(r"task_\d+_\d{8}_\d{6}_\d{6}\.(png|jpg)")
+SCREENSHOT_RE = re.compile(r"(task_\d+_\d{8}_\d{6}_\d{6}|shot_[A-Za-z0-9_-]{32,})\.(png|jpg)")
 ROTATED_LOG_PATTERNS = ("server*.log.*", "server*.err.log.*", "*.log.*")
 
 

@@ -39,27 +39,49 @@ class RuntimeConfigTest(unittest.TestCase):
             ark.write_text('{"api_key":"sk-production-valid-key","endpoint_id":"qwen-vl-plus"}', encoding="utf-8")
             report = runtime_config_report(
                 "prod",
-                "postgresql+psycopg://coach:secret@postgres:5432/coach_mvp",
+                "postgresql+psycopg://coach:strong-db-password-123@postgres:5432/coach_mvp",
                 ark,
                 database_url_explicit=True,
+                env={"ADMIN_AUTH_SECRET": "0123456789abcdef0123456789abcdef"},
             )
 
         self.assertEqual(report["status"], "ok")
         self.assertEqual(report["metrics"]["database_kind"], "postgresql")
-        self.assertNotIn("secret", report["metrics"]["database_url_masked"])
+        self.assertNotIn("strong-db-password-123", report["metrics"]["database_url_masked"])
         self.assertTrue(report["metrics"]["ark_configured"])
 
-    def test_pilot_sqlite_is_warned_before_expansion(self):
+    def test_deployed_env_rejects_sqlite_and_weak_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             report = runtime_config_report(
                 "pilot",
                 "sqlite:///./coach_mvp.db",
                 Path(tmp) / "ark.json",
                 database_url_explicit=True,
+                env={"ADMIN_AUTH_REQUIRED": "false", "ADMIN_AUTH_SECRET": "change-me-before-production"},
             )
 
-        self.assertEqual(report["status"], "warn")
-        self.assertIn("扩容前应切换 PostgreSQL", report["detail"])
+        self.assertEqual(report["status"], "critical")
+        self.assertIn("部署环境禁止设置 ADMIN_AUTH_REQUIRED=false", report["detail"])
+        self.assertIn("ADMIN_AUTH_SECRET", report["detail"])
+        self.assertIn("部署环境禁止使用 SQLite", report["detail"])
+
+    def test_ark_environment_variables_take_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = runtime_config_report(
+                "production",
+                "postgresql+psycopg://coach:strong-db-password-123@postgres:5432/coach_mvp",
+                Path(tmp) / "ark.json",
+                database_url_explicit=True,
+                env={
+                    "ADMIN_AUTH_SECRET": "0123456789abcdef0123456789abcdef",
+                    "ARK_API_KEY": "sk-env-valid-key",
+                    "ARK_ENDPOINT_ID": "qwen-vl-plus",
+                },
+            )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["metrics"]["ark_source"], "env")
+        self.assertTrue(report["metrics"]["ark_configured"])
 
 
 if __name__ == "__main__":

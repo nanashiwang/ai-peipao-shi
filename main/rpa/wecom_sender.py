@@ -1466,7 +1466,11 @@ def resolve_conversation(target_name: str, config: dict) -> dict:
     mapped = (config.get("conversation_family_map") or {}).get(target_name)
     if mapped:
         return {"exists": True, "target_name": target_name, "family": {"family_id": mapped, "parent_nickname": target_name}}
-    return request_json(config["api_base_url"], f"/api/rpa/conversations/resolve?target_name={quote_path(target_name)}")
+    return request_json(
+        config["api_base_url"],
+        f"/api/rpa/conversations/resolve?target_name={quote_path(target_name)}",
+        extra_headers=device_headers(config),
+    )
 
 
 def quote_path(value: str) -> str:

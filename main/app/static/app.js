@@ -66,14 +66,37 @@ const PENDING_TABS = {
 };
 
 // 统一封装 fetch，减少重复的错误处理代码。
-async function api(path, options = {}) {
-  const headers = new Headers(options.headers || {});
+function authHeaders(source = {}) {
+  const headers = new Headers(source || {});
   if (!headers.has("X-Actor")) headers.set("X-Actor", encodeURIComponent(currentActor()));
   if (state.currentUser?.admin_token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${state.currentUser.admin_token}`);
   if (!state.currentUser?.admin_token && state.currentUser?.parent_token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${state.currentUser.parent_token}`);
+  return headers;
+}
+
+async function api(path, options = {}) {
+  const headers = authHeaders(options.headers || {});
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+async function openSendArtifact(path) {
+  return withAction("打开截图", async () => {
+    const res = await fetch(path, { headers: authHeaders() });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const opened = window.open(url, "_blank", "noopener");
+    if (!opened) {
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  });
 }
 
 function currentActor() {
@@ -825,7 +848,7 @@ function timelineCard(item) {
   const device = item.device_id ? ` · 设备：${esc(item.device_id)}` : "";
   const source = item.source ? ` · ${esc(item.source)}` : "";
   const status = item.status ? ` · ${esc(item.status)}` : "";
-  const shot = item.screenshot_path ? ` · <a class="dl-link" href="${esc(item.screenshot_path)}" target="_blank" rel="noopener">截图</a>` : "";
+  const shot = item.screenshot_path ? ` · <button class="dl-link" data-artifact="${esc(item.screenshot_path)}" onclick="openSendArtifact(this.dataset.artifact)">截图</button>` : "";
   return `
     <article class="timeline-item timeline-${esc(item.kind)}">
       <div class="timeline-head">
@@ -2052,7 +2075,7 @@ function logReviewCard(log) {
   const reasonLevel = log.send_reason_level || (log.status === "failed" ? "danger" : "");
   const trace = Array.isArray(log.send_trace) && log.send_trace.length ? log.send_trace.join(" / ") : "";
   const screenshot = log.screenshot_path
-    ? `<a class="dl-link" href="${esc(log.screenshot_path)}" target="_blank" rel="noopener">查看截图</a>`
+    ? `<button class="dl-link" data-artifact="${esc(log.screenshot_path)}" onclick="openSendArtifact(this.dataset.artifact)">查看截图</button>`
     : "—";
   const manualActions = canManualVerifyLog(log)
     ? `<div class="actions left">

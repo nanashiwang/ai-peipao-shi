@@ -28,11 +28,88 @@ echo ""
 
 echo "== 2/5 准备配置目录 =="
 mkdir -p config
+touch .env
+chmod 600 .env || true
+
+random_hex_secret() {
+  local first second
+  first="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+  second="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+  printf '%s%s' "$first" "$second"
+}
+
+env_value() {
+  local key="$1"
+  grep -E "^${key}=" .env | tail -n 1 | cut -d= -f2-
+}
+
+replace_env_key() {
+  local key="$1"
+  local value="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { replaced = 0 }
+    index($0, key "=") == 1 {
+      if (!replaced) {
+        print key "=" value
+        replaced = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!replaced) print key "=" value
+    }
+  ' .env > "$tmp"
+  mv "$tmp" .env
+}
+
+ensure_env_key() {
+  local key="$1"
+  local value="$2"
+  if ! grep -qE "^${key}=" .env; then
+    printf '%s=%s\n' "$key" "$value" >> .env
+    echo "  已生成 ${key}"
+  fi
+}
+
+old_db_password=""
+ensure_env_key "ADMIN_AUTH_REQUIRED" "true"
+ensure_env_key "ADMIN_AUTH_SECRET" "$(random_hex_secret)"
+if ! grep -qE "^POSTGRES_PASSWORD=" .env; then
+  old_db_password="coach"
+  ensure_env_key "POSTGRES_PASSWORD" "$(random_hex_secret)"
+else
+  current_db_password="$(env_value POSTGRES_PASSWORD)"
+  if [ "$current_db_password" = "coach" ] || [ "$current_db_password" = "change-me-before-production" ] || [ "$current_db_password" = "change-me" ]; then
+    old_db_password="$current_db_password"
+    replace_env_key "POSTGRES_PASSWORD" "$(random_hex_secret)"
+    echo "  已轮换弱 POSTGRES_PASSWORD"
+  fi
+fi
 echo "  ARK 云端定位密钥改为「部署后在看板 → 系统设置 页在线配置」，这里无需填写。"
-echo "  默认 APP_ENV=pilot；正式环境请先创建 .env，设置 APP_ENV=production、ADMIN_AUTH_SECRET、ADMIN_USERNAME/ADMIN_PASSWORD、独立数据库口令，并准备 config/ark.json。"
+echo "  默认 APP_ENV=pilot；正式环境请在 .env 设置 APP_ENV=production、ADMIN_USERNAME/ADMIN_PASSWORD，并通过 ARK_* 环境变量或 config/ark.json 配置模型。"
 echo ""
 
 echo "== 3/5 构建并启动（api + postgres）=="
+docker compose up -d postgres
+if [ -n "$old_db_password" ]; then
+  echo "  检测到历史弱数据库口令，尝试旋转 PostgreSQL 用户密码..."
+  for i in $(seq 1 30); do
+    if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-coach}" -d "${POSTGRES_DB:-coach_mvp}" >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+  new_db_password="$(env_value POSTGRES_PASSWORD)"
+  if docker compose exec -T -e PGPASSWORD="$old_db_password" postgres psql \
+    -U "${POSTGRES_USER:-coach}" \
+    -d "${POSTGRES_DB:-coach_mvp}" \
+    -c "ALTER USER \"${POSTGRES_USER:-coach}\" WITH PASSWORD '$new_db_password';" >/dev/null 2>&1; then
+    echo "  PostgreSQL 用户密码已轮换"
+  else
+    echo "  未能用历史口令连接数据库；若这是全新库可忽略，否则请手动检查 PostgreSQL 密码。"
+  fi
+fi
 docker compose up -d --build --force-recreate api
 echo ""
 

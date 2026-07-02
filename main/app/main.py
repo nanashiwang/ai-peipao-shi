@@ -56,6 +56,7 @@ from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
 from app.services.admin_auth import (
     ADMIN_ROLES,
+    DEPLOYED_ENVS,
     admin_auth_required,
     admin_auth_secret,
     bearer_token,
@@ -513,6 +514,7 @@ def current_runtime_config_report() -> dict:
         DATABASE_URL,
         ARK_CONFIG_PATH,
         database_url_explicit=bool(os.getenv("DATABASE_URL")),
+        env=os.environ,
     )
 
 
@@ -714,6 +716,13 @@ def device_from_optional_headers(db: Session, request: Request | None) -> Device
     dev = db.query(Device).filter(Device.device_id == device_id).first()
     if not dev or dev.token != token:
         raise HTTPException(401, "设备未注册或 token 不正确")
+    return dev
+
+
+def require_device_for_request(db: Session, request: Request | None) -> Device:
+    dev = device_from_optional_headers(db, request)
+    if dev is None:
+        raise HTTPException(401, "缺少设备令牌")
     return dev
 
 
@@ -1157,7 +1166,7 @@ def store_send_screenshot(task_id: int, screenshot_base64: str) -> str:
         raise HTTPException(400, f"截图不能超过 {MAX_SEND_SCREENSHOT_BYTES // 1024 // 1024}MB")
     ext = detect_image_extension(data)
     SEND_SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"task_{task_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.{ext}"
+    filename = f"shot_{secrets.token_urlsafe(24)}.{ext}"
     path = (SEND_SCREENSHOT_DIR / filename).resolve()
     try:
         path.relative_to(SEND_SCREENSHOT_DIR.resolve())
@@ -1168,7 +1177,9 @@ def store_send_screenshot(task_id: int, screenshot_base64: str) -> str:
 
 
 def resolve_send_screenshot(filename: str) -> Path:
-    if not re.fullmatch(r"task_\d+_\d{8}_\d{6}_\d{6}\.(png|jpg)", filename or ""):
+    legacy_pattern = r"task_\d+_\d{8}_\d{6}_\d{6}\.(png|jpg)"
+    random_pattern = r"shot_[A-Za-z0-9_-]{32,}\.(png|jpg)"
+    if not re.fullmatch(f"(?:{legacy_pattern})|(?:{random_pattern})", filename or ""):
         raise HTTPException(404, "截图不存在")
     path = (SEND_SCREENSHOT_DIR / filename).resolve()
     try:
@@ -2266,6 +2277,8 @@ def register_account(payload: AccountIn, db: Session = Depends(get_db)):
 
 @app.post("/api/test-chat/login")
 def login_account(payload: LoginIn, db: Session = Depends(get_db)):
+    if os.getenv("APP_ENV", "").strip().lower() in DEPLOYED_ENVS and admin_auth_required():
+        raise HTTPException(404, "测试登录已在部署环境禁用")
     account = db.query(UserAccount).filter(UserAccount.username == payload.username.strip()).one_or_none()
     if not verify_account_password(db, account, payload.password):
         raise HTTPException(401, "账号或密码错误")
@@ -3887,17 +3900,21 @@ def sync_conversation_payload(
 # RPA 同步企业微信会话消息，并可选自动生成回复任务。
 @app.post("/api/rpa/conversations/sync")
 def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, db: Session = Depends(get_db)):
+    dev = require_device_for_request(db, request)
+    validate_device_conversation_scope(dev, payload.target_name)
     return sync_conversation_payload(
         db,
         payload,
         actor=actor_from_request(request, "企微RPA"),
         source_prefix="企微RPA",
-        dev=device_from_optional_headers(db, request),
+        dev=dev,
     )
 
 
 @app.get("/api/rpa/conversations/resolve")
-def resolve_rpa_conversation(target_name: str, db: Session = Depends(get_db)):
+def resolve_rpa_conversation(target_name: str, request: Request = None, db: Session = Depends(get_db)):
+    dev = require_device_for_request(db, request)
+    validate_device_conversation_scope(dev, target_name)
     family = db.query(Family).filter(Family.parent_nickname == target_name).one_or_none()
     if not family:
         family = db.query(Family).filter(Family.family_id == target_name).one_or_none()
@@ -4645,8 +4662,13 @@ def list_audit_logs(entity_type: str = "", entity_id: int = 0, limit: int = 200,
 
 
 @app.get("/api/send-artifacts/{filename}")
-def get_send_artifact(filename: str):
+def get_send_artifact(filename: str, request: Request = None, db: Session = Depends(get_db)):
     path = resolve_send_screenshot(filename)
+    artifact_url = f"/api/send-artifacts/{filename}"
+    log = db.query(SendLog).filter(SendLog.screenshot_path == artifact_url).one_or_none()
+    if not log:
+        raise HTTPException(404, "截图不存在")
+    require_family_for_request(db, log.family_id, request)
     return FileResponse(path)
 
 

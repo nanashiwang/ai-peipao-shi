@@ -31,6 +31,7 @@ from app.main import (
     claim_tasks,
     create_send_task,
     device_heartbeat,
+    get_send_artifact,
     list_audit_logs,
     list_send_tasks,
     manually_verify_send_log,
@@ -39,6 +40,7 @@ from app.main import (
     queue_device_conversation_check,
     queue_task_real_send,
     record_send_result,
+    resolve_rpa_conversation,
     resolve_send_screenshot,
     sync_rpa_conversation,
     update_device,
@@ -1078,6 +1080,31 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(view["conversation_proof_total"], 1)
         self.assertTrue(view["conversation_proof_ready"])
 
+    def test_rpa_sync_requires_device_token(self):
+        with self.assertRaises(HTTPException) as ctx:
+            sync_rpa_conversation(
+                RpaConversationIn(
+                    target_name="一合学社",
+                    family_id="WECOM_一合学社",
+                    messages=[],
+                    auto_generate_reply=False,
+                    auto_create_reply_task=False,
+                    auto_generate_all_agents=False,
+                ),
+                request=SimpleNamespace(headers={}, state=SimpleNamespace()),
+                db=self.db,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_rpa_resolve_rejects_target_outside_device_scope(self):
+        request = SimpleNamespace(headers={"x-device-id": "dev-a", "x-device-token": "token"}, state=SimpleNamespace())
+
+        with self.assertRaises(HTTPException) as ctx:
+            resolve_rpa_conversation("不归属的群", request=request, db=self.db)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+
     def test_device_view_reports_missing_and_expired_conversation_proofs(self):
         self.dev.conversations = '["一合学社", "测试2群", "许宝月"]'
         self.db.add(
@@ -1356,6 +1383,7 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual(row["send_readiness"]["label"], "真实发送条件就绪")
 
     def test_rpa_sync_records_empty_conversation_title_check(self):
+        self.dev.conversations = '["许宝月"]'
         result = sync_rpa_conversation(
             RpaConversationIn(
                 target_name="许宝月",
@@ -1601,7 +1629,7 @@ class SendResultEvidenceTest(unittest.TestCase):
             conversations='["\\u4e00\\u5408\\u5b66\\u793e"]',
             allow_real_send=True,
         )
-        self.db.add(self.device)
+        self.db.add_all([self.device, Family(family_id="f1", parent_nickname="一合学社", coach_name="other")])
         self.db.commit()
         self.device_request = SimpleNamespace(
             headers={"x-device-id": self.device.device_id, "x-device-token": self.device.token},
@@ -1666,9 +1694,28 @@ class SendResultEvidenceTest(unittest.TestCase):
         self.assertEqual(log["send_mode"], "real_send")
         self.assertEqual(log["send_reason"], "failed_unknown")
         self.assertEqual(log["send_reason_level"], "danger")
-        self.assertTrue(log["screenshot_path"].startswith("/api/send-artifacts/task_"))
+        self.assertTrue(log["screenshot_path"].startswith("/api/send-artifacts/shot_"))
         filename = log["screenshot_path"].rsplit("/", 1)[1]
+        self.assertFalse(filename.startswith(f"task_{task.id}_"))
         self.assertEqual(resolve_send_screenshot(filename).read_bytes(), self.PNG_BYTES)
+
+    def test_send_artifact_requires_family_scope(self):
+        task = self.add_task()
+        payload = SendResultIn(
+            status="failed",
+            detail="窗口丢失",
+            device_id="rpa-01",
+            screenshot_base64=base64.b64encode(self.PNG_BYTES).decode("ascii"),
+        )
+        log = record_send_result(task.id, payload, request=self.device_request, db=self.db)
+        filename = log["screenshot_path"].rsplit("/", 1)[1]
+
+        response = get_send_artifact(filename, request=admin_request("admin"), db=self.db)
+
+        self.assertTrue(str(response.path).endswith(filename))
+        with self.assertRaises(HTTPException) as ctx:
+            get_send_artifact(filename, request=admin_request("coach"), db=self.db)
+        self.assertEqual(ctx.exception.status_code, 403)
 
     def test_record_send_result_persists_group_verification(self):
         task = self.add_task()
