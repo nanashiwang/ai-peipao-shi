@@ -3356,65 +3356,6 @@ main {
   gap: 8px;
 }
 
-#webChat .chat-workbench-head {
-  align-items: flex-start;
-}
-
-#webChat .chat-workbench-head > div:first-child {
-  min-width: 220px;
-}
-
-#webChat .chat-workbench-head p {
-  margin: 4px 0 0;
-}
-
-#webChat .chat-switchbar {
-  display: grid;
-  grid-template-columns: minmax(150px, .8fr) minmax(240px, 1fr) auto;
-  gap: 8px;
-  align-items: stretch;
-  min-width: min(720px, 100%);
-}
-
-#webChat .login-status.compact {
-  display: grid;
-  align-content: center;
-  gap: 2px;
-  margin: 0;
-  min-height: 34px;
-  padding: 6px 10px;
-  border: 1px solid var(--soft-line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, .72);
-}
-
-#webChat .login-status.compact > span,
-#webChat .login-status.compact small,
-#webChat .chat-conversation-switch span {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.15;
-}
-
-#webChat .login-status.compact strong {
-  display: flex;
-  gap: 5px;
-  align-items: center;
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-#webChat .chat-conversation-switch {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-#webChat .chat-conversation-switch select {
-  width: 100%;
-  min-height: 34px;
-}
-
 #webChat button,
 #webChat input,
 #webChat select,
@@ -3432,11 +3373,13 @@ main {
 }
 
 #webChat .chat-shell {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 258px minmax(0, 1fr) 360px;
+  gap: 12px;
 }
 
-#webChat .chat-main {
+#webChat .chat-side,
+#webChat .chat-main,
+#webChat .chat-review {
   padding: 14px;
   border-radius: 14px;
 }
@@ -3505,78 +3448,10 @@ main {
 }
 
 #webChat .chat-messages {
-  height: clamp(360px, 54vh, 560px);
-  padding: 0;
-  gap: 0;
-  overflow: auto;
-  border-radius: 14px;
-}
-
-#webChat .chat-message-row {
-  display: grid;
-  grid-template-columns: 52px minmax(82px, 120px) minmax(0, 1fr) 92px;
+  height: clamp(480px, 62vh, 640px);
+  padding: 12px;
   gap: 8px;
-  align-items: center;
-  min-height: 34px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--soft-line);
-  background: rgba(255, 255, 255, .68);
-}
-
-#webChat .chat-message-row:nth-child(even) {
-  background: rgba(248, 250, 253, .78);
-}
-
-#webChat .chat-message-row.ai {
-  background: rgba(0, 122, 255, .055);
-}
-
-#webChat .chat-message-row:last-child {
-  border-bottom: 0;
-}
-
-#webChat .chat-message-kind {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 19px;
-  border-radius: 999px;
-  background: rgba(52, 199, 89, .12);
-  color: #1f7a3a;
-  font-size: 10px;
-  font-weight: 900;
-}
-
-#webChat .chat-message-row.ai .chat-message-kind {
-  background: rgba(0, 122, 255, .12);
-  color: var(--blue);
-}
-
-#webChat .chat-message-speaker,
-#webChat .chat-message-content,
-#webChat .chat-message-time {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#webChat .chat-message-speaker {
-  font-size: 12px;
-  line-height: 1.25;
-}
-
-#webChat .chat-message-content {
-  margin: 0;
-  color: var(--ink);
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-#webChat .chat-message-time {
-  color: var(--muted);
-  font-size: 11px;
-  text-align: right;
+  border-radius: 14px;
 }
 
 #webChat .bubble {
@@ -3604,18 +3479,16 @@ main {
 }
 
 #webChat .chat-compose {
-  grid-template-columns: minmax(0, 1fr) 108px;
+  grid-template-columns: minmax(0, 1fr) 118px;
   gap: 8px;
   margin-top: 10px;
 }
 
 #webChat .chat-compose textarea {
-  height: 42px;
-  min-height: 42px;
-  max-height: 96px;
-  padding: 7px 10px;
+  min-height: 64px;
+  padding: 8px 10px;
   font-size: 13px;
-  line-height: 1.35;
+  line-height: 1.45;
   letter-spacing: 0;
 }
 
@@ -3663,8 +3536,7 @@ main {
 }
 
 @media (max-width: 1180px) {
-  #webChat .chat-shell,
-  #webChat .chat-switchbar {
+  #webChat .chat-shell {
     grid-template-columns: 1fr;
   }
 }
@@ -3677,19 +3549,11 @@ main {
   }
 
   #webChat .chat-messages {
-    height: min(56vh, 480px);
+    height: min(58vh, 520px);
   }
 
   #webChat .chat-compose {
     grid-template-columns: 1fr;
-  }
-
-  #webChat .chat-message-row {
-    grid-template-columns: 44px minmax(64px, 90px) minmax(0, 1fr);
-  }
-
-  #webChat .chat-message-time {
-    display: none;
   }
 }
 
