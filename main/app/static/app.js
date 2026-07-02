@@ -428,42 +428,9 @@ function reportSendStatusBadge(status) {
   return badge(labels[status || "not_created"] || status || "未建任务", kind);
 }
 
-function sendReasonCell(log) {
-  const level = log.send_reason_level || (log.status === "failed" ? "danger" : "");
-  const trace = Array.isArray(log.send_trace) && log.send_trace.length
-    ? `<p class="muted">${esc(log.send_trace.join(" / "))}</p>`
-    : "";
-  return `${badge(log.send_stage || "发送结果", level)}<strong>${esc(log.send_reason_label || "未分类")}</strong>${trace}`;
-}
-
-function sendVerifyCell(log) {
-  const status = log.verify_status || "";
-  if (!status) return "—";
-  const labels = {
-    confirmed: "群内已回读",
-    failed: "群内未确认",
-    unknown: "待人工核对",
-    not_applicable: "无需校验",
-  };
-  const kind = status === "confirmed" ? "ok" : (status === "failed" || status === "unknown" ? "danger" : "");
-  const detail = log.verify_detail ? `<p class="muted">${esc(log.verify_detail)}</p>` : "";
-  const time = log.verified_at ? `<p class="muted">校验时间：${esc(log.verified_at)}</p>` : "";
-  return `${badge(labels[status] || status, kind)}${detail}${time}`;
-}
-
 function canManualVerifyLog(log) {
   if (!isAdminUser() || (log.send_mode || "") !== "real_send") return false;
   return log.manual_verify_allowed === true;
-}
-
-function manualVerifyLogActions(log) {
-  if (!canManualVerifyLog(log)) return "—";
-  return `
-    <div class="cell-actions">
-      <button class="danger-action" onclick="manualVerifySendLog(${log.id}, true)">人工确认已发</button>
-      <button onclick="manualVerifySendLog(${log.id}, false)">人工确认未发</button>
-    </div>
-  `;
 }
 
 function taskAllowedOperations(task) {
@@ -1966,21 +1933,88 @@ function renderTasks() {
     : emptyState("暂无待发送任务", "AI 回复、周报或手动企微任务创建后会出现在这里。");
 }
 
-// 渲染日志列表。
+// 渲染日志列表：单行摘要 + 展开详情，轨迹/校验/截图/人工核验折叠进详情区。
 function renderLogs() {
-  $("logTable").innerHTML = table([
-    { label: "时间", key: "sent_at" },
-    { label: "任务", key: "task_id" },
-    { label: "家庭", render: (r) => esc(familyName(r.family_id)) },
-    { label: "对象", key: "target_name" },
-    { label: "状态", render: (r) => sendTaskStatusBadge(r.status) },
-    { label: "模式", render: (r) => sendModeBadge(r.send_mode || "dry_run") },
-    { label: "阶段/原因", render: sendReasonCell },
-    { label: "群内校验", render: sendVerifyCell },
-    { label: "人工核验", render: manualVerifyLogActions },
-    { label: "截图", render: (r) => r.screenshot_path ? `<a class="dl-link" href="${esc(r.screenshot_path)}" target="_blank" rel="noopener">查看</a>` : "—" },
-    { label: "详情", key: "detail" },
-  ], state.logs);
+  $("logTable").innerHTML = state.logs.length
+    ? `<div class="task-review-list">
+        <div class="log-review-header">
+          <span>时间</span>
+          <span>对象 / 家庭</span>
+          <span>状态</span>
+          <span>结果 / 原因</span>
+          <span>群内校验</span>
+          <span>详情</span>
+        </div>
+        ${state.logs.map(logReviewCard).join("")}
+      </div>`
+    : emptyState("暂无发送日志", "任务发送后会在这里记录状态、失败原因、设备和截图证据。");
+}
+
+const LOG_VERIFY_LABELS = {
+  confirmed: "群内已回读",
+  failed: "群内未确认",
+  unknown: "待人工核对",
+  not_applicable: "无需校验",
+};
+
+function logVerifyBadge(log) {
+  const status = log.verify_status || "";
+  if (!status) return '<span class="muted">—</span>';
+  const kind = status === "confirmed" ? "ok" : (status === "failed" || status === "unknown" ? "danger" : "");
+  return badge(LOG_VERIFY_LABELS[status] || status, kind);
+}
+
+function formatLogTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "—";
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const pad = (num) => String(num).padStart(2, "0");
+    return `${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+  }
+  return raw.replace("T", " ").slice(5, 16);
+}
+
+function logReviewCard(log) {
+  const reasonLevel = log.send_reason_level || (log.status === "failed" ? "danger" : "");
+  const trace = Array.isArray(log.send_trace) && log.send_trace.length ? log.send_trace.join(" / ") : "";
+  const screenshot = log.screenshot_path
+    ? `<a class="dl-link" href="${esc(log.screenshot_path)}" target="_blank" rel="noopener">查看截图</a>`
+    : "—";
+  const manualActions = canManualVerifyLog(log)
+    ? `<div class="actions left">
+        <button class="danger-action" onclick="manualVerifySendLog(${log.id}, true)">人工确认已发</button>
+        <button onclick="manualVerifySendLog(${log.id}, false)">人工确认未发</button>
+      </div>`
+    : "";
+  return `
+    <details class="task-review-card">
+      <summary class="log-card-summary">
+        <time>${esc(formatLogTime(log.sent_at))}</time>
+        <div class="log-summary-target">
+          <strong>${esc(log.target_name || "—")}</strong>
+          <small>${esc(familyName(log.family_id))} · 任务#${esc(log.task_id ?? "—")}</small>
+        </div>
+        <div class="log-summary-status">${sendTaskStatusBadge(log.status)}${sendModeBadge(log.send_mode || "dry_run")}</div>
+        <p class="log-summary-reason">${badge(log.send_stage || "发送结果", reasonLevel)}<span>${esc(log.send_reason_label || "未分类")}</span></p>
+        <div class="log-summary-verify">${logVerifyBadge(log)}</div>
+        <span class="task-expand-label"></span>
+      </summary>
+      <div class="task-card-detail">
+        <div class="task-detail-table">
+          <section><span>任务 / 家庭</span><strong>#${esc(log.task_id ?? "—")} · ${esc(familyName(log.family_id))}</strong></section>
+          <section><span>阶段</span><strong>${esc(log.send_stage || "发送结果")}</strong></section>
+          <section><span>设备</span><strong>${esc(log.device_id || "—")}</strong></section>
+          <section><span>校验时间</span><strong>${esc(log.verified_at || "—")}</strong></section>
+          <section><span>截图证据</span><strong>${screenshot}</strong></section>
+        </div>
+        ${trace ? `<p class="muted">发送轨迹：${esc(trace)}</p>` : ""}
+        ${log.verify_detail ? `<p class="muted">校验详情：${esc(log.verify_detail)}</p>` : ""}
+        ${log.detail ? `<pre>${esc(log.detail)}</pre>` : ""}
+        ${manualActions}
+      </div>
+    </details>
+  `;
 }
 
 function renderAuditLogs() {

@@ -1848,6 +1848,85 @@ summary { cursor: pointer; color: var(--muted); }
 
 .task-content-editor { display: grid; gap: 6px; }
 
+/* --- 发送日志列表（摘要行 + 展开详情，复用 task-review 组件） --- */
+.log-review-header, .log-card-summary {
+  display: grid;
+  grid-template-columns: 84px minmax(150px, .95fr) minmax(150px, .8fr) minmax(210px, 1.3fr) minmax(96px, .55fr) 64px;
+  gap: 6px;
+  align-items: center;
+}
+
+.log-review-header {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: #f7f9fc;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.log-card-summary {
+  min-height: 42px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.log-card-summary::-webkit-details-marker { display: none; }
+.log-card-summary:hover { background: #f6f9ff; }
+
+.log-card-summary > time {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-summary-target { min-width: 0; }
+
+.log-summary-target strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-summary-target small {
+  display: block;
+  margin-top: 1px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-summary-status { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.log-summary-status .badge { margin-right: 0; }
+
+.log-summary-reason {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.log-summary-reason .badge { flex: 0 0 auto; margin-right: 0; }
+
+.log-summary-reason > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-summary-verify { min-width: 0; }
+
 /* --- AI 回复配置与草稿列表 --- */
 .reply-metrics {
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2086,6 +2165,12 @@ summary { cursor: pointer; color: var(--muted); }
   .task-review-header span:nth-child(5), .task-summary-readiness { display: none; }
   .task-detail-table { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .task-detail-table section { border-right: 0; border-bottom: 1px solid var(--soft-line); }
+
+  .log-review-header, .log-card-summary {
+    grid-template-columns: 80px minmax(140px, 1fr) minmax(140px, .9fr) minmax(180px, 1.2fr) 60px;
+  }
+
+  .log-review-header span:nth-child(5), .log-summary-verify { display: none; }
 }
 
 @media (max-width: 820px) {
@@ -2177,6 +2262,9 @@ summary { cursor: pointer; color: var(--muted); }
   .task-review-header { display: none; }
   .task-summary-status, .task-summary-readiness { justify-content: flex-start; max-width: none; }
   .task-detail-table { grid-template-columns: 1fr; }
+
+  .log-review-header { display: none; }
+  .log-card-summary { grid-template-columns: 1fr; }
 
   .table-wrap { max-width: 100%; overflow-x: auto; }
   table { min-width: 720px; }
