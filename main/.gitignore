@@ -13,6 +13,7 @@ logs/
 config/ark.json
 config/admin_secret.txt
 data/send_screenshots/
+data/backups/
 rpa/debug_*.png
 rpa/config.json
 xuexi.md

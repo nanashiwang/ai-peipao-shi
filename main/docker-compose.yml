@@ -8,7 +8,7 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-pilot}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-coach_mvp}
-    # 运行时密钥从 .env 注入（.env 已在 .gitignore，不入库）。
+    # 会话内容存档等运行时密钥从 .env 注入（.env 已在 .gitignore，不入库）。
     env_file:
       - .env
     depends_on:
@@ -16,7 +16,10 @@ services:
         condition: service_healthy
     volumes:
       # 挂载 ark.json（云端定位密钥）——读写：后端「系统设置」在线保存密钥会写回这里持久化
+      # 会话存档的 SDK(.so) 与 RSA 私钥也放 ./config 下，容器内路径 /app/config/...
       - ./config:/app/config
+      # 备份、发送截图等运行期数据必须落宿主机，避免容器重建后丢失。
+      - ./data:/app/data
       - ./samples:/app/samples:ro
 
   postgres:
