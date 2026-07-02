@@ -4,8 +4,14 @@
 """
 
 import os
+from pathlib import Path
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+
+DEPLOYED_ENVS = {"pilot", "staging", "docker", "production", "prod"}
+ROOT = Path(__file__).resolve().parents[1]
 
 
 # 没有显式配置时，默认使用本地 SQLite 文件。
@@ -31,8 +37,32 @@ def get_db():
 def init_db():
     from app import models  # noqa: F401
 
+    if migrations_enabled():
+        run_schema_migrations()
+        return
+
     Base.metadata.create_all(bind=engine)
     ensure_columns()
+
+
+def migrations_enabled() -> bool:
+    value = os.getenv("DB_MIGRATIONS_ENABLED", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return os.getenv("APP_ENV", "").strip().lower() in DEPLOYED_ENVS
+
+
+def run_schema_migrations(database_url: str | None = None) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    target_url = database_url or DATABASE_URL
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", target_url.replace("%", "%%"))
+    command.upgrade(config, "head")
 
 
 # create_all 只建新表，不会给已存在的旧表补列。这里为旧库平滑补新增列，避免删库重建。
@@ -43,6 +73,11 @@ def portable_column_type(col_type: str, dialect_name: str) -> str:
 
 
 def ensure_columns():
+    with engine.begin() as conn:
+        ensure_columns_for_bind(conn)
+
+
+def ensure_columns_for_bind(conn):
     wanted = {
         "families": [
             ("course_stage", "VARCHAR(120)"),
@@ -93,36 +128,35 @@ def ensure_columns():
             ("outbox_last_error", "TEXT"),
         ],
     }
-    inspector = inspect(engine)
-    dialect_name = engine.dialect.name
+    inspector = inspect(conn)
+    dialect_name = conn.dialect.name
     tables = set(inspector.get_table_names())
-    with engine.begin() as conn:
-        for table, cols in wanted.items():
-            if table not in tables:
+    for table, cols in wanted.items():
+        if table not in tables:
+            continue
+        have = {c["name"] for c in inspector.get_columns(table)}
+        for col_name, col_type in cols:
+            if col_name in have:
                 continue
-            have = {c["name"] for c in inspector.get_columns(table)}
-            for col_name, col_type in cols:
-                if col_name in have:
-                    continue
-                default = {
-                    "send_mode": "'dry_run'",
-                    "send_task_id": "0",
-                    "send_status": "'not_created'",
-                    "sent_at": "NULL",
-                    "parent_ack_at": "NULL",
-                    "parent_feedback_score": "0",
-                    "parent_feedback_at": "NULL",
-                    "pbl_count": "0",
-                    "retry_count": "0",
-                    "max_retries": "2",
-                    "next_retry_at": "NULL",
-                    "verified_at": "NULL",
-                    "satisfaction_level": "'未知'",
-                    "renewal_intent": "'未知'",
-                    "allow_real_send": "FALSE",
-                    "allow_any_conversation": "FALSE",
-                    "outbox_pending_count": "0",
-                }.get(col_name, "''")
-                safe_type = portable_column_type(col_type, dialect_name)
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {safe_type} DEFAULT {default}"))
-                conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))
+            default = {
+                "send_mode": "'dry_run'",
+                "send_task_id": "0",
+                "send_status": "'not_created'",
+                "sent_at": "NULL",
+                "parent_ack_at": "NULL",
+                "parent_feedback_score": "0",
+                "parent_feedback_at": "NULL",
+                "pbl_count": "0",
+                "retry_count": "0",
+                "max_retries": "2",
+                "next_retry_at": "NULL",
+                "verified_at": "NULL",
+                "satisfaction_level": "'未知'",
+                "renewal_intent": "'未知'",
+                "allow_real_send": "FALSE",
+                "allow_any_conversation": "FALSE",
+                "outbox_pending_count": "0",
+            }.get(col_name, "''")
+            safe_type = portable_column_type(col_type, dialect_name)
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {safe_type} DEFAULT {default}"))
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col_name} ON {table} ({col_name})"))

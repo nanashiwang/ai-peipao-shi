@@ -9,6 +9,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.server.txt .
 RUN pip install --no-cache-dir -r requirements.server.txt
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 COPY app ./app
 COPY rpa ./rpa
 COPY samples ./samples
