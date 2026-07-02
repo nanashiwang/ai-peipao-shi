@@ -316,48 +316,32 @@
       <div id="serviceQualityTable"></div>
     </section>
 
-    <!-- 陪跑会话：内部会话工作台，人工输入可直接进入对应企微被控端真实发送队列。 -->
+    <!-- 陪跑会话：只保留真实群聊上下文和人工直发入口，账号在控制端统一登录。 -->
     <section id="webChat" class="panel">
-      <div class="section-head">
-        <h2>陪跑会话</h2>
-        <div class="actions left">
-          <button id="chatReplyBtn">快速生成回复</button>
-          <button id="chatFullAiBtn">完整分析</button>
+      <div class="section-head chat-workbench-head">
+        <div>
+          <h2>陪跑会话</h2>
+          <p class="muted">查看真实群聊上下文，人工输入后直接调用对应电脑企微发送。</p>
+        </div>
+        <div class="chat-switchbar">
+          <div id="loginStatus" class="login-status compact"></div>
+          <label class="chat-conversation-switch">
+            <span>切换会话</span>
+            <select id="chatConversationSelect"></select>
+          </label>
+          <button type="button" onclick="refreshAll()">刷新</button>
         </div>
       </div>
       <div class="chat-shell">
-        <aside class="chat-side">
-          <h3>会话与账号</h3>
-          <form id="loginForm" class="compact-form">
-            <input name="username" placeholder="账号" value="coach_yitong" required />
-            <input name="password" type="password" placeholder="密码" value="123456" required />
-            <button>登录</button>
-          </form>
-          <details class="secondary-box">
-            <summary>注册测试账号</summary>
-            <form id="registerForm" class="compact-form">
-              <input name="username" placeholder="新账号" required />
-              <input name="password" type="password" placeholder="密码" required />
-              <input name="display_name" placeholder="显示名" required />
-              <input name="campus_names" placeholder="可访问校区，多个用逗号分隔" />
-              <select name="role">
-                <option value="parent">家长</option>
-                <option value="coach">陪跑师</option>
-              </select>
-              <button>注册</button>
-            </form>
-          </details>
-          <div id="loginStatus" class="login-status"></div>
-          <div id="chatConversations" class="stack"></div>
-        </aside>
         <section class="chat-main">
-          <div class="section-head">
+          <div class="section-head chat-room-head">
             <h2 id="chatTitle">请选择会话</h2>
             <span id="chatMeta" class="muted"></span>
           </div>
+          <div id="chatConversations" class="chat-conversation-list" hidden></div>
           <div id="chatMessages" class="chat-messages"></div>
           <form id="chatForm" class="chat-compose">
-            <textarea name="content" placeholder="输入要发送到当前企微会话的内容；提交后直接调用对应电脑真实发送"></textarea>
+            <textarea name="content" rows="1" placeholder="输入要发送到当前企微会话的内容"></textarea>
             <div class="chat-send-actions">
               <button class="danger-action">直接发企微</button>
               <button type="button" id="chatLocalOnlyBtn">仅记入系统</button>
@@ -365,10 +349,6 @@
             <p id="chatSendHint" class="muted"></p>
           </form>
         </section>
-        <aside class="chat-review">
-          <h2>AI 协助</h2>
-          <div id="chatAiOutputs" class="stack"></div>
-        </aside>
       </div>
     </section>
 
@@ -448,45 +428,30 @@
       <div id="reportList" class="stack"></div>
     </section>
 
-    <!-- AI回复：左侧选家庭，中间看上下文，右侧折叠审核草稿。 -->
-    <section id="replies" class="panel">
+    <!-- AI回复：配置自动回复开关和回复 Agent 链路。 -->
+    <section id="replies" class="panel reply-config-page">
       <div class="section-head">
-        <h2>AI回复</h2>
+        <div>
+          <h2>AI回复配置</h2>
+          <span class="muted">配置自动回复开关和参与回复链路的 Agents，不再把每条低风险回复都变成人工审核任务。</span>
+        </div>
         <div class="actions left">
-          <button onclick="autoDraftReplies()">自动生成待审回复</button>
-          <span class="muted">只生成 AI 草稿，人工审核后再加入发送任务</span>
+          <span id="replyAutoStatus" class="badge">未加载</span>
         </div>
       </div>
+      <div id="replyConfigPanel"></div>
       <div id="replyMetrics" class="reply-metrics summary-grid"></div>
-      <div class="three-col reply-workspace">
-        <section class="reply-family-panel">
-          <h2>消息列表</h2>
-          <div id="replyFamilies" class="stack"></div>
-        </section>
-        <section class="reply-context-panel">
-          <h2>聊天上下文</h2>
-          <select id="replyFamilySelect"></select>
-          <textarea id="replyMessage" placeholder="可粘贴家长最新消息；不填则读取该家庭最近一条消息"></textarea>
-          <div class="actions left">
-            <button onclick="runReplyAgent('standard')">生成回复</button>
-            <button onclick="runReplyAgent('gentle')">更温和</button>
-            <button onclick="runReplyAgent('short')">更简短</button>
+      <section class="reply-output-panel reply-record-panel">
+        <div class="section-head compact-head">
+          <div>
+            <h2>最近自动回复记录</h2>
+            <span class="muted">这里只做运行观察；低风险回复按配置自动进入发送任务，高风险才转人工处理。</span>
           </div>
-          <div id="replyContext" class="messages"></div>
-        </section>
-        <section class="reply-output-panel">
-          <div class="section-head compact-head">
-            <div>
-              <h2>待审回复草稿</h2>
-              <span class="muted">默认折叠；展开后编辑、保存或加入发送任务</span>
-            </div>
-          </div>
-          <div id="replyOutputs" class="stack"></div>
-        </section>
-      </div>
+        </div>
+        <div id="replyOutputs" class="stack"></div>
+      </section>
     </section>
 
-    <!-- 打卡/PBL：展示识别结果和提醒话术。 -->
     <section id="checkins" class="panel">
       <div class="section-head">
         <h2>打卡/PBL</h2>

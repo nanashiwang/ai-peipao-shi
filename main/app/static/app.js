@@ -20,6 +20,7 @@ const state = {
   arkConfig: {},
   importTemplates: [],
   agentEval: {},
+  replyAgentConfig: {},
   templates: [],
   outputs: [],
   accounts: [],
@@ -40,6 +41,24 @@ const AGENTS = {
   weekly_report: { name: "AI周报", className: "agent-weekly" },
   ai_reply: { name: "AI回复", className: "agent-reply" },
   checkin_pbl: { name: "打卡/PBL", className: "agent-checkin" },
+};
+
+const DEFAULT_REPLY_AGENT_CONFIG = {
+  auto_reply_enabled: false,
+  auto_create_send_task: true,
+  send_mode: "dry_run",
+  tone: "standard",
+  reply_agent: "ai_reply_agent",
+  enabled_agents: ["context_agent", "scene_agent", "reply_agent", "safety_agent"],
+  high_risk_policy: "manual",
+  skip_recent_hours: 8,
+  max_batch: 200,
+  available_agents: [
+    { key: "context_agent", name: "上下文 Agent", description: "读取家庭画像、最近聊天、周报和话术模板" },
+    { key: "scene_agent", name: "场景识别 Agent", description: "识别请假、催打卡、投诉、续费等回复场景" },
+    { key: "reply_agent", name: "回复生成 Agent", description: "生成可直接进入发送队列的家长回复" },
+    { key: "safety_agent", name: "安全兜底 Agent", description: "命中高风险、投诉、退费等内容时转人工" },
+  ],
 };
 
 const PENDING_TABS = {
@@ -677,6 +696,7 @@ const GLOBAL_STATE_TARGETS = [
   "reportList",
   "replyFamilies",
   "replyContext",
+  "replyConfigPanel",
   "replyOutputs",
   "checkinBoard",
   "taskTable",
@@ -1265,18 +1285,130 @@ function textPreview(value, limit = 96) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+function currentReplyAgentConfig() {
+  const raw = state.replyAgentConfig || {};
+  return {
+    ...DEFAULT_REPLY_AGENT_CONFIG,
+    ...raw,
+    available_agents: raw.available_agents || DEFAULT_REPLY_AGENT_CONFIG.available_agents,
+    enabled_agents: Array.isArray(raw.enabled_agents) ? raw.enabled_agents : DEFAULT_REPLY_AGENT_CONFIG.enabled_agents,
+  };
+}
+
+function renderReplyAgentConfig(replyOutputs = []) {
+  const el = $("replyConfigPanel");
+  if (!el) return;
+  const cfg = currentReplyAgentConfig();
+  const enabled = new Set(cfg.enabled_agents || []);
+  const autoStatus = $("replyAutoStatus");
+  if (autoStatus) {
+    autoStatus.className = `badge ${cfg.auto_reply_enabled ? "ok" : ""}`;
+    autoStatus.textContent = cfg.auto_reply_enabled ? "自动回复已开启" : "自动回复已关闭";
+  }
+  const pendingCount = replyOutputs.filter((item) => item.status === "needs_review").length;
+  const taskCount = replyOutputs.filter((item) => item.status === "task_created").length;
+  const agentCards = (cfg.available_agents || []).map((agent) => `
+    <label class="reply-agent-card ${enabled.has(agent.key) ? "active" : ""}">
+      <input type="checkbox" name="enabled_agents" value="${esc(agent.key)}" ${enabled.has(agent.key) ? "checked" : ""}>
+      <strong>${esc(agent.name)}</strong>
+      <span>${esc(agent.description || "")}</span>
+    </label>
+  `).join("");
+  el.innerHTML = `
+    <form id="replyAgentConfigForm" class="reply-config-form" onsubmit="saveReplyAgentConfig(event)">
+      <section class="reply-switch-card ${cfg.auto_reply_enabled ? "enabled" : ""}">
+        <div>
+          <span class="eyebrow">总开关</span>
+          <h3>自动 AI 回复</h3>
+          <p>开启后，企微/RPA 同步到新的家长消息时自动运行回复 Agent；低风险内容不再逐条人工审核。</p>
+        </div>
+        <label class="switch-control">
+          <input type="checkbox" name="auto_reply_enabled" ${cfg.auto_reply_enabled ? "checked" : ""}>
+          <span></span>
+        </label>
+      </section>
+      <section class="reply-config-card">
+        <div class="section-head compact-head">
+          <div>
+            <h3>回复策略</h3>
+            <span class="muted">控制回复风格、去重窗口和是否自动进入发送任务。</span>
+          </div>
+        </div>
+        <div class="reply-config-fields">
+          <label>回复 Agent
+            <select name="reply_agent">
+              <option value="ai_reply_agent" ${cfg.reply_agent === "ai_reply_agent" ? "selected" : ""}>AI回复 Agent（完整上下文）</option>
+              <option value="quick_reply_agent" ${cfg.reply_agent === "quick_reply_agent" ? "selected" : ""}>快速回复 Agent（轻量）</option>
+            </select>
+          </label>
+          <label>回复语气
+            <select name="tone">
+              <option value="standard" ${cfg.tone === "standard" ? "selected" : ""}>标准</option>
+              <option value="gentle" ${cfg.tone === "gentle" ? "selected" : ""}>更温和</option>
+              <option value="short" ${cfg.tone === "short" ? "selected" : ""}>更简短</option>
+            </select>
+          </label>
+          <label>发送模式
+            <select name="send_mode">
+              <option value="dry_run" ${cfg.send_mode === "dry_run" ? "selected" : ""}>试运行队列</option>
+              <option value="real_send" ${cfg.send_mode === "real_send" ? "selected" : ""}>真实发送队列</option>
+            </select>
+          </label>
+          <label>去重窗口（小时）
+            <input name="skip_recent_hours" type="number" min="0" max="168" value="${esc(cfg.skip_recent_hours)}">
+          </label>
+          <label>单批上限
+            <input name="max_batch" type="number" min="1" max="500" value="${esc(cfg.max_batch)}">
+          </label>
+          <label>高风险策略
+            <select name="high_risk_policy">
+              <option value="manual" ${cfg.high_risk_policy === "manual" ? "selected" : ""}>转人工，不自动建任务</option>
+              <option value="create_task" ${cfg.high_risk_policy === "create_task" ? "selected" : ""}>尝试建任务（安全词仍会拦截）</option>
+            </select>
+          </label>
+        </div>
+        <label class="inline-check">
+          <input type="checkbox" name="auto_create_send_task" ${cfg.auto_create_send_task ? "checked" : ""}>
+          自动把低风险回复加入发送任务
+        </label>
+      </section>
+      <section class="reply-config-card">
+        <div class="section-head compact-head">
+          <div>
+            <h3>参与回复的 Agents</h3>
+            <span class="muted">这里配置链路能力，而不是逐条审核 AI 文案。</span>
+          </div>
+        </div>
+        <div class="reply-agent-grid">${agentCards}</div>
+      </section>
+      <section class="reply-config-card reply-config-status">
+        <h3>当前运行状态</h3>
+        <p>${cfg.auto_reply_enabled ? "新消息会触发自动回复链路。" : "自动回复已关闭，只保留手动生成和历史记录。"}</p>
+        <div>
+          ${badge(cfg.send_mode === "real_send" ? "真实发送队列" : "试运行队列", cfg.send_mode === "real_send" ? "warn" : "ok")}
+          ${badge(cfg.auto_create_send_task ? "自动建任务" : "只生成记录", cfg.auto_create_send_task ? "ok" : "")}
+          ${badge(`待人工 ${pendingCount}`, pendingCount ? "warn" : "ok")}
+          ${badge(`已建任务 ${taskCount}`, taskCount ? "ok" : "")}
+        </div>
+        <button type="submit">保存自动回复配置</button>
+      </section>
+    </form>
+  `;
+}
+
 function renderReplyMetrics(replyOutputs) {
   const el = $("replyMetrics");
   if (!el) return;
+  const cfg = currentReplyAgentConfig();
   const pendingCount = replyOutputs.filter((item) => item.status === "needs_review").length;
   const taskCount = replyOutputs.filter((item) => item.status === "task_created").length;
   const humanCount = replyOutputs.filter((item) => item.risk_level === "高" || item.need_human_review === "Y").length;
   const familyCount = new Set(replyOutputs.map((item) => item.family_id).filter(Boolean)).size;
   const cards = [
-    ["待审核草稿", pendingCount, "优先展开处理"],
-    ["已建发送任务", taskCount, "进入审核发送页"],
-    ["需人工关注", humanCount, "高风险或需人工"],
-    ["覆盖家庭", familyCount, "近 200 条 AI 回复"],
+    ["自动回复", cfg.auto_reply_enabled ? "开" : "关", cfg.auto_reply_enabled ? "新消息自动触发" : "仅保留手动生成"],
+    ["自动建任务", cfg.auto_create_send_task ? "开" : "关", cfg.send_mode === "real_send" ? "真实发送队列" : "试运行队列"],
+    ["需人工关注", humanCount || pendingCount, "高风险/安全拦截"],
+    ["覆盖家庭", familyCount, `最近 ${replyOutputs.length} 条回复`],
   ];
   el.innerHTML = cards.map(([label, value, detail]) => `
     <article class="summary reply-summary-card">
@@ -1294,21 +1426,19 @@ function replyOutputSort(a, b) {
   return Number(b.id || 0) - Number(a.id || 0);
 }
 
-function replyOutputCard(output) {
-  const textId = `output-${output.id}`;
+function replyRecordCard(output) {
   const content = output.edited_output || output.display_text || "";
-  const preview = textPreview(content || "暂无回复内容", 112);
+  const preview = textPreview(content || "暂无回复内容", 120);
   const source = output.source || "AI回复";
   const createdAt = output.created_at || output.updated_at || "";
-  const suggestions = String(output.suggested_actions || "").trim();
   return `
-    <details class="reply-draft-card">
+    <details class="reply-draft-card reply-record-card">
       <summary class="reply-draft-summary">
         <div class="reply-draft-main">
           <div class="reply-draft-meta">
             ${aiOutputStatusBadge(output.status)}
             ${aiRiskBadge(output.risk_level)}
-            ${output.need_human_review === "Y" ? badge("需人工", "warn") : ""}
+            ${output.need_human_review === "Y" ? badge("需人工", "warn") : badge("可自动", "ok")}
             <strong>${esc(familyName(output.family_id))}</strong>
           </div>
         </div>
@@ -1322,26 +1452,17 @@ function replyOutputCard(output) {
           <section><span>家庭编号</span><strong>${esc(output.family_id)}</strong></section>
           <section><span>输出编号</span><strong>#${esc(output.id)}</strong></section>
         </div>
-        <label class="reply-editor">
-          <span>审核回复内容</span>
-          <textarea id="${textId}">${esc(content)}</textarea>
-        </label>
-        ${suggestions ? `<p class="reply-actions-hint"><strong>推荐动作</strong>${esc(suggestions)}</p>` : ""}
+        <pre>${esc(content)}</pre>
         <details class="reply-evidence">
           <summary>证据链与原始 JSON</summary>
           ${evidenceView(output)}
           <pre>${esc(output.raw_json)}</pre>
         </details>
-        <div class="actions left">
-          <button onclick="saveOutput(${output.id})">保存审核稿</button>
-          <button onclick="createTaskFromOutput(${output.id})">加入发送任务</button>
-        </div>
       </div>
     </details>
   `;
 }
 
-// 渲染最近的输出结果。
 function renderRecentOutputs() {
   $("recentOutputs").innerHTML = state.outputs.length ? state.outputs.slice(0, 6).map((item) => outputCard(item, true)).join("") : emptyState("暂无 Agent 输出", "导入聊天记录后，可先批量分析或在家庭详情中生成画像、周报和回复。");
 }
@@ -1388,18 +1509,32 @@ function renderFamilies() {
 function renderWebChat() {
   const campusText = userCampusText(state.currentUser);
   $("loginStatus").innerHTML = state.currentUser
-    ? `${userRoleBadge(state.currentUser)}<strong>${esc(state.currentUser.display_name)}</strong><p class="muted">${esc(state.currentUser.username)}${campusText ? ` · 校区：${esc(campusText)}` : ""}</p>`
-    : emptyState("请先登录控制端账号", "登录后可查看真实企微同步会话，并在会话工作台直发或生成回复。");
+    ? `<span>当前账号</span><strong>${userRoleBadge(state.currentUser)}${esc(state.currentUser.display_name || state.currentUser.username)}</strong><small>${esc(campusText || "全部校区")}</small>`
+    : `<span>当前账号</span><strong>未登录</strong><small>请先在登录页进入控制端</small>`;
   const rows = state.conversations.length ? state.conversations : state.families;
-  $("chatConversations").innerHTML = rows.length ? rows.map((item) => `
+  const list = rows.length ? rows.map((item) => `
     <button class="list-item ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}" onclick="selectChat('${esc(item.family_id)}')">
       <strong>${esc(item.parent_nickname || item.family_id)}</strong>
       <span>${esc(item.child_grade || "未知年级")} · ${esc(item.message_count || 0)} 条 · ${esc(item.last_speaker || "")}</span>
       <small>${esc(item.last_message || "")}</small>
     </button>
   `).join("") : emptyState("暂无会话", "请先同步企业微信会话，或导入真实聊天记录。");
+  $("chatConversations").innerHTML = list;
+  renderChatConversationSelect(rows);
   renderChatMessages();
-  renderChatOutputs();
+}
+
+function renderChatConversationSelect(rows) {
+  const select = $("chatConversationSelect");
+  if (!select) return;
+  select.disabled = !rows.length;
+  select.innerHTML = rows.length
+    ? rows.map((item) => {
+      const count = Number(item.message_count || 0);
+      const label = `${item.parent_nickname || item.family_id}${count ? ` · ${count}条` : ""}`;
+      return `<option value="${esc(item.family_id)}" ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}>${esc(label)}</option>`;
+    }).join("")
+    : `<option value="">暂无会话</option>`;
 }
 
 function renderChatSendHint(family) {
@@ -1448,22 +1583,24 @@ function renderChatMessages() {
   $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.campus_name || "未分配校区"} · ${family.coach_name || "未分配"}` : "";
   renderChatSendHint(family);
   if (!state.selectedChatFamilyId) {
-    $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧选择一个家庭后，这里会展示聊天上下文。");
+    $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从顶部下拉框选择一个企微会话后，这里会展示聊天上下文。");
     return;
   }
   $("chatMessages").innerHTML = state.chatMessages.length ? state.chatMessages.map((msg) => {
-    const isCoach = (msg.speaker || "").includes("老师") || (state.currentUser?.display_name && msg.speaker === state.currentUser.display_name && state.currentUser.role === "coach");
+    const kind = chatMessageKind(msg);
     return `
-      <div class="bubble ${isCoach ? "coach" : "parent"}">
-        <strong>${esc(msg.speaker)}</strong>
-        <p>${esc(msg.content)}</p>
-        <span>${esc(msg.message_time || "")}</span>
-      </div>
+      <article class="chat-message-row ${kind.className}">
+        <span class="chat-message-kind">${esc(kind.label)}</span>
+        <strong class="chat-message-speaker">${esc(msg.speaker || "未知")}</strong>
+        <p class="chat-message-content">${esc(msg.content)}</p>
+        <time class="chat-message-time">${esc(formatChatTime(msg.message_time))}</time>
+      </article>
     `;
   }).join("") : emptyState("暂无消息", "当前会话还没有聊天记录，可以发送一条测试消息或同步企微。");
 }
 
 function renderChatOutputs() {
+  if (!$("chatAiOutputs")) return;
   if (!state.selectedChatFamilyId) {
     $("chatAiOutputs").innerHTML = emptyState("请选择会话", "选择会话后，可以快速生成回复、审核并发送。");
     return;
@@ -1519,6 +1656,30 @@ function renderChatOutputs() {
   `;
 }
 
+function chatMessageKind(msg) {
+  const source = String(msg.source || "");
+  const speaker = String(msg.speaker || "");
+  const text = `${source} ${speaker}`;
+  const isAi = /AI|Agent|智能|机器人|ai_reply|网页通讯发送任务/i.test(text);
+  return isAi ? { label: "AI", className: "ai" } : { label: "真人", className: "human" };
+}
+
+function formatChatTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+  return raw.replace("T", " ").slice(0, 16);
+}
+
 async function selectChat(familyId) {
   return withAction("切换会话", async () => {
     state.selectedChatFamilyId = familyId;
@@ -1527,6 +1688,11 @@ async function selectChat(familyId) {
     renderWebChat();
   });
 }
+
+if ($("chatConversationSelect")) $("chatConversationSelect").onchange = async (event) => {
+  const familyId = event.target.value;
+  if (familyId) await selectChat(familyId);
+};
 
 // 渲染企微会话登记和同步检查页。
 function renderWecomPage() {
@@ -1693,36 +1859,25 @@ function renderReplyPage() {
   const replyOutputs = state.outputs
     .filter((item) => item.agent_type === "ai_reply")
     .sort(replyOutputSort);
-  const pendingByFamily = replyOutputs.reduce((acc, item) => {
-    if (item.status === "needs_review") acc[item.family_id] = (acc[item.family_id] || 0) + 1;
-    return acc;
-  }, {});
-  $("replyFamilySelect").innerHTML = optionList(state.selectedFamilyId);
-  $("replyFamilies").innerHTML = state.families.length ? state.families.map((family) => `
-    <button class="list-item ${family.family_id === state.selectedFamilyId ? "selected" : ""}" onclick="prepareReply('${esc(family.family_id)}', false)">
-      <strong>${esc(family.parent_nickname || family.family_id)}</strong>
-      <span>${esc(family.message_count)} 条消息</span>
-      <small>${esc(pendingByFamily[family.family_id] || 0)} 条待审回复</small>
-    </button>
-  `).join("") : emptyState("暂无家庭", "请先导入家庭数据或登记企微会话。");
+  renderReplyAgentConfig(replyOutputs);
   renderReplyMetrics(replyOutputs);
-  renderReplyContext();
-  const replyRows = replyOutputs.slice(0, 20).map((item) => replyOutputCard(item)).join("");
+  const replyRows = replyOutputs.slice(0, 20).map((item) => replyRecordCard(item)).join("");
   $("replyOutputs").innerHTML = replyRows
     ? `<div class="reply-draft-list">
         <div class="reply-draft-header">
           <span>状态 / 家庭</span>
-          <span>内容预览</span>
+          <span>回复预览</span>
           <span>时间</span>
           <span>详情</span>
         </div>
         ${replyRows}
       </div>`
-    : emptyState("暂无回复建议", "选择家庭并点击生成回复后，建议会进入这里等待审核。");
+    : emptyState("暂无自动回复记录", "开启自动 AI 回复并同步企微消息后，这里会展示最近生成和入队情况。");
 }
 
 // 渲染回复上下文。
 async function renderReplyContext() {
+  if (!$("replyContext")) return;
   if (!state.selectedFamilyId) {
     $("replyContext").innerHTML = emptyState("请选择家庭", "选择家庭后会展示最近 10 条聊天上下文。");
     return;
@@ -1969,7 +2124,7 @@ async function refreshAll() {
   return withAction("刷新数据", async () => {
     if (isInitialDataEmpty()) renderGlobalLoading();
     const adminOnly = isAdminUser();
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval] = await Promise.all([
+    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval, replyAgentConfig] = await Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
@@ -1990,8 +2145,9 @@ async function refreshAll() {
       adminOnly ? safeApi("/api/ark-config", {}) : Promise.resolve({}),
       adminOnly ? api("/api/import/templates") : Promise.resolve([]),
       adminOnly ? api("/api/agent/evaluations/run", { method: "POST" }) : Promise.resolve({}),
+      safeApi("/api/agent/reply-config", DEFAULT_REPLY_AGENT_CONFIG),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval });
+    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval, replyAgentConfig });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
     if (state.selectedChatFamilyId) {
@@ -2051,6 +2207,36 @@ async function batchAgent(kind) {
   });
 }
 
+async function saveReplyAgentConfig(event) {
+  event.preventDefault();
+  const form = event.target;
+  const data = new FormData(form);
+  const payload = {
+    auto_reply_enabled: data.has("auto_reply_enabled"),
+    auto_create_send_task: data.has("auto_create_send_task"),
+    send_mode: data.get("send_mode") || "dry_run",
+    tone: data.get("tone") || "standard",
+    reply_agent: data.get("reply_agent") || "ai_reply_agent",
+    high_risk_policy: data.get("high_risk_policy") || "manual",
+    skip_recent_hours: Number(data.get("skip_recent_hours") || 0),
+    max_batch: Number(data.get("max_batch") || 200),
+    enabled_agents: data.getAll("enabled_agents"),
+  };
+  if (payload.auto_reply_enabled && payload.send_mode === "real_send") {
+    const ok = confirm("你正在开启真实发送队列：低风险 AI 回复会自动进入企微真实发送链路，仍受设备白名单和安全词拦截。确认保存吗？");
+    if (!ok) return;
+  }
+  return withAction("保存自动回复配置", async () => {
+    state.replyAgentConfig = await api("/api/agent/reply-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    toast(payload.auto_reply_enabled ? "自动 AI 回复已开启" : "自动 AI 回复已关闭");
+    renderReplyPage();
+  });
+}
+
 async function autoDraftReplies() {
   return withAction("自动生成待审回复", async () => {
     if (!confirm("将为当前可访问家庭批量生成 AI 待审草稿；不会创建发送任务，也不会触发企业微信发送。继续吗？")) return;
@@ -2075,14 +2261,14 @@ function prepareReply(familyId, goTab = true) {
 // 运行回复代理。
 async function runReplyAgent(tone) {
   return withAction("生成回复", async () => {
-    const familyId = $("replyFamilySelect").value || state.selectedFamilyId;
+    const familyId = $("replyFamilySelect")?.value || state.selectedFamilyId;
     state.selectedFamilyId = familyId;
     await api("/api/agent/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ family_id: familyId, message: $("replyMessage").value, tone, source: `AI回复-${tone}` }),
+      body: JSON.stringify({ family_id: familyId, message: $("replyMessage")?.value || "", tone, source: `AI回复-${tone}` }),
     });
-    $("replyMessage").value = "";
+    if ($("replyMessage")) $("replyMessage").value = "";
     toast("回复建议已生成");
     await refreshAll();
     switchTab("replies");
@@ -2372,10 +2558,12 @@ $("familySelect").onchange = (event) => {
 };
 
 // 处理回复家庭选择变化。
-$("replyFamilySelect").onchange = (event) => {
-  state.selectedFamilyId = event.target.value;
-  renderReplyPage();
-};
+if ($("replyFamilySelect")) {
+  $("replyFamilySelect").onchange = (event) => {
+    state.selectedFamilyId = event.target.value;
+    renderReplyPage();
+  };
+}
 
 // 生成所有数据。
 $("generateBtn").onclick = async () => {
@@ -2788,8 +2976,8 @@ if ($("accountSettingsForm")) $("accountSettingsForm").onsubmit = async (event) 
   });
 };
 
-// 网页通讯登录。
-$("loginForm").onsubmit = async (event) => {
+// 兼容旧版网页通讯登录入口；当前陪跑会话页不再内置登录表单。
+if ($("loginForm")) $("loginForm").onsubmit = async (event) => {
   event.preventDefault();
   await withAction("登录", async () => {
     const data = Object.fromEntries(new FormData(event.target).entries());
@@ -2811,8 +2999,8 @@ $("loginForm").onsubmit = async (event) => {
   });
 };
 
-// 网页通讯注册。
-$("registerForm").onsubmit = async (event) => {
+// 兼容旧版网页通讯注册入口；控制端账号在登录页/账号管理中提前配置。
+if ($("registerForm")) $("registerForm").onsubmit = async (event) => {
   event.preventDefault();
   await withAction("注册账号", async () => {
     const data = Object.fromEntries(new FormData(event.target).entries());
@@ -2869,7 +3057,7 @@ if ($("chatLocalOnlyBtn")) $("chatLocalOnlyBtn").onclick = async () => {
 };
 
 // 对当前会话快速生成可审核回复，只调用一次大模型。
-$("chatReplyBtn").onclick = async () => {
+if ($("chatReplyBtn")) $("chatReplyBtn").onclick = async () => {
   await withAction("快速生成回复", async () => {
     if (!state.selectedChatFamilyId) return toast("请先选择会话");
     const res = await api("/api/test-chat/reply", {
@@ -2884,7 +3072,7 @@ $("chatReplyBtn").onclick = async () => {
 };
 
 // 对当前会话完整生成画像和回复，适合首次建档或阶段复盘。
-$("chatFullAiBtn").onclick = async () => {
+if ($("chatFullAiBtn")) $("chatFullAiBtn").onclick = async () => {
   await withAction("完整分析", async () => {
     if (!state.selectedChatFamilyId) return toast("请先选择会话");
     const res = await api("/api/test-chat/ai", {

@@ -177,7 +177,7 @@ def _context_payload(context: dict, extra: dict | None = None) -> dict:
 # 统一 Ark 返回格式，保证后续保存逻辑只处理同一种结构。
 def _normalize_result(raw: dict, display_text: str, fallback_risk: str = "低", fallback_review: bool = True, actions: list[str] | None = None) -> dict:
     risk_level = str(raw.get("风险等级") or raw.get("risk_level") or fallback_risk)
-    need_review = _bool_value(raw.get("是否需要人工介入", raw.get("need_human_review", fallback_review)))
+    need_review = _bool_value(raw.get("是否需要人工介入", raw.get("是否建议人工介入", raw.get("need_human_review", fallback_review))))
     suggested_actions = _safe_list(raw.get("建议跟进动作") or raw.get("推荐下一步动作") or raw.get("suggested_actions") or actions)
     return {
         "raw": raw,
@@ -347,7 +347,7 @@ def run_reply_agent_service(context: dict, message: str = "", tone: str = "stand
         return _normalize_result(
             ark_raw,
             str(ark_raw.get("推荐回复", "")),
-            fallback_review=True,
+            fallback_review=False,
             actions=_safe_list(ark_raw.get("推荐下一步动作")),
         )
 
@@ -381,7 +381,7 @@ def run_reply_agent_service(context: dict, message: str = "", tone: str = "stand
     }
     if ark_raw and "_ark_error" in ark_raw:
         data["豆包API调用失败"] = ark_raw["_ark_error"]
-    return {"raw": data, "display_text": reply, "risk_level": risk_level, "need_human_review": True, "suggested_actions": data["推荐下一步动作"]}
+    return {"raw": data, "display_text": reply, "risk_level": risk_level, "need_human_review": need_human, "suggested_actions": data["推荐下一步动作"]}
 
 
 def run_quick_reply_agent_service(context: dict, message: str = "", tone: str = "standard") -> dict:
@@ -422,7 +422,7 @@ def run_quick_reply_agent_service(context: dict, message: str = "", tone: str = 
             ark_raw,
             str(ark_raw.get("推荐回复", "")),
             fallback_risk=risk_level,
-            fallback_review=True,
+            fallback_review=False,
             actions=_safe_list(ark_raw.get("推荐下一步动作")),
         )
 
@@ -445,7 +445,7 @@ def run_quick_reply_agent_service(context: dict, message: str = "", tone: str = 
     }
     if ark_raw and "_ark_error" in ark_raw:
         data["豆包API调用失败"] = ark_raw["_ark_error"]
-    return {"raw": data, "display_text": reply, "risk_level": risk_level, "need_human_review": True, "suggested_actions": data["推荐下一步动作"]}
+    return {"raw": data, "display_text": reply, "risk_level": risk_level, "need_human_review": need_human, "suggested_actions": data["推荐下一步动作"]}
 
 
 # 打卡/PBL Agent：识别完成率、未完成项和提醒话术。

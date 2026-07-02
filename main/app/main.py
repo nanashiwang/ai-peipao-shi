@@ -102,6 +102,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path(__file__).resolve().parent / "static"
 SEND_SCREENSHOT_DIR = ROOT / "data" / "send_screenshots"
 BACKUP_DIR = ROOT / "data" / "backups"
+REPLY_AGENT_CONFIG_PATH = ROOT / "config" / "reply_agents.json"
 MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
@@ -111,6 +112,24 @@ WEEKLY_REPORT_SCENE = "周报发送"
 CONVERSATION_CHECK_SCENE = "会话可读校验"
 CONVERSATION_CHECK_CONTENT = "只读校验：打开目标会话并读取可见消息，不粘贴不发送。"
 REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX = "真实发送前置校验："
+
+REPLY_AGENT_OPTIONS = [
+    {"key": "context_agent", "name": "上下文 Agent", "description": "读取家庭画像、最近聊天、周报和话术模板"},
+    {"key": "scene_agent", "name": "场景识别 Agent", "description": "识别请假、催打卡、投诉、续费等回复场景"},
+    {"key": "reply_agent", "name": "回复生成 Agent", "description": "生成可直接进入发送队列的家长回复"},
+    {"key": "safety_agent", "name": "安全兜底 Agent", "description": "命中高风险、投诉、退费等内容时转人工"},
+]
+REPLY_AGENT_DEFAULT_CONFIG = {
+    "auto_reply_enabled": False,
+    "auto_create_send_task": True,
+    "send_mode": "dry_run",
+    "tone": "standard",
+    "reply_agent": "ai_reply_agent",
+    "enabled_agents": [item["key"] for item in REPLY_AGENT_OPTIONS],
+    "high_risk_policy": "manual",
+    "skip_recent_hours": 8,
+    "max_batch": 200,
+}
 
 # 应用实例和 CORS 配置，便于本地前端直接访问。
 app = FastAPI(title="重庆机构陪跑师效率系统 MVP", version="0.1.0")
@@ -271,6 +290,18 @@ class ArkConfigIn(BaseModel):
     api_key: str
     endpoint_id: str = "qwen-vl-plus"
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+class ReplyAgentConfigIn(BaseModel):
+    auto_reply_enabled: bool = False
+    auto_create_send_task: bool = True
+    send_mode: str = "dry_run"
+    tone: str = "standard"
+    reply_agent: str = "ai_reply_agent"
+    enabled_agents: list[str] = Field(default_factory=lambda: ["context_agent", "scene_agent", "reply_agent", "safety_agent"])
+    high_risk_policy: str = "manual"
+    skip_recent_hours: int = 8
+    max_batch: int = 200
 
 
 # RPA 同步会话里的单条消息结构。
@@ -826,6 +857,86 @@ def validate_send_mode(send_mode: str) -> str:
     if mode not in {"dry_run", "real_send"}:
         raise HTTPException(400, "send_mode 只能是 dry_run 或 real_send")
     return mode
+
+
+def normalize_reply_agent_config(data: dict | None = None) -> dict:
+    raw = {**REPLY_AGENT_DEFAULT_CONFIG, **(data or {})}
+
+    def bounded_int(key: str, default: int, low: int, high: int) -> int:
+        try:
+            value = int(raw.get(key) if raw.get(key) is not None else default)
+        except (TypeError, ValueError):
+            value = default
+        return min(max(value, low), high)
+
+    option_keys = {item["key"] for item in REPLY_AGENT_OPTIONS}
+    enabled_agents = raw.get("enabled_agents")
+    if not isinstance(enabled_agents, list):
+        enabled_agents = REPLY_AGENT_DEFAULT_CONFIG["enabled_agents"]
+    enabled_agents = [str(item) for item in enabled_agents if str(item) in option_keys]
+    if not enabled_agents:
+        enabled_agents = ["reply_agent", "safety_agent"]
+    tone = str(raw.get("tone") or "standard").strip()
+    if tone not in {"standard", "gentle", "short"}:
+        tone = "standard"
+    send_mode = str(raw.get("send_mode") or "dry_run").strip()
+    if send_mode not in {"dry_run", "real_send"}:
+        send_mode = "dry_run"
+    high_risk_policy = str(raw.get("high_risk_policy") or "manual").strip()
+    if high_risk_policy not in {"manual", "create_task"}:
+        high_risk_policy = "manual"
+    reply_agent = str(raw.get("reply_agent") or "ai_reply_agent").strip()
+    if reply_agent not in {"ai_reply_agent", "quick_reply_agent"}:
+        reply_agent = "ai_reply_agent"
+    return {
+        "auto_reply_enabled": bool(raw.get("auto_reply_enabled")),
+        "auto_create_send_task": bool(raw.get("auto_create_send_task")),
+        "send_mode": send_mode,
+        "tone": tone,
+        "reply_agent": reply_agent,
+        "enabled_agents": enabled_agents,
+        "high_risk_policy": high_risk_policy,
+        "skip_recent_hours": bounded_int("skip_recent_hours", 8, 0, 168),
+        "max_batch": bounded_int("max_batch", 200, 1, 500),
+    }
+
+
+def read_reply_agent_config() -> dict:
+    if not REPLY_AGENT_CONFIG_PATH.exists():
+        return normalize_reply_agent_config()
+    try:
+        data = json.loads(REPLY_AGENT_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return normalize_reply_agent_config()
+    return normalize_reply_agent_config(data)
+
+
+def reply_agent_config_view(config: dict | None = None) -> dict:
+    data = normalize_reply_agent_config(config or read_reply_agent_config())
+    return {**data, "available_agents": REPLY_AGENT_OPTIONS}
+
+
+def write_reply_agent_config(config: dict) -> dict:
+    data = normalize_reply_agent_config(config)
+    REPLY_AGENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REPLY_AGENT_CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return data
+
+
+def has_recent_reply_output(db: Session, family_id: str, hours: int) -> bool:
+    if hours <= 0:
+        return False
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    return (
+        db.query(AIOutput)
+        .filter(
+            AIOutput.family_id == family_id,
+            AIOutput.agent_type == "ai_reply",
+            AIOutput.created_at >= cutoff,
+        )
+        .first()
+        is not None
+    )
 
 
 def validate_send_task_execution_guard(task: SendTask, now: datetime | None = None, reference_time: datetime | None = None) -> str:
@@ -3523,6 +3634,16 @@ def run_weekly_report_agent(payload: AgentRequest, request: Request = None, db: 
 
 
 # 回复 Agent 接口。
+@app.get("/api/agent/reply-config")
+def get_reply_agent_config():
+    return reply_agent_config_view()
+
+
+@app.post("/api/agent/reply-config")
+def save_reply_agent_config(payload: ReplyAgentConfigIn):
+    return reply_agent_config_view(write_reply_agent_config(payload.model_dump()))
+
+
 @app.post("/api/agent/replies/auto-draft")
 def auto_draft_replies(payload: AutoReplyDraftIn | None = None, request: Request = None, db: Session = Depends(get_db)):
     data = payload or AutoReplyDraftIn()
@@ -3679,22 +3800,56 @@ def sync_conversation_payload(
     ai_output = None
     task = None
     generated_outputs = []
-    if payload.auto_generate_reply and latest_parent_message and inserted > 0:
+    auto_reply_note = ""
+    reply_config = read_reply_agent_config()
+    auto_reply_enabled = (
+        payload.auto_generate_reply
+        and reply_config["auto_reply_enabled"]
+        and "reply_agent" in reply_config["enabled_agents"]
+    )
+    if auto_reply_enabled and latest_parent_message and inserted > 0:
         db.flush()
-        context = build_agent_context(db, family_id)
-        result = run_reply_agent_service(context, latest_parent_message, "standard")
-        ai_output = save_ai_output(db, family_id, "ai_reply", f"{source_prefix}：{payload.target_name}", result)
-        generated_outputs.append(ai_output)
-        if payload.auto_create_reply_task:
-            task = SendTask(
-                family_id=family_id,
-                target_name=payload.target_name,
-                scene=result["raw"].get("场景类型", "企微AI回复"),
-                content=result["display_text"],
-                status="pending",
-            )
-            ai_output.status = "task_created"
-            add_send_task_with_audit(db, task, "create", actor, f"企微会话「{payload.target_name}」自动生成回复任务")
+        if has_recent_reply_output(db, family_id, reply_config["skip_recent_hours"]):
+            auto_reply_note = f"已跳过自动回复：{reply_config['skip_recent_hours']} 小时内已有回复记录"
+        else:
+            context = build_agent_context(db, family_id)
+            if reply_config["reply_agent"] == "quick_reply_agent":
+                result = run_quick_reply_agent_service(context, latest_parent_message, reply_config["tone"])
+            else:
+                result = run_reply_agent_service(context, latest_parent_message, reply_config["tone"])
+            ai_output = save_ai_output(db, family_id, "ai_reply", f"{source_prefix}：{payload.target_name}", result)
+            generated_outputs.append(ai_output)
+            manual_required = ai_output.need_human_review == "Y" or ai_output.risk_level == "高"
+            if not manual_required:
+                ai_output.status = "approved"
+            if reply_config["auto_create_send_task"]:
+                if manual_required and reply_config["high_risk_policy"] == "manual":
+                    auto_reply_note = "已生成回复但命中人工介入策略，未自动加入发送任务"
+                else:
+                    try:
+                        content = validate_send_task_content(result["display_text"])
+                        send_mode = validate_send_mode(reply_config["send_mode"])
+                        if send_mode == "real_send":
+                            device_id = resolve_real_send_device_binding(db, "", payload.target_name)
+                            validate_real_send_device_binding(device_id)
+                            validate_real_send_risk(db, payload.target_name, content)
+                        else:
+                            device_id = ""
+                        validate_ai_output_send_boundary(ai_output, content, send_mode)
+                        task = SendTask(
+                            family_id=family_id,
+                            target_name=payload.target_name,
+                            scene=result["raw"].get("场景类型", "企微AI回复"),
+                            content=content,
+                            device_id=device_id,
+                            send_mode=send_mode,
+                            status="pending",
+                        )
+                        ensure_real_send_readiness(db, task)
+                        ai_output.status = "task_created"
+                        add_send_task_with_audit(db, task, "create", actor, f"企微会话「{payload.target_name}」自动回复生成发送任务")
+                    except HTTPException as exc:
+                        auto_reply_note = f"自动回复已生成，但加入发送任务失败：{exc.detail}"
 
     if payload.auto_generate_all_agents:
         db.flush()
@@ -3722,6 +3877,8 @@ def sync_conversation_payload(
         "messages_inserted": inserted,
         "conversation_check": as_dict(conversation_check) if conversation_check else None,
         "ai_output": as_dict(ai_output) if ai_output else None,
+        "auto_reply_enabled": auto_reply_enabled,
+        "auto_reply_note": auto_reply_note,
         "generated_outputs": [as_dict(item) for item in generated_outputs],
         "send_task": as_dict(task) if task else None,
     }

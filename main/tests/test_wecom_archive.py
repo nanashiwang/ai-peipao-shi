@@ -107,6 +107,7 @@ class WecomArchiveTest(unittest.TestCase):
 
         with (
             patch("app.main.read_wecom_archive_config", return_value=archive_config()),
+            patch("app.main.read_reply_agent_config", return_value={"auto_reply_enabled": True, "auto_create_send_task": False, "send_mode": "dry_run", "tone": "standard", "reply_agent": "ai_reply_agent", "enabled_agents": ["reply_agent"], "high_risk_policy": "manual", "skip_recent_hours": 24, "max_batch": 200}),
             patch("app.main.run_reply_agent_service", return_value=agent_result()) as agent,
         ):
             result = sync_wecom_archive(payload, request=request, db=self.db)
