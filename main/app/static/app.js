@@ -1592,7 +1592,11 @@ function renderChatMessages() {
     $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧会话分组选择一个企微会话后，这里会展示聊天上下文。");
     return;
   }
-  if (!state.chatMessages.length) {
+  // 已入队未回写的真发任务也显示在会话里，直发后立刻有反馈，不用等设备回写。
+  const inflight = state.tasks.filter((task) => task.family_id === state.selectedChatFamilyId
+    && (task.send_mode || "") === "real_send"
+    && ["pending", "approved", "assigned"].includes(task.status));
+  if (!state.chatMessages.length && !inflight.length) {
     $("chatMessages").innerHTML = emptyState("暂无消息", "当前会话还没有聊天记录，可以发送一条测试消息或同步企微。");
     return;
   }
@@ -1610,6 +1614,16 @@ function renderChatMessages() {
         <strong class="chat-message-speaker"><em class="chat-message-kind">${esc(kind.label)}</em>${esc(msg.speaker || "未知")}</strong>
         <p class="chat-message-content">${esc(msg.content)}</p>
         <time class="chat-message-time">${esc(formatChatTime(msg.message_time))}</time>
+      </article>
+    `);
+  });
+  inflight.forEach((task) => {
+    const label = task.status === "assigned" ? "发送中" : "排队中";
+    parts.push(`
+      <article class="chat-message-row queued">
+        <strong class="chat-message-speaker"><em class="chat-message-kind">${esc(label)}</em>我</strong>
+        <p class="chat-message-content">${esc(task.content)}</p>
+        <time class="chat-message-time">${esc(formatChatTime(task.scheduled_at || task.created_at || ""))}</time>
       </article>
     `);
   });

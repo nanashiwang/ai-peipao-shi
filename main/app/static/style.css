@@ -1659,6 +1659,10 @@ summary { cursor: pointer; color: var(--muted); }
 
 .chat-message-row.ai .chat-message-kind { background: rgba(52, 104, 255, .12); color: var(--blue); }
 
+.chat-message-row.queued { background: rgba(224, 120, 0, .05); }
+.chat-message-row.queued .chat-message-kind { background: rgba(224, 120, 0, .14); color: var(--warn); }
+.chat-message-row.queued .chat-message-content { color: var(--ink-2); }
+
 .chat-message-content {
   margin: 0;
   min-width: 0;
