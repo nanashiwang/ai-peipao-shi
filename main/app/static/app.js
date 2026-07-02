@@ -732,16 +732,23 @@ function renderGlobalError(detail) {
 
 // 切换侧边栏标签页，并同步页面标题。
 let devicePollTimer = null;
+
+// 家庭管理三个子页共用侧边栏「家庭管理」入口。
+const TAB_OWNERS = { familyDetailPanel: "families", profiles: "families" };
+const TAB_TITLES = { families: "家庭管理", familyDetailPanel: "家庭档案", profiles: "AI画像" };
+
 function switchTab(tabId) {
   if (PENDING_TABS[tabId]) {
     toast(PENDING_TABS[tabId]);
     setActionStatus(PENDING_TABS[tabId]);
     return false;
   }
-  document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
+  const ownerTab = TAB_OWNERS[tabId] || tabId;
+  document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === ownerTab));
   document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
-  const active = document.querySelector(`.sidebar button[data-tab="${tabId}"]`);
-  $("pageTitle").textContent = active ? (active.dataset.title || active.textContent.trim()) : "工作台";
+  document.querySelectorAll(".subtabs button[data-tab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
+  const active = document.querySelector(`.sidebar button[data-tab="${ownerTab}"]`);
+  $("pageTitle").textContent = TAB_TITLES[tabId] || (active ? (active.dataset.title || active.textContent.trim()) : "工作台");
   // 设备页每 5 秒轮询刷新在线状态；离开则停止。
   if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
   if (tabId === "devices") {
@@ -761,6 +768,20 @@ function switchTab(tabId) {
     devicePollTimer = setInterval(poll, 5000);
   }
   return true;
+}
+
+// 切换面板内的子页签分组（系统设置、设备监控等页内二级导航）。
+function switchPanelGroup(panelId, key) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  panel.querySelectorAll(".panel-group").forEach((group) => group.classList.toggle("active", group.dataset.group === key));
+  panel.querySelectorAll(".subtabs button[data-group]").forEach((btn) => btn.classList.toggle("active", btn.dataset.group === key));
+}
+
+// 陪跑会话左侧列表按家长名/编号/最近消息过滤。
+function filterChatList(keyword) {
+  state.chatFilter = String(keyword || "");
+  renderWebChat();
 }
 
 // 生成家庭下拉框选项。
@@ -844,6 +865,24 @@ function evidenceView(output) {
 }
 
 // 顶部 KPI 卡片反映整体待办和风险状态。
+// 指标图标用内联 SVG，避免 Unicode 字形在不同系统下渲染不一致。
+const metricIcon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+
+const METRIC_ICONS = {
+  alert: metricIcon('<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+  smile: metricIcon('<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>'),
+  todo: metricIcon('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><polyline points="9 13 11 15 15 11"/>'),
+  chat: metricIcon('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+  review: metricIcon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/>'),
+  send: metricIcon('<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>'),
+  clock: metricIcon('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+  frown: metricIcon('<circle cx="12" cy="12" r="10"/><path d="M16 16s-1.5-2-4-2-4 2-4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>'),
+  flag: metricIcon('<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>'),
+  heart: metricIcon('<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>'),
+  calendarX: metricIcon('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="10" y1="14" x2="14" y2="18"/><line x1="14" y1="14" x2="10" y2="18"/>'),
+  shield: metricIcon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'),
+};
+
 function renderKpis() {
   const pendingTasks = state.tasks.filter((task) => task.status === "pending").length;
   const reviewOutputs = state.outputs.filter((item) => item.status === "needs_review").length;
@@ -864,16 +903,16 @@ function renderKpis() {
     ? (satisfactionValues.reduce((sum, value) => sum + value, 0) / satisfactionValues.length).toFixed(1)
     : "—";
   const metrics = [
-    { label: "高风险家庭", value: highRisk, unit: "户", hint: highRisk ? `今日需优先处理 ${highRisk}` : "当前无高风险", icon: "△", tone: highRisk ? "danger" : "ok" },
-    { label: "服务满意度", value: avgSatisfaction, unit: "分", hint: satisfactionValues.length ? "基于画像评级估算" : "生成画像后统计", icon: "☺", tone: "green" },
-    { label: "待跟进事项", value: todoCount || state.todayPriorities.length, unit: "项", hint: "PBL/请假/负面反馈", icon: "▣", tone: "blue" },
-    { label: "本周沟通频次", value: totalMessages, unit: "次", hint: "已归档聊天记录", icon: "▥", tone: "purple" },
-    { label: "待审核内容", value: reviewOutputs + reviewReports, unit: "条", hint: "AI 输出与周报", icon: "▤", tone: "orange" },
-    { label: "待发送任务", value: pendingTasks, unit: "条", hint: "需审核后触达", icon: "✈", tone: "sky" },
+    { label: "高风险家庭", value: highRisk, unit: "户", hint: highRisk ? `今日需优先处理 ${highRisk}` : "当前无高风险", icon: METRIC_ICONS.alert, tone: highRisk ? "danger" : "ok" },
+    { label: "服务满意度", value: avgSatisfaction, unit: "分", hint: satisfactionValues.length ? "基于画像评级估算" : "生成画像后统计", icon: METRIC_ICONS.smile, tone: "green" },
+    { label: "待跟进事项", value: todoCount || state.todayPriorities.length, unit: "项", hint: "PBL/请假/负面反馈", icon: METRIC_ICONS.todo, tone: "blue" },
+    { label: "本周沟通频次", value: totalMessages, unit: "次", hint: "已归档聊天记录", icon: METRIC_ICONS.chat, tone: "purple" },
+    { label: "待审核内容", value: reviewOutputs + reviewReports, unit: "条", hint: "AI 输出与周报", icon: METRIC_ICONS.review, tone: "orange" },
+    { label: "待发送任务", value: pendingTasks, unit: "条", hint: "需审核后触达", icon: METRIC_ICONS.send, tone: "sky" },
   ];
   $("kpis").innerHTML = metrics.map((item) => `
     <article class="kpi metric-card metric-${esc(item.tone)}">
-      <div class="metric-icon">${esc(item.icon)}</div>
+      <div class="metric-icon">${item.icon}</div>
       <div>
         <span>${esc(item.label)}</span>
         <strong>${esc(item.value)}<small>${esc(item.unit)}</small></strong>
@@ -895,16 +934,16 @@ function renderInsightCards() {
     .reduce((sum, category) => sum + Number(category.count || 0), 0);
   const riskSignals = state.profiles.filter((profile) => (profile.service_risks || "").trim()).length;
   const cards = [
-    ["长期未沟通", noContact, "超过阈值需主动触达", "◷", "blue"],
-    ["家长负面反馈", negative, "投诉/退费/不满信号", "☹", "danger"],
-    ["学生掉队提醒", dropout, "高优先级家庭", "⚑", "green"],
-    ["家长沟通风格", styles.size || "—", "画像中已识别类型", "♡", "orange"],
-    ["缺课/请假", absence, "请假补课待确认", "▦", "purple"],
-    ["家长风险信号", riskSignals, "需人工复核", "⬟", "danger"],
+    ["长期未沟通", noContact, "超过阈值需主动触达", METRIC_ICONS.clock, "blue"],
+    ["家长负面反馈", negative, "投诉/退费/不满信号", METRIC_ICONS.frown, "danger"],
+    ["学生掉队提醒", dropout, "高优先级家庭", METRIC_ICONS.flag, "green"],
+    ["家长沟通风格", styles.size || "—", "画像中已识别类型", METRIC_ICONS.heart, "orange"],
+    ["缺课/请假", absence, "请假补课待确认", METRIC_ICONS.calendarX, "purple"],
+    ["家长风险信号", riskSignals, "需人工复核", METRIC_ICONS.shield, "danger"],
   ];
   el.innerHTML = cards.map(([label, value, hint, icon, tone]) => `
     <article class="insight-card insight-${esc(tone)}">
-      <div class="metric-icon">${esc(icon)}</div>
+      <div class="metric-icon">${icon}</div>
       <div>
         <strong>${esc(label)}</strong>
         <span>${esc(value)} <small>${esc(hint)}</small></span>
@@ -1512,13 +1551,18 @@ function renderWebChat() {
     ? `<span>当前账号</span><strong>${userRoleBadge(state.currentUser)}${esc(state.currentUser.display_name || state.currentUser.username)}</strong><small>${esc(campusText || "全部校区")}</small>`
     : `<span>当前账号</span><strong>未登录</strong><small>请先在登录页进入控制端</small>`;
   const rows = state.conversations.length ? state.conversations : state.families;
-  const list = rows.length ? rows.map((item) => `
+  const keyword = String(state.chatFilter || "").trim().toLowerCase();
+  const visible = keyword
+    ? rows.filter((item) => [item.parent_nickname, item.family_id, item.last_message, item.coach_name]
+        .some((field) => String(field || "").toLowerCase().includes(keyword)))
+    : rows;
+  const list = visible.length ? visible.map((item) => `
     <button class="list-item ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}" onclick="selectChat('${esc(item.family_id)}')">
       <strong>${esc(item.parent_nickname || item.family_id)}</strong>
       <span>${esc(item.child_grade || "未知年级")} · ${esc(item.message_count || 0)} 条 · ${esc(item.last_speaker || "")}</span>
       <small>${esc(item.last_message || "")}</small>
     </button>
-  `).join("") : emptyState("暂无会话", "请先同步企业微信会话，或导入真实聊天记录。");
+  `).join("") : emptyState(keyword ? "没有匹配的会话" : "暂无会话", keyword ? "换一个关键词，或清空搜索框查看全部会话。" : "请先同步企业微信会话，或导入真实聊天记录。");
   $("chatConversations").innerHTML = list;
   renderChatMessages();
 }
@@ -1572,17 +1616,28 @@ function renderChatMessages() {
     $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧会话分组选择一个企微会话后，这里会展示聊天上下文。");
     return;
   }
-  $("chatMessages").innerHTML = state.chatMessages.length ? state.chatMessages.map((msg) => {
+  if (!state.chatMessages.length) {
+    $("chatMessages").innerHTML = emptyState("暂无消息", "当前会话还没有聊天记录，可以发送一条测试消息或同步企微。");
+    return;
+  }
+  let lastDay = "";
+  const parts = [];
+  state.chatMessages.forEach((msg) => {
+    const day = chatDayLabel(msg.message_time);
+    if (day && day !== lastDay) {
+      parts.push(`<div class="chat-date-sep"><span>${esc(day)}</span></div>`);
+      lastDay = day;
+    }
     const kind = chatMessageKind(msg);
-    return `
+    parts.push(`
       <article class="chat-message-row ${kind.className}">
-        <span class="chat-message-kind">${esc(kind.label)}</span>
-        <strong class="chat-message-speaker">${esc(msg.speaker || "未知")}</strong>
+        <strong class="chat-message-speaker"><em class="chat-message-kind">${esc(kind.label)}</em>${esc(msg.speaker || "未知")}</strong>
         <p class="chat-message-content">${esc(msg.content)}</p>
         <time class="chat-message-time">${esc(formatChatTime(msg.message_time))}</time>
       </article>
-    `;
-  }).join("") : emptyState("暂无消息", "当前会话还没有聊天记录，可以发送一条测试消息或同步企微。");
+    `);
+  });
+  $("chatMessages").innerHTML = parts.join("");
 }
 
 function renderChatOutputs() {
@@ -1650,20 +1705,29 @@ function chatMessageKind(msg) {
   return isAi ? { label: "AI", className: "ai" } : { label: "真人", className: "human" };
 }
 
+// 有日期分隔条兜底日期信息，行内时间只显示时:分。
 function formatChatTime(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   const parsed = new Date(raw);
   if (!Number.isNaN(parsed.getTime())) {
-    return parsed.toLocaleString("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
+    return parsed.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
   }
-  return raw.replace("T", " ").slice(0, 16);
+  const tail = raw.replace("T", " ").slice(11, 16);
+  return tail || raw.slice(0, 16);
+}
+
+// 消息按天分组的分隔条文案，如「06-30 周一」。
+function chatDayLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][parsed.getDay()];
+    const pad = (num) => String(num).padStart(2, "0");
+    return `${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${week}`;
+  }
+  return raw.replace("T", " ").slice(0, 10);
 }
 
 async function selectChat(familyId) {
@@ -3005,6 +3069,10 @@ $("chatForm").onsubmit = async (event) => {
     const data = Object.fromEntries(new FormData(event.target).entries());
     const content = (data.content || "").trim();
     if (!content) throw new Error("请填写发送内容");
+    const family = state.families.find((item) => item.family_id === state.selectedChatFamilyId);
+    const target = (family?.parent_nickname || state.selectedChatFamilyId).trim();
+    const ok = window.confirm(`确认将这条消息直接发送到企业微信「${target}」？\n\n${content.slice(0, 120)}${content.length > 120 ? "…" : ""}\n\n该操作跳过审核队列，由唯一负责设备执行，发送后会回读确认。`);
+    if (!ok) return;
     const res = await api(`/api/conversations/${encodeURIComponent(state.selectedChatFamilyId)}/direct-send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
