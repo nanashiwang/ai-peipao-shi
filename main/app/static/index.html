@@ -323,22 +323,24 @@
           <h2>陪跑会话</h2>
           <p class="muted">查看真实群聊上下文，人工输入后直接调用对应电脑企微发送。</p>
         </div>
-        <div class="chat-switchbar">
-          <div id="loginStatus" class="login-status compact"></div>
-          <label class="chat-conversation-switch">
-            <span>切换会话</span>
-            <select id="chatConversationSelect"></select>
-          </label>
+        <div class="actions left">
           <button type="button" onclick="refreshAll()">刷新</button>
         </div>
       </div>
       <div class="chat-shell">
+        <aside class="chat-side">
+          <div class="chat-side-head">
+            <h3>会话分组</h3>
+            <span class="muted">按企微会话切换</span>
+          </div>
+          <div id="loginStatus" class="login-status compact"></div>
+          <div id="chatConversations" class="chat-conversation-list stack"></div>
+        </aside>
         <section class="chat-main">
           <div class="section-head chat-room-head">
             <h2 id="chatTitle">请选择会话</h2>
             <span id="chatMeta" class="muted"></span>
           </div>
-          <div id="chatConversations" class="chat-conversation-list" hidden></div>
           <div id="chatMessages" class="chat-messages"></div>
           <form id="chatForm" class="chat-compose">
             <textarea name="content" rows="1" placeholder="输入要发送到当前企微会话的内容"></textarea>

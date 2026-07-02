@@ -1520,21 +1520,7 @@ function renderWebChat() {
     </button>
   `).join("") : emptyState("暂无会话", "请先同步企业微信会话，或导入真实聊天记录。");
   $("chatConversations").innerHTML = list;
-  renderChatConversationSelect(rows);
   renderChatMessages();
-}
-
-function renderChatConversationSelect(rows) {
-  const select = $("chatConversationSelect");
-  if (!select) return;
-  select.disabled = !rows.length;
-  select.innerHTML = rows.length
-    ? rows.map((item) => {
-      const count = Number(item.message_count || 0);
-      const label = `${item.parent_nickname || item.family_id}${count ? ` · ${count}条` : ""}`;
-      return `<option value="${esc(item.family_id)}" ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}>${esc(label)}</option>`;
-    }).join("")
-    : `<option value="">暂无会话</option>`;
 }
 
 function renderChatSendHint(family) {
@@ -1583,7 +1569,7 @@ function renderChatMessages() {
   $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.campus_name || "未分配校区"} · ${family.coach_name || "未分配"}` : "";
   renderChatSendHint(family);
   if (!state.selectedChatFamilyId) {
-    $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从顶部下拉框选择一个企微会话后，这里会展示聊天上下文。");
+    $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧会话分组选择一个企微会话后，这里会展示聊天上下文。");
     return;
   }
   $("chatMessages").innerHTML = state.chatMessages.length ? state.chatMessages.map((msg) => {
@@ -1688,11 +1674,6 @@ async function selectChat(familyId) {
     renderWebChat();
   });
 }
-
-if ($("chatConversationSelect")) $("chatConversationSelect").onchange = async (event) => {
-  const familyId = event.target.value;
-  if (familyId) await selectChat(familyId);
-};
 
 // 渲染企微会话登记和同步检查页。
 function renderWecomPage() {
