@@ -65,6 +65,10 @@ replace_env_key() {
   mv "$tmp" .env
 }
 
+is_ipv4() {
+  printf '%s' "$1" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'
+}
+
 ensure_env_key() {
   local key="$1"
   local value="$2"
@@ -94,6 +98,26 @@ else
 fi
 echo "  ARK 云端定位密钥改为「部署后在看板 → 系统设置 页在线配置」，这里无需填写。"
 echo "  默认 APP_ENV=pilot；正式环境请在 .env 设置 APP_ENV=production、ADMIN_USERNAME/ADMIN_PASSWORD，并通过 ARK_* 环境变量或 config/ark.json 配置模型。"
+tls_server_name="$(env_value TLS_SERVER_NAME)"
+mkdir -p config/tls
+if [ ! -s config/tls/server.crt ] || [ ! -s config/tls/server.key ]; then
+  if command -v openssl >/dev/null 2>&1; then
+    san="DNS:${tls_server_name}"
+    if is_ipv4 "$tls_server_name"; then
+      san="IP:${tls_server_name},DNS:${tls_server_name}"
+    fi
+    openssl req -x509 -newkey rsa:2048 -nodes -days 397 \
+      -subj "/CN=${tls_server_name}" \
+      -addext "subjectAltName=${san}" \
+      -keyout config/tls/server.key \
+      -out config/tls/server.crt >/dev/null 2>&1
+    chmod 600 config/tls/server.key config/tls/server.crt || true
+    echo "  已生成 TLS 自签证书（正式环境请替换为可信证书或接入域名自动签发）"
+  else
+    echo "ERROR: 缺少 openssl，无法生成 TLS 自签证书。"
+    exit 1
+  fi
+fi
 echo ""
 
 echo "== 3/5 构建并启动（api + postgres）=="

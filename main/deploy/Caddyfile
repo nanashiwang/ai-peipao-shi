@@ -1,5 +1,5 @@
-https://{$TLS_SERVER_NAME:localhost} {
-    tls internal
+:443 {
+    tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
     encode gzip
     reverse_proxy api:8000
 

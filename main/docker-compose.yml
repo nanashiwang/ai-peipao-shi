@@ -41,13 +41,12 @@ services:
   tls-proxy:
     image: caddy:2.9-alpine
     restart: unless-stopped
-    environment:
-      TLS_SERVER_NAME: ${TLS_SERVER_NAME:-localhost}
     ports:
       # 当前服务器 80/443/8443 已被其他服务占用，默认用 9443 提供加密入口。
       - "${TLS_BIND_HOST:-0.0.0.0}:${TLS_HTTPS_PORT:-9443}:443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./config/tls:/etc/caddy/certs:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
