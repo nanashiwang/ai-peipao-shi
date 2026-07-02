@@ -154,9 +154,13 @@ if [ -z "$ok" ]; then
 fi
 echo "health = ok"
 tls_port="${TLS_HTTPS_PORT:-9443}"
-tls_server_name="$(env_value TLS_SERVER_NAME)"
-if curl -kfsS --resolve "${tls_server_name}:${tls_port}:127.0.0.1" "https://${tls_server_name}:${tls_port}/health" >/dev/null 2>&1; then
-  echo "tls health = ok (https://${tls_server_name}:${tls_port})"
+tls_ok=""
+for i in $(seq 1 30); do
+  if curl -kfsS "https://127.0.0.1:${tls_port}/health" >/dev/null 2>&1; then tls_ok=1; break; fi
+  sleep 2
+done
+if [ -n "$tls_ok" ]; then
+  echo "tls health = ok (https://127.0.0.1:${tls_port})"
 else
   echo "WARN: TLS 入口健康检查未通过，请检查 tls-proxy 日志和端口占用。"
 fi
