@@ -1,0 +1,11 @@
+:443 {
+    tls internal
+    encode gzip
+    reverse_proxy api:8000
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "same-origin"
+    }
+}

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  safety-regression:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: main
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Run safety and operations tests
+        run: >
+          python -m pytest
+          tests/test_admin_auth.py
+          tests/test_runtime_config.py
+          tests/test_ark_client_config.py
+          tests/test_db_schema_compat.py
+          tests/test_db_migrations.py
+          tests/test_backup_service.py
+          tests/test_ops_health.py
+          tests/test_deploy_security.py
+          tests/test_health_probe.py
+          tests/test_frontend_security.py
+          -q
+      - name: Compile backend modules
+        run: python -m compileall app migrations deploy

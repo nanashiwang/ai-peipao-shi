@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.server.txt
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 COPY app ./app
+COPY deploy ./deploy
 COPY rpa ./rpa
 COPY samples ./samples
 COPY config/ark.example.json ./config/ark.example.json

@@ -110,7 +110,7 @@ if [ -n "$old_db_password" ]; then
     echo "  未能用历史口令连接数据库；若这是全新库可忽略，否则请手动检查 PostgreSQL 密码。"
   fi
 fi
-docker compose up -d --build --force-recreate api
+docker compose up -d --build --force-recreate api tls-proxy health-probe
 echo ""
 
 echo "== 4/5 等待后端就绪 =="
@@ -125,21 +125,29 @@ if [ -z "$ok" ]; then
   exit 1
 fi
 echo "health = ok"
+tls_port="${TLS_HTTPS_PORT:-8443}"
+if curl -kfsS "https://127.0.0.1:${tls_port}/health" >/dev/null 2>&1; then
+  echo "tls health = ok (https://127.0.0.1:${tls_port})"
+else
+  echo "WARN: TLS 入口健康检查未通过，请检查 tls-proxy 日志和端口占用。"
+fi
 echo ""
 
 echo "== 5/5 完成 =="
 docker compose ps
 echo ""
-echo "✅ 后端已就绪：http://<服务器公网IP>:8000"
+echo "✅ 后端已就绪：https://<服务器公网IP>:${tls_port}"
 echo "   - 总控看板 + 设备监控 + 接入包下载都在这个地址"
 echo "   - 【重要】首次部署后，进看板「系统设置」填入阿里 ARK 密钥（被控端云端定位需要）"
 echo "   - 被控端 config 里的 api_base_url 要填这个公网地址"
 echo ""
 echo "常用命令："
 echo "   查看日志:  docker compose logs -f api"
+echo "   查看 TLS 反代日志: docker compose logs -f tls-proxy"
+echo "   查看健康探针日志: docker compose logs -f health-probe"
 echo "   重启:      docker compose restart api"
 echo "   停止:      docker compose down"
 echo "   更新代码后重新部署:  git pull && sudo bash deploy/docker-deploy.sh"
 echo ""
-echo "提示：如需对外用 80/443 + 域名，请在前面挂一层 nginx 反代到 127.0.0.1:8000"
-echo "      （参考 deploy/nginx.yihe.site.conf）。"
+echo "提示：默认 FastAPI 明文 8000 仅监听 127.0.0.1，公网请走 TLS 入口。"
+echo "      如需标准 443 + 可信证书，请先把域名解析到服务器并释放 443，再调整 TLS_HTTPS_PORT/反代配置。"

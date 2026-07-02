@@ -1,10 +1,19 @@
+x-json-logging: &json_logging
+  driver: "json-file"
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: ${LOG_MAX_FILE:-5}
+
 services:
   api:
     build: .
     image: chongqing-coach:latest
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 默认只绑定本机，避免 FastAPI 明文端口直接暴露公网。
+      - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-8000}:8000"
+    expose:
+      - "8000"
     environment:
       APP_ENV: ${APP_ENV:-pilot}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-coach_mvp}
@@ -21,6 +30,42 @@ services:
       # 备份、发送截图等运行期数据必须落宿主机，避免容器重建后丢失。
       - ./data:/app/data
       - ./samples:/app/samples:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); sys.exit(0 if data.get('ok') else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    logging: *json_logging
+
+  tls-proxy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    ports:
+      # 当前服务器 80/443 已被其他服务占用，默认用 8443 提供加密入口。
+      - "${TLS_BIND_HOST:-0.0.0.0}:${TLS_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *json_logging
+
+  health-probe:
+    image: chongqing-coach:latest
+    restart: unless-stopped
+    command: ["python", "deploy/health_probe.py"]
+    environment:
+      HEALTH_PROBE_URL: http://api:8000/health
+      HEALTH_PROBE_INTERVAL_SECONDS: ${HEALTH_PROBE_INTERVAL_SECONDS:-60}
+      HEALTH_PROBE_TIMEOUT_SECONDS: ${HEALTH_PROBE_TIMEOUT_SECONDS:-5}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *json_logging
 
   postgres:
     image: postgres:16-alpine
@@ -36,6 +81,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    logging: *json_logging
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
