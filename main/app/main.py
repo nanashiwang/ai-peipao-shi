@@ -68,7 +68,7 @@ from app.services.admin_auth import (
     verify_admin_token,
     verify_parent_token,
 )
-from app.services.backup_service import backup_path, create_sqlite_backup, list_backups, run_restore_drill
+from app.services.backup_service import backup_path, create_backup, list_backups, run_restore_drill
 from app.services.claim_lock import apply_claim_row_lock, claim_lock_report, normalize_claim_limit
 from app.services.importer import import_rows, import_template_csv_bytes, list_import_templates, rows_from_upload
 from app.services.rate_limit import (
@@ -5423,7 +5423,7 @@ def ops_retention_prune(payload: RetentionPruneIn, db: Session = Depends(get_db)
 @app.post("/api/ops/backups")
 def ops_create_backup():
     try:
-        return create_sqlite_backup(DATABASE_URL, BACKUP_DIR, ROOT)
+        return create_backup(DATABASE_URL, BACKUP_DIR, ROOT)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc)) from exc
 

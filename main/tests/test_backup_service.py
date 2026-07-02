@@ -4,9 +4,12 @@ import unittest
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from app.services.backup_service import (
     backup_path,
+    create_backup,
+    create_postgres_backup,
     create_sqlite_backup,
     list_backups,
     run_restore_drill,
@@ -47,11 +50,13 @@ class BackupServiceTest(unittest.TestCase):
         drill = run_restore_drill(self.backup_dir / backup["filename"])
 
         self.assertEqual(backup["filename"], "coach_mvp_20260630_100000.sqlite3")
+        self.assertEqual(backup["backup_type"], "sqlite")
         self.assertEqual(backup["sensitivity"], "raw_sensitive")
         self.assertTrue(backup["contains_sensitive_data"])
         self.assertEqual([item["filename"] for item in backups], [backup["filename"]])
         self.assertTrue(backups[0]["contains_sensitive_data"])
         self.assertTrue(drill["passed"])
+        self.assertEqual(drill["backup_type"], "sqlite")
         self.assertEqual(drill["integrity"], "ok")
         self.assertEqual(drill["missing_tables"], [])
 
@@ -80,6 +85,51 @@ class BackupServiceTest(unittest.TestCase):
             sqlite_path_from_url("sqlite:///:memory:", self.base)
         with self.assertRaises(ValueError):
             sqlite_path_from_url("postgresql+psycopg://coach:coach@postgres/db", self.base)
+
+    def test_create_backup_dispatches_postgres_to_pg_dump(self):
+        database_url = "postgresql+psycopg://coach:secret@postgres:5432/coach_mvp"
+
+        def fake_run(cmd, check, env, stdout, stderr, text):
+            self.assertTrue(check)
+            self.assertTrue(text)
+            self.assertIn("--host", cmd)
+            self.assertIn("postgres", cmd)
+            self.assertIn("--username", cmd)
+            self.assertIn("coach", cmd)
+            self.assertEqual(env["PGPASSWORD"], "secret")
+            target = Path(cmd[cmd.index("--file") + 1])
+            target.write_text(
+                """
+                CREATE TABLE public.families (id integer);
+                CREATE TABLE public.raw_messages (id integer);
+                CREATE TABLE public.send_tasks (id integer);
+                CREATE TABLE public.send_logs (id integer);
+                """,
+                encoding="utf-8",
+            )
+
+        with patch("app.services.backup_service.shutil.which", return_value="/usr/bin/pg_dump"), patch(
+            "app.services.backup_service.subprocess.run", side_effect=fake_run
+        ):
+            backup = create_backup(database_url, self.backup_dir, self.base, now=datetime(2026, 6, 30, 10, 2, 0))
+
+        self.assertEqual(backup["filename"], "coach_mvp_20260630_100200.postgres.sql")
+        self.assertEqual(backup["backup_type"], "postgresql")
+        self.assertEqual([item["filename"] for item in list_backups(self.backup_dir)], [backup["filename"]])
+
+        drill = run_restore_drill(self.backup_dir / backup["filename"])
+        self.assertTrue(drill["passed"])
+        self.assertEqual(drill["backup_type"], "postgresql")
+        self.assertEqual(drill["missing_tables"], [])
+
+    def test_postgres_backup_requires_pg_dump(self):
+        with patch("app.services.backup_service.shutil.which", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                create_postgres_backup(
+                    "postgresql+psycopg://coach:secret@postgres:5432/coach_mvp",
+                    self.backup_dir,
+                    now=datetime(2026, 6, 30, 10, 3, 0),
+                )
 
 
 if __name__ == "__main__":

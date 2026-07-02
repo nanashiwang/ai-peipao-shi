@@ -1,23 +1,31 @@
-"""SQLite 数据备份与恢复演练。
+"""数据库备份与非破坏式恢复演练。
 
-基础版只做非破坏式恢复演练：创建备份、列出备份、校验备份可读和核心表存在。
+SQLite 使用在线 backup API；PostgreSQL 使用 pg_dump 生成 plain SQL。
+恢复演练不写生产库，只校验备份可读和核心表结构存在。
 """
 
+from __future__ import annotations
+
+import os
 import re
+import shutil
 import sqlite3
+import subprocess
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
 
+from sqlalchemy.engine import make_url
 
-BACKUP_RE = re.compile(r"coach_mvp_\d{8}_\d{6}\.sqlite3")
+
+BACKUP_RE = re.compile(r"coach_mvp_\d{8}_\d{6}\.(sqlite3|postgres\.sql)")
 REQUIRED_TABLES = {"families", "raw_messages", "send_tasks", "send_logs"}
 
 
 def sqlite_path_from_url(database_url: str, base_dir: Path) -> Path:
     if not database_url.startswith("sqlite:///"):
-        raise ValueError("当前仅支持 SQLite 文件数据库备份")
+        raise ValueError("当前数据库不是 SQLite")
     raw = unquote(database_url.replace("sqlite:///", "", 1))
     if raw == ":memory:":
         raise ValueError("内存数据库不支持文件备份")
@@ -25,6 +33,13 @@ def sqlite_path_from_url(database_url: str, base_dir: Path) -> Path:
     if not path.is_absolute():
         path = base_dir / path
     return path.resolve()
+
+
+def is_postgres_url(database_url: str) -> bool:
+    try:
+        return make_url(database_url).get_backend_name() == "postgresql"
+    except Exception:
+        return False
 
 
 def ensure_backup_dir(path: Path) -> Path:
@@ -61,12 +76,60 @@ def create_sqlite_backup(database_url: str, backup_dir: Path, base_dir: Path, no
     return backup_file_info(target)
 
 
+def create_postgres_backup(database_url: str, backup_dir: Path, now: datetime | None = None) -> dict:
+    url = make_url(database_url)
+    if url.get_backend_name() != "postgresql":
+        raise ValueError("当前数据库不是 PostgreSQL")
+    pg_dump = shutil.which("pg_dump")
+    if not pg_dump:
+        raise FileNotFoundError("缺少 pg_dump，请在 API 镜像中安装 postgresql-client")
+    now = now or datetime.utcnow()
+    filename = f"coach_mvp_{now.strftime('%Y%m%d_%H%M%S')}.postgres.sql"
+    target = backup_path(backup_dir, filename)
+    env = os.environ.copy()
+    if url.password:
+        env["PGPASSWORD"] = url.password
+    env.setdefault("PGCONNECT_TIMEOUT", "10")
+    cmd = [
+        pg_dump,
+        "--format=plain",
+        "--no-owner",
+        "--no-privileges",
+        "--file",
+        str(target),
+    ]
+    if url.host:
+        cmd.extend(["--host", url.host])
+    if url.port:
+        cmd.extend(["--port", str(url.port)])
+    if url.username:
+        cmd.extend(["--username", url.username])
+    if url.database:
+        cmd.extend(["--dbname", url.database])
+    try:
+        subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as exc:
+        target.unlink(missing_ok=True)
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"PostgreSQL 备份失败：{detail}") from exc
+    return backup_file_info(target)
+
+
+def create_backup(database_url: str, backup_dir: Path, base_dir: Path, now: datetime | None = None) -> dict:
+    if database_url.startswith("sqlite:///"):
+        return create_sqlite_backup(database_url, backup_dir, base_dir, now)
+    if is_postgres_url(database_url):
+        return create_postgres_backup(database_url, backup_dir, now)
+    raise ValueError("当前仅支持 SQLite 和 PostgreSQL 备份")
+
+
 def backup_file_info(path: Path) -> dict:
     stat = path.stat()
     return {
         "filename": path.name,
         "size_bytes": stat.st_size,
         "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
+        "backup_type": "postgresql" if path.name.endswith(".postgres.sql") else "sqlite",
         "sensitivity": "raw_sensitive",
         "contains_sensitive_data": True,
         "note": "原始数据库备份包含家长、孩子、聊天和发送内容，仅限管理员保存。",
@@ -82,6 +145,8 @@ def list_backups(backup_dir: Path) -> list[dict]:
 def run_restore_drill(path: Path) -> dict:
     if not path.exists() or not path.is_file():
         raise FileNotFoundError("备份文件不存在")
+    if path.name.endswith(".postgres.sql"):
+        return run_postgres_restore_drill(path)
     with closing(sqlite3.connect(str(path))) as conn:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         tables = {
@@ -92,8 +157,27 @@ def run_restore_drill(path: Path) -> dict:
     passed = integrity == "ok" and not missing
     return {
         "filename": path.name,
+        "backup_type": "sqlite",
         "passed": passed,
         "integrity": integrity,
+        "table_count": len(tables),
+        "missing_tables": missing,
+    }
+
+
+def run_postgres_restore_drill(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    tables = {
+        match.group(1)
+        for match in re.finditer(r'CREATE TABLE\s+(?:public\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?', text, re.IGNORECASE)
+    }
+    missing = sorted(REQUIRED_TABLES - tables)
+    passed = bool(text.strip()) and not missing
+    return {
+        "filename": path.name,
+        "backup_type": "postgresql",
+        "passed": passed,
+        "integrity": "plain_sql_parse_ok" if passed else "missing_core_tables",
         "table_count": len(tables),
         "missing_tables": missing,
     }
