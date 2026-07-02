@@ -107,8 +107,40 @@ function saveCurrentUser(user) {
   } else {
     localStorage.removeItem("controlUser");
     localStorage.removeItem("chatUser");
+    localStorage.removeItem(STATE_CACHE_KEY);
   }
   renderAuthState();
+}
+
+// 数据快照缓存：刷新页面时先用上次数据立即渲染（stale-while-revalidate），
+// 网络返回后静默更新，避免"页面出来了、内容还在转圈"。
+const STATE_CACHE_KEY = "stateCacheV1";
+const STATE_CACHE_FIELDS = [
+  "families", "profiles", "reports", "templates", "tasks", "logs", "outputs",
+  "conversations", "todayPriorities", "workbenchOverview", "devices", "auditLogs",
+  "serviceQuality", "importTemplates", "replyAgentConfig", "opsHealth", "backups",
+  "retention", "accounts", "arkConfig",
+];
+
+function saveStateCache() {
+  try {
+    const data = { __user: state.currentUser?.username || "" };
+    STATE_CACHE_FIELDS.forEach((key) => { data[key] = state[key]; });
+    localStorage.setItem(STATE_CACHE_KEY, JSON.stringify(data));
+  } catch { /* 存储超限或隐私模式时放弃缓存，不影响功能 */ }
+}
+
+function loadStateCache() {
+  try {
+    const data = JSON.parse(localStorage.getItem(STATE_CACHE_KEY) || "null");
+    if (!data || data.__user !== (state.currentUser?.username || "")) return false;
+    STATE_CACHE_FIELDS.forEach((key) => {
+      if (data[key] !== undefined) state[key] = data[key];
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // 顶层视图切换：landing 首页介绍 / auth 登录注册 / app 业务系统，三态互斥。
@@ -2251,40 +2283,48 @@ async function refreshAll() {
   return withAction("刷新数据", async () => {
     if (isInitialDataEmpty()) renderGlobalLoading();
     const adminOnly = isAdminUser();
-    const [families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval, replyAgentConfig] = await Promise.all([
+    // 服务器在境外、浏览器同域并发只有 6 条连接，20 个接口一次性等齐要排 3-4 轮 RTT。
+    // 拆两梯队：核心数据先到先渲染，管理/运维/配置类靠后补齐（两梯队并发，梯队一先占用连接）。
+    const corePromise = Promise.all([
       api("/api/families"),
       api("/api/profiles"),
       api("/api/reports"),
-      api("/api/templates"),
       api("/api/send-tasks"),
       api("/api/send-logs"),
-      adminOnly ? api("/api/audit-logs?entity_type=send_task&limit=200") : Promise.resolve([]),
+      api("/api/ai-outputs"),
+      api("/api/conversations"),
       api(scopedPath("/api/workbench/today-priorities", { limit: 12 })),
       api(scopedPath("/api/workbench/overview", { limit: 8 }, { includeCoach: true })),
-      adminOnly ? api(scopedPath("/api/admin/service-quality")) : Promise.resolve({}),
-      api("/api/ai-outputs"),
-      safeApi("/api/test-chat/accounts", []),
-      api("/api/conversations"),
       adminOnly ? api("/api/devices") : api("/api/conversations/send-devices"),
+    ]);
+    const restPromise = Promise.all([
+      api("/api/templates"),
+      adminOnly ? api("/api/audit-logs?entity_type=send_task&limit=200") : Promise.resolve([]),
+      adminOnly ? api(scopedPath("/api/admin/service-quality")) : Promise.resolve({}),
+      safeApi("/api/test-chat/accounts", []),
       adminOnly ? api("/api/ops/health") : Promise.resolve({}),
       adminOnly ? api("/api/ops/backups") : Promise.resolve([]),
       adminOnly ? api("/api/ops/retention") : Promise.resolve({}),
       adminOnly ? safeApi("/api/ark-config", {}) : Promise.resolve({}),
       adminOnly ? api("/api/import/templates") : Promise.resolve([]),
-      Promise.resolve(state.agentEval || {}),
       safeApi("/api/agent/reply-config", DEFAULT_REPLY_AGENT_CONFIG),
     ]);
-    Object.assign(state, { families, profiles, reports, templates, tasks, logs, auditLogs, todayPriorities, workbenchOverview, serviceQuality, outputs, accounts, conversations, devices, opsHealth, backups, retention, arkConfig, importTemplates, agentEval, replyAgentConfig });
+    const [families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices] = await corePromise;
+    Object.assign(state, { families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices });
     state.selectedFamilyId = state.selectedFamilyId || families[0]?.family_id || "";
     state.selectedChatFamilyId = state.selectedChatFamilyId || families[0]?.family_id || "";
-    if (state.selectedChatFamilyId) {
-      try {
-        state.chatMessages = await api(`/api/conversations/${encodeURIComponent(state.selectedChatFamilyId)}/messages`);
-      } catch {
-        state.chatMessages = [];
-      }
-    }
     renderAll();
+    // 会话消息与二梯队并行补齐，各自到达后局部重渲染。
+    const chatPromise = state.selectedChatFamilyId
+      ? api(`/api/conversations/${encodeURIComponent(state.selectedChatFamilyId)}/messages`)
+          .then((messages) => { state.chatMessages = messages; renderChatMessages(); })
+          .catch(() => { state.chatMessages = state.chatMessages || []; })
+      : Promise.resolve();
+    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, replyAgentConfig] = await restPromise;
+    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, replyAgentConfig });
+    renderAll();
+    await chatPromise;
+    saveStateCache();
     if (document.querySelector("#familyDetailPanel.active")) await refreshFamilyDetail();
   });
 }
@@ -3274,14 +3314,16 @@ function restoreActiveTab() {
 
 async function bootApp() {
   api("/health").then(() => $("health").textContent = "本地服务正常").catch(() => $("health").textContent = "服务异常");
-  // 本地有登录态就立即进入应用视图并恢复上次页签，数据后台加载；
-  // 否则刷新后会先闪首页、再等全部接口返回才切回来。token 失效时下面会退回登录页。
-  let restored = false;
+  // 有本地登录态：立即进应用视图，优先用上次数据快照渲染（无快照则显示加载骨架），
+  // 并且数据请求与鉴权检查并行发出，省一轮 RTT。token 失效时统一退回登录页。
+  let dataPromise = null;
   if (state.currentUser && state.currentUser.role !== "parent") {
     setAuthGateVisible(false);
-    renderGlobalLoading();
+    if (loadStateCache()) renderAll();
+    else renderGlobalLoading();
     restoreActiveTab();
-    restored = true;
+    dataPromise = refreshAll();
+    dataPromise.catch(() => {});
   }
   try {
     await refreshAuthStatus();
@@ -3296,9 +3338,13 @@ async function bootApp() {
       switchTab("parentDashboard");
       return;
     }
-    await refreshAll();
-    setAuthGateVisible(false);
-    if (!restored) restoreActiveTab();
+    if (dataPromise) {
+      await dataPromise;
+    } else {
+      await refreshAll();
+      setAuthGateVisible(false);
+      restoreActiveTab();
+    }
   } catch (err) {
     if (String(err?.message || "").includes("401")) {
       saveCurrentUser(null);

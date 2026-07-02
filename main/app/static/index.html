@@ -7,6 +7,10 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="view-landing">
+  <script>
+    // 首屏视图预判：有本地登录态就直接按应用视图渲染，避免 app.js（~150KB）加载完成前闪现首页。
+    try { if (localStorage.getItem("controlUser")) document.body.className = "view-app"; } catch (err) {}
+  </script>
   <!-- 首页：系统介绍文档，未登录默认展示；右上角进入登录/注册。 -->
   <div id="landing" class="landing">
     <header class="landing-nav">
