@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +40,7 @@ class WecomArchiveConfig:
     self_userids: set[str] | None = None
     conversation_map: dict[str, Any] | None = None
     user_map: dict[str, str] | None = None
+    auto_resolve_names: bool = True
 
 
 @dataclass
@@ -102,6 +107,7 @@ def read_wecom_archive_config() -> WecomArchiveConfig:
         self_userids=_env_set("WECOM_ARCHIVE_SELF_USERIDS"),
         conversation_map=_env_json("WECOM_ARCHIVE_CONVERSATION_MAP"),
         user_map=_env_json("WECOM_ARCHIVE_USER_MAP"),
+        auto_resolve_names=_env_bool("WECOM_ARCHIVE_AUTO_RESOLVE_NAMES", True),
     )
 
 
@@ -129,6 +135,7 @@ def config_status(config: WecomArchiveConfig | None = None) -> dict:
         "limit": cfg.limit,
         "self_userids": sorted(cfg.self_userids or []),
         "mapped_conversations": sorted((cfg.conversation_map or {}).keys()),
+        "auto_resolve_names": cfg.auto_resolve_names,
         "detail": "会话内容存档已配置" if not missing else "会话内容存档配置不完整",
     }
 
@@ -357,8 +364,87 @@ def _map_lookup(config: WecomArchiveConfig, *keys: str) -> dict:
     return {}
 
 
+_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+_USER_NAME_CACHE: dict[str, str] = {}
+_ROOM_NAME_CACHE: dict[str, str] = {}
+
+
+def _wecom_api_token(config: WecomArchiveConfig) -> str:
+    key = f"{config.corp_id}:{hashlib.sha1(config.secret.encode('utf-8')).hexdigest()[:8]}"
+    cached = _TOKEN_CACHE.get(key)
+    if cached and cached[1] > time.time() + 60:
+        return cached[0]
+    params = urllib.parse.urlencode({"corpid": config.corp_id, "corpsecret": config.secret})
+    with urllib.request.urlopen(f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?{params}", timeout=15) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if data.get("errcode") != 0:
+        return ""
+    token = str(data.get("access_token") or "")
+    if token:
+        _TOKEN_CACHE[key] = (token, time.time() + int(data.get("expires_in") or 7200))
+    return token
+
+
+def _wecom_api_get(path: str, token: str, params: dict[str, Any] | None = None) -> dict:
+    query = {"access_token": token, **(params or {})}
+    url = f"https://qyapi.weixin.qq.com/cgi-bin{path}?{urllib.parse.urlencode(query)}"
+    with urllib.request.urlopen(url, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _wecom_api_post(path: str, token: str, payload: dict[str, Any]) -> dict:
+    url = f"https://qyapi.weixin.qq.com/cgi-bin{path}?access_token={urllib.parse.quote(token)}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _auto_resolve_user_name(userid: str, config: WecomArchiveConfig) -> str:
+    clean = (userid or "").strip()
+    if not clean:
+        return ""
+    mapped = str((config.user_map or {}).get(clean) or "").strip()
+    if mapped:
+        return mapped
+    if clean in _USER_NAME_CACHE:
+        return _USER_NAME_CACHE[clean]
+    if not config.auto_resolve_names:
+        return clean
+    try:
+        token = _wecom_api_token(config)
+        data = _wecom_api_get("/user/get", token, {"userid": clean}) if token else {}
+        name = str(data.get("name") or data.get("alias") or clean).strip() if data.get("errcode") == 0 else clean
+    except Exception:
+        name = clean
+    _USER_NAME_CACHE[clean] = name
+    return name
+
+
+def _auto_resolve_room_name(roomid: str, config: WecomArchiveConfig) -> str:
+    clean = (roomid or "").strip()
+    if not clean:
+        return ""
+    if clean in _ROOM_NAME_CACHE:
+        return _ROOM_NAME_CACHE[clean]
+    if not config.auto_resolve_names:
+        return clean
+    try:
+        token = _wecom_api_token(config)
+        data = _wecom_api_post("/msgaudit/groupchat/get", token, {"roomid": clean}) if token else {}
+        name = str(data.get("roomname") or clean).strip() if data.get("errcode") == 0 else clean
+    except Exception:
+        name = clean
+    _ROOM_NAME_CACHE[clean] = name
+    return name
+
+
 def _display_user(userid: str, config: WecomArchiveConfig) -> str:
-    return str((config.user_map or {}).get(userid) or userid)
+    return _auto_resolve_user_name(userid, config)
 
 
 def _conversation_key(message: dict[str, Any]) -> str:
@@ -367,6 +453,29 @@ def _conversation_key(message: dict[str, Any]) -> str:
         return roomid
     users = [str(message.get("from") or "").strip(), *[str(x).strip() for x in (message.get("tolist") or [])]]
     return "|".join(sorted(x for x in users if x))
+
+
+def _private_chat_target_name(participants: list[str], sender: str, config: WecomArchiveConfig, conv_key: str) -> str:
+    self_userids = config.self_userids or set()
+    others = [item for item in participants if item and item not in self_userids]
+    if len(others) == 1:
+        return _display_user(others[0], config)
+    if self_userids and others:
+        return " / ".join(_display_user(item, config) for item in others)
+    if len(participants) == 1:
+        return _display_user(participants[0], config)
+    return " / ".join(_display_user(item, config) for item in participants) or conv_key
+
+
+def _archive_family_id(roomid: str, conv_key: str, target_name: str, mapping: dict) -> str:
+    if mapping.get("family_id"):
+        return str(mapping["family_id"]).strip()[:64]
+    if mapping.get("target_name") and target_name:
+        return f"WECOM_{target_name}"[:64]
+    if roomid:
+        return f"WECOM_{roomid}"[:64]
+    digest = hashlib.sha1(conv_key.encode("utf-8")).hexdigest()[:16]
+    return f"WECOM_DM_{digest}"
 
 
 def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveConfig | None = None) -> NormalizedArchiveMessage | None:
@@ -378,6 +487,7 @@ def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveCon
 
     sender = str(message.get("from") or "").strip()
     tolist = [str(item).strip() for item in (message.get("tolist") or []) if str(item).strip()]
+    participants = sorted({item for item in [sender, *tolist] if item})
     roomid = str(message.get("roomid") or "").strip()
     conv_key = _conversation_key(message)
     mapping = _map_lookup(cfg, roomid, conv_key, sender, *(tolist or []))
@@ -388,11 +498,10 @@ def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveCon
     if mapping.get("target_name"):
         target_name = str(mapping["target_name"]).strip()
     elif roomid:
-        target_name = roomid
+        target_name = _auto_resolve_room_name(roomid, cfg)
     else:
-        other = next((item for item in [sender, *tolist] if item and item not in self_userids), sender or conv_key)
-        target_name = _display_user(other, cfg)
-    family_id = str(mapping.get("family_id") or f"WECOM_{target_name}").strip()
+        target_name = _private_chat_target_name(participants, sender, cfg, conv_key)
+    family_id = _archive_family_id(roomid, conv_key, target_name, mapping)
 
     msgid = envelope.msgid or str(message.get("msgid") or "")
     return NormalizedArchiveMessage(

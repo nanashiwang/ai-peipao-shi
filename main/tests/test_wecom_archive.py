@@ -1,3 +1,4 @@
+import hashlib
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,10 +22,11 @@ def archive_config() -> WecomArchiveConfig:
         sdk_path="",
         self_userids={"coach-a"},
         conversation_map={
-            "parent-a|coach-a": {"target_name": "许宝月", "family_id": "WECOM_许宝月"},
+            "coach-a|parent-a": {"target_name": "许宝月", "family_id": "WECOM_许宝月"},
             "room-1": {"target_name": "一合学社", "family_id": "WECOM_一合学社"},
         },
         user_map={"parent-a": "许宝月", "coach-a": "我"},
+        auto_resolve_names=False,
     )
 
 
@@ -87,6 +89,151 @@ class WecomArchiveTest(unittest.TestCase):
         self.assertEqual(item.speaker, "许宝月")
         self.assertEqual(item.external_id, "wecom_archive:msg-1")
         self.assertTrue(item.latest_inbound)
+
+    def test_auto_resolves_group_archive_name_without_manual_mapping(self):
+        cfg = WecomArchiveConfig(
+            enabled=True,
+            corp_id="corp-test",
+            secret="secret",
+            private_key="private-key",
+            private_key_path="",
+            sdk_path="",
+            self_userids={"coach-a"},
+            conversation_map={},
+            user_map={"parent-a": "许宝月", "coach-a": "我"},
+        )
+
+        with patch("app.services.wecom_archive._auto_resolve_room_name", return_value="一合学社") as resolver:
+            item = normalize_archive_message(
+                ArchiveEnvelope(
+                    seq=8,
+                    msgid="msg-room-1",
+                    raw={},
+                    decrypted={
+                        "msgid": "msg-room-1",
+                        "from": "parent-a",
+                        "tolist": ["coach-a"],
+                        "roomid": "room-1",
+                        "msgtime": 1782850000000,
+                        "msgtype": "text",
+                        "text": {"content": "群里测试"},
+                    },
+                ),
+                cfg,
+            )
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item.target_name, "一合学社")
+        self.assertEqual(item.family_id, "WECOM_room-1")
+        resolver.assert_called_once_with("room-1", cfg)
+
+    def test_private_archive_uses_one_thread_for_both_directions(self):
+        cfg = WecomArchiveConfig(
+            enabled=True,
+            corp_id="corp-test",
+            secret="secret",
+            private_key="private-key",
+            private_key_path="",
+            sdk_path="",
+            self_userids={"coach-a"},
+            conversation_map={},
+            user_map={"parent-a": "许宝月", "coach-a": "我"},
+            auto_resolve_names=False,
+        )
+        expected_family_id = f"WECOM_DM_{hashlib.sha1('coach-a|parent-a'.encode('utf-8')).hexdigest()[:16]}"
+
+        inbound = normalize_archive_message(
+            ArchiveEnvelope(
+                seq=9,
+                msgid="msg-private-in",
+                raw={},
+                decrypted={
+                    "msgid": "msg-private-in",
+                    "from": "parent-a",
+                    "tolist": ["coach-a"],
+                    "msgtime": 1782850000000,
+                    "msgtype": "text",
+                    "text": {"content": "老师在吗"},
+                },
+            ),
+            cfg,
+        )
+        outbound = normalize_archive_message(
+            ArchiveEnvelope(
+                seq=10,
+                msgid="msg-private-out",
+                raw={},
+                decrypted={
+                    "msgid": "msg-private-out",
+                    "from": "coach-a",
+                    "tolist": ["parent-a"],
+                    "msgtime": 1782850001000,
+                    "msgtype": "text",
+                    "text": {"content": "我在，马上看。"},
+                },
+            ),
+            cfg,
+        )
+
+        self.assertEqual(inbound.target_name, "许宝月")
+        self.assertEqual(outbound.target_name, "许宝月")
+        self.assertEqual(inbound.family_id, expected_family_id)
+        self.assertEqual(outbound.family_id, expected_family_id)
+        self.assertEqual(inbound.speaker, "许宝月")
+        self.assertEqual(outbound.speaker, "我")
+        self.assertTrue(inbound.latest_inbound)
+        self.assertFalse(outbound.latest_inbound)
+
+    def test_private_archive_without_self_userid_keeps_stable_participant_thread(self):
+        cfg = WecomArchiveConfig(
+            enabled=True,
+            corp_id="corp-test",
+            secret="secret",
+            private_key="private-key",
+            private_key_path="",
+            sdk_path="",
+            self_userids=set(),
+            conversation_map={},
+            user_map={"parent-a": "许宝月", "coach-a": "我"},
+            auto_resolve_names=False,
+        )
+
+        inbound = normalize_archive_message(
+            ArchiveEnvelope(
+                seq=11,
+                msgid="msg-private-no-self-in",
+                raw={},
+                decrypted={
+                    "msgid": "msg-private-no-self-in",
+                    "from": "parent-a",
+                    "tolist": ["coach-a"],
+                    "msgtime": 1782850000000,
+                    "msgtype": "text",
+                    "text": {"content": "单聊测试"},
+                },
+            ),
+            cfg,
+        )
+        outbound = normalize_archive_message(
+            ArchiveEnvelope(
+                seq=12,
+                msgid="msg-private-no-self-out",
+                raw={},
+                decrypted={
+                    "msgid": "msg-private-no-self-out",
+                    "from": "coach-a",
+                    "tolist": ["parent-a"],
+                    "msgtime": 1782850001000,
+                    "msgtype": "text",
+                    "text": {"content": "收到。"},
+                },
+            ),
+            cfg,
+        )
+
+        self.assertEqual(inbound.target_name, "我 / 许宝月")
+        self.assertEqual(outbound.target_name, "我 / 许宝月")
+        self.assertEqual(inbound.family_id, outbound.family_id)
 
     def test_sync_imports_archive_message_and_creates_reply_once(self):
         payload = WecomArchiveSyncIn(
