@@ -73,8 +73,30 @@ function authHeaders(source = {}) {
 async function api(path, options = {}) {
   const headers = authHeaders(options.headers || {});
   const res = await fetch(path, { ...options, headers });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const text = await res.text();
+    if (isTokenAuthFailure(res.status, text)) {
+      saveCurrentUser(null);
+      setAuthGateVisible(true);
+      throw new Error("登录已失效，请重新登录");
+    }
+    throw new Error(text);
+  }
   return res.json();
+}
+
+function responseDetail(text) {
+  try {
+    const parsed = JSON.parse(text || "{}");
+    return String(parsed.detail || text || "");
+  } catch {
+    return String(text || "");
+  }
+}
+
+function isTokenAuthFailure(status, text) {
+  if (status !== 401) return false;
+  return /(管理端|家长端)?\s*token\s*(无效|已过期)|请先登录/.test(responseDetail(text));
 }
 
 async function openSendArtifact(path) {
@@ -91,6 +113,30 @@ async function openSendArtifact(path) {
       link.rel = "noopener";
       link.click();
     }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  });
+}
+
+function filenameFromDisposition(header, fallback) {
+  const text = String(header || "");
+  const utf8Match = text.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) return decodeURIComponent(utf8Match[1]);
+  const plainMatch = text.match(/filename="?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1] : fallback;
+}
+
+async function downloadAuthorizedFile(path, fallbackName, label = "下载文件") {
+  return withAction(label, async () => {
+    const res = await fetch(path, { headers: authHeaders() });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filenameFromDisposition(res.headers.get("Content-Disposition"), fallbackName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   });
 }
@@ -2192,7 +2238,11 @@ function renderDevices() {
       <button ${Number(r.conversation_proof_missing_count || 0) > 0 ? "" : "disabled"} onclick="requestMissingConversationProofs('${esc(r.device_id)}')">补齐缺失</button>
       <button onclick="requestAllConversationProofs('${esc(r.device_id)}')">巡检全部</button>
     ` },
-    { label: "接入包", render: (r) => `<a class="dl-link" href="/api/devices/${encodeURIComponent(r.device_id)}/package?server_url=${encodeURIComponent(location.origin)}">下载接入包</a>` },
+    { label: "接入包", render: (r) => {
+      const id = encodeURIComponent(r.device_id);
+      const url = `/api/devices/${id}/package?server_url=${encodeURIComponent(location.origin)}`;
+      return `<button class="dl-link" data-url="${esc(url)}" data-filename="device_${esc(r.device_id)}.zip" onclick="downloadAuthorizedFile(this.dataset.url, this.dataset.filename, '下载接入包')">下载接入包</button>`;
+    } },
   ], state.devices);
 }
 
@@ -3231,7 +3281,11 @@ $("chatForm").onsubmit = async (event) => {
     });
     event.target.reset();
     toast(`已直发入队：${res.device_id} -> ${res.target_name}`);
-    await refreshAll();
+    try {
+      await refreshAll();
+    } catch (err) {
+      toast(`已直发入队，但刷新数据失败：${err?.message || err}`);
+    }
     switchTab("webChat");
   });
 };
