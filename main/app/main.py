@@ -12,6 +12,8 @@ import json
 import os
 import re
 import secrets
+import threading
+import time
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -113,6 +115,7 @@ WEEKLY_REPORT_SCENE = "周报发送"
 CONVERSATION_CHECK_SCENE = "会话可读校验"
 CONVERSATION_CHECK_CONTENT = "只读校验：打开目标会话并读取可见消息，不粘贴不发送。"
 REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX = "真实发送前置校验："
+_wecom_archive_poller_started = False
 
 REPLY_AGENT_OPTIONS = [
     {"key": "context_agent", "name": "上下文 Agent", "description": "读取家庭画像、最近聊天、周报和话术模板"},
@@ -2206,6 +2209,55 @@ def has_recent_pending_reply_draft(db: Session, family_id: str, hours: int) -> b
     )
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _wecom_archive_poll_loop(interval_seconds: int) -> None:
+    time.sleep(5)
+    while True:
+        db = next(get_db())
+        try:
+            payload = WecomArchiveSyncIn(
+                auto_generate_reply=_env_bool("WECOM_ARCHIVE_AUTO_REPLY", False),
+                auto_create_reply_task=_env_bool("WECOM_ARCHIVE_AUTO_CREATE_TASK", False),
+                auto_generate_all_agents=False,
+            )
+            result = sync_wecom_archive(payload, request=None, db=db)
+            print(
+                "wecom_archive_poll_ok "
+                f"pulled={result.get('pulled', 0)} normalized={result.get('normalized', 0)} seq={result.get('seq', 0)}"
+            )
+        except Exception as exc:
+            print(f"wecom_archive_poll_failed detail={exc}")
+        finally:
+            db.close()
+        time.sleep(interval_seconds)
+
+
+def start_wecom_archive_poller() -> None:
+    global _wecom_archive_poller_started
+    if _wecom_archive_poller_started or not _env_bool("WECOM_ARCHIVE_POLL_ENABLED", False):
+        return
+    if not wecom_archive_config_status(read_wecom_archive_config()).get("configured"):
+        return
+    interval = max(_env_int("WECOM_ARCHIVE_POLL_INTERVAL_SECONDS", 60), 10)
+    thread = threading.Thread(target=_wecom_archive_poll_loop, args=(interval,), daemon=True)
+    thread.start()
+    _wecom_archive_poller_started = True
+    print(f"wecom_archive_poller_started interval={interval}s")
+
+
 # 启动时初始化数据库并预置模板。
 @app.on_event("startup")
 def on_startup():
@@ -2218,6 +2270,7 @@ def on_startup():
         db.commit()
     finally:
         db.close()
+    start_wecom_archive_poller()
 
 
     # 首页返回静态前端页面。
@@ -4900,7 +4953,7 @@ def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
 
 # 生成某台设备的「接入包」zip：被控端脚本 + 注入 token 的配置 + 一键启动 bat，发给对方双击即用。
 @app.get("/api/devices/{device_id}/package")
-def download_device_package(device_id: str, server_url: str = "", db: Session = Depends(get_db)):
+def download_device_package(device_id: str, server_url: str = "", api_tls_verify: bool = True, db: Session = Depends(get_db)):
     dev = db.query(Device).filter(Device.device_id == device_id).first()
     if not dev:
         raise HTTPException(404, "设备不存在")
@@ -4917,6 +4970,8 @@ def download_device_package(device_id: str, server_url: str = "", db: Session = 
         client_cfg = {}
     client_cfg.update({
         "api_base_url": base_url,
+        "api_tls_verify": bool(api_tls_verify),
+        "api_ca_file": "",
         "device_id": dev.device_id,
         "device_token": dev.token,
         "watch_conversations": convs,

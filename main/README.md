@@ -213,6 +213,77 @@ http://127.0.0.1:8000
 - 每个业务面板都有对应导航入口和页面标题，避免从工作台跳转到隐藏页面时标题或高亮状态不一致。
 - 静态测试会校验侧栏入口与页面面板一一对应，防止后续新增页面遗漏导航。
 
+## 企业微信会话内容存档
+
+企业微信官方会话内容存档用于稳定读取单聊/群聊消息，读取侧优先使用它；发送侧仍由 Windows 被控端控制已登录的企业微信 PC 完成。
+
+企业 ID 获取路径：
+
+```text
+企业微信管理后台 -> 我的企业 -> 企业信息 -> 企业 ID
+```
+
+当前企业 ID：
+
+```env
+WECOM_ARCHIVE_CORP_ID=ww41be40c4828f7b13
+```
+
+注意：有些外部文档写作 `WEWORK_CORP_ID`，本项目实际读取的是 `WECOM_ARCHIVE_CORP_ID`。会话内容存档的 Secret 属于敏感凭据，不要写入 README 或提交到 Git；只放到服务器 `.env`：
+
+```env
+WECOM_ARCHIVE_SECRET=<会话内容存档 Secret>
+```
+
+会话存档里的“公钥”不是由 Secret 生成的，而是单独生成一对 RSA 密钥：
+
+- 公钥：粘贴到企业微信管理后台「会话内容存档」配置页。
+- 私钥：保存到服务器 `main/config/wecom_archive_private_key.pem`，用于解密企业微信返回的 `encrypt_random_key`。
+
+推荐用 OpenSSL 生成：
+
+```bash
+openssl genrsa -out wecom_archive_private_key.pem 2048
+openssl rsa -in wecom_archive_private_key.pem -pubout -out wecom_archive_public_key.pem
+```
+
+如果 Windows 本机没有 OpenSSL，也可以在项目虚拟环境里用 Python 生成：
+
+```powershell
+@'
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+private_pem = private_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.TraditionalOpenSSL,
+    encryption_algorithm=serialization.NoEncryption(),
+)
+public_pem = private_key.public_key().public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+)
+open("wecom_archive_private_key.pem", "wb").write(private_pem)
+open("wecom_archive_public_key.pem", "wb").write(public_pem)
+'@ | .\.venv\Scripts\python.exe -
+```
+
+配置完成后，服务器 `.env` 至少包含：
+
+```env
+WECOM_ARCHIVE_ENABLED=true
+WECOM_ARCHIVE_POLL_ENABLED=true
+WECOM_ARCHIVE_POLL_INTERVAL_SECONDS=60
+WECOM_ARCHIVE_CORP_ID=ww41be40c4828f7b13
+WECOM_ARCHIVE_SECRET=<会话内容存档 Secret>
+WECOM_ARCHIVE_SDK_PATH=/app/config/libWeWorkFinanceSdk_C.so
+WECOM_ARCHIVE_PRIVATE_KEY_PATH=/app/config/wecom_archive_private_key.pem
+WECOM_ARCHIVE_SELF_USERIDS=<陪跑师 userid,逗号分隔>
+```
+
+更完整的接入步骤见 `docs/会话内容存档接入.md`。
+
 ## 企业微信 PC 端真实 RPA
 
 当前 RPA 已放弃截图/OCR 方案，主流程只走“页面登记会话名 -> UIA 搜索进入会话 -> UIA/剪贴板读取聊天文本”。RPA 支持两条链路：

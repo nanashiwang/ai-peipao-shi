@@ -10,6 +10,8 @@ import base64
 import ctypes
 import json
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -150,10 +152,12 @@ class FinanceSdk:
         lib = self.lib
         lib.NewSdk.restype = ctypes.c_void_p
         lib.DestroySdk.argtypes = [ctypes.c_void_p]
+        lib.DestroySdk.restype = None
         lib.Init.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
         lib.Init.restype = ctypes.c_int
         lib.NewSlice.restype = ctypes.c_void_p
         lib.FreeSlice.argtypes = [ctypes.c_void_p]
+        lib.FreeSlice.restype = None
         lib.GetContentFromSlice.argtypes = [ctypes.c_void_p]
         lib.GetContentFromSlice.restype = ctypes.c_char_p
         lib.GetChatData.argtypes = [
@@ -166,7 +170,7 @@ class FinanceSdk:
             ctypes.c_void_p,
         ]
         lib.GetChatData.restype = ctypes.c_int
-        lib.DecryptData.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p]
+        lib.DecryptData.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p]
         lib.DecryptData.restype = ctypes.c_int
 
     def close(self) -> None:
@@ -205,7 +209,7 @@ class FinanceSdk:
     def decrypt_data(self, random_key: str, encrypt_chat_msg: str) -> dict:
         out = self.lib.NewSlice()
         try:
-            ret = self.lib.DecryptData(self.sdk, random_key.encode("utf-8"), encrypt_chat_msg.encode("utf-8"), out)
+            ret = self.lib.DecryptData(random_key.encode("utf-8"), encrypt_chat_msg.encode("utf-8"), out)
             if ret != 0:
                 raise RuntimeError(f"DecryptData 失败：ret={ret}")
             return json.loads(self._slice_text(out) or "{}")
@@ -236,7 +240,25 @@ def decrypt_random_key(encrypt_random_key: str, config: WecomArchiveConfig) -> s
     return decrypted.decode("utf-8")
 
 
-def pull_archive_messages(seq: int, limit: int | None = None, config: WecomArchiveConfig | None = None) -> list[ArchiveEnvelope]:
+def _archive_envelope_to_dict(envelope: ArchiveEnvelope) -> dict:
+    return {
+        "seq": envelope.seq,
+        "msgid": envelope.msgid,
+        "raw": envelope.raw,
+        "decrypted": envelope.decrypted,
+    }
+
+
+def _archive_envelope_from_dict(data: dict[str, Any]) -> ArchiveEnvelope:
+    return ArchiveEnvelope(
+        seq=int(data.get("seq") or 0),
+        msgid=str(data.get("msgid") or ""),
+        raw=data.get("raw") if isinstance(data.get("raw"), dict) else {},
+        decrypted=data.get("decrypted") if isinstance(data.get("decrypted"), dict) else {},
+    )
+
+
+def pull_archive_messages_direct(seq: int, limit: int | None = None, config: WecomArchiveConfig | None = None) -> list[ArchiveEnvelope]:
     cfg = config or read_wecom_archive_config()
     batch_limit = limit or cfg.limit
     envelopes: list[ArchiveEnvelope] = []
@@ -254,6 +276,53 @@ def pull_archive_messages(seq: int, limit: int | None = None, config: WecomArchi
                 )
             )
     return envelopes
+
+
+def pull_archive_messages_subprocess(seq: int, limit: int | None = None, config: WecomArchiveConfig | None = None) -> list[ArchiveEnvelope]:
+    cfg = config or read_wecom_archive_config()
+    batch_limit = limit or cfg.limit
+    env = os.environ.copy()
+    env["WECOM_ARCHIVE_SDK_SUBPROCESS"] = "false"
+    command = [
+        sys.executable,
+        "-m",
+        "app.services.wecom_archive",
+        "--pull-archive-json",
+        str(int(seq)),
+        str(int(batch_limit)),
+    ]
+    project_root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        command,
+        cwd=str(project_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=max(int(cfg.timeout or 30) + 30, 60),
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"企业微信 Finance SDK 子进程失败：exit={completed.returncode} {detail[:500]}")
+    try:
+        data = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"企业微信 Finance SDK 子进程输出不是 JSON：{completed.stdout[:500]}") from exc
+    return [_archive_envelope_from_dict(item) for item in data if isinstance(item, dict)]
+
+
+def pull_archive_messages(seq: int, limit: int | None = None, config: WecomArchiveConfig | None = None) -> list[ArchiveEnvelope]:
+    if _env_bool("WECOM_ARCHIVE_SDK_SUBPROCESS", True):
+        return pull_archive_messages_subprocess(seq, limit, config)
+    return pull_archive_messages_direct(seq, limit, config)
+
+
+def _pull_archive_json_cli(argv: list[str]) -> int:
+    seq = int(argv[0]) if argv else 0
+    limit = int(argv[1]) if len(argv) > 1 else None
+    envelopes = pull_archive_messages_direct(seq, limit)
+    print(json.dumps([_archive_envelope_to_dict(item) for item in envelopes], ensure_ascii=False))
+    return 0
 
 
 def parse_archive_time(value) -> datetime:
@@ -355,3 +424,9 @@ def group_archive_messages(messages: list[NormalizedArchiveMessage]) -> list[dic
         if msg.latest_inbound:
             item["latest_message"] = msg.content
     return list(grouped.values())
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--pull-archive-json":
+        raise SystemExit(_pull_archive_json_cli(sys.argv[2:]))
+    raise SystemExit("unsupported command")
