@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -18,6 +19,10 @@ class SendTaskRetryTest(unittest.TestCase):
         self.dev_b = Device(device_id="dev-b", token="token-b", conversations='["一合学社"]')
         self.db.add_all([self.dev, self.dev_b])
         self.db.commit()
+        self.dev_request = SimpleNamespace(
+            headers={"x-device-id": self.dev.device_id, "x-device-token": self.dev.token},
+            state=SimpleNamespace(),
+        )
 
     def tearDown(self):
         self.db.close()
@@ -41,7 +46,7 @@ class SendTaskRetryTest(unittest.TestCase):
     def test_failed_dry_run_auto_retries_and_waits_until_due(self):
         task = self.add_task(send_mode="dry_run")
 
-        log = record_send_result(task.id, SendResultIn(status="failed", detail="窗口临时丢失", device_id="dev-a"), db=self.db)
+        log = record_send_result(task.id, SendResultIn(status="failed", detail="窗口临时丢失", device_id="dev-a"), request=self.dev_request, db=self.db)
         self.db.refresh(task)
 
         self.assertEqual(log["status"], "failed")
@@ -63,7 +68,7 @@ class SendTaskRetryTest(unittest.TestCase):
     def test_retryable_failure_stays_bound_to_failed_device(self):
         task = self.add_task(send_mode="dry_run")
 
-        record_send_result(task.id, SendResultIn(status="failed", detail="INPUT_FOCUS: 输入框定位失败：窗口不可点", device_id="dev-a"), db=self.db)
+        record_send_result(task.id, SendResultIn(status="failed", detail="INPUT_FOCUS: 输入框定位失败：窗口不可点", device_id="dev-a"), request=self.dev_request, db=self.db)
         task.next_retry_at = datetime.utcnow() - timedelta(seconds=1)
         task.scheduled_at = task.next_retry_at
         self.db.commit()
@@ -124,7 +129,7 @@ class SendTaskRetryTest(unittest.TestCase):
     def test_real_send_failure_goes_to_manual_alert_without_auto_retry(self):
         task = self.add_task(send_mode="real_send")
 
-        record_send_result(task.id, SendResultIn(status="failed", detail="发送结果未知", device_id="dev-a"), db=self.db)
+        record_send_result(task.id, SendResultIn(status="failed", detail="发送结果未知", device_id="dev-a"), request=self.dev_request, db=self.db)
         self.db.refresh(task)
         health = build_ops_health_dashboard(self.db)
         retry_component = next(item for item in health["components"] if item["label"] == "失败重试与告警")
@@ -138,7 +143,7 @@ class SendTaskRetryTest(unittest.TestCase):
     def test_real_send_presend_failure_auto_retries(self):
         task = self.add_task(send_mode="real_send")
 
-        record_send_result(task.id, SendResultIn(status="failed", detail="INPUT_FOCUS: 输入框定位失败：窗口不可点", device_id="dev-a"), db=self.db)
+        record_send_result(task.id, SendResultIn(status="failed", detail="INPUT_FOCUS: 输入框定位失败：窗口不可点", device_id="dev-a"), request=self.dev_request, db=self.db)
         self.db.refresh(task)
 
         self.assertEqual(task.status, "pending")
@@ -157,6 +162,7 @@ class SendTaskRetryTest(unittest.TestCase):
                 detail="BASELINE_READ_FAILED: baseline read failed before hotkey",
                 device_id="dev-a",
             ),
+            request=self.dev_request,
             db=self.db,
         )
         self.db.refresh(task)
@@ -170,7 +176,7 @@ class SendTaskRetryTest(unittest.TestCase):
     def test_real_send_after_hotkey_failure_requires_manual_review(self):
         task = self.add_task(send_mode="real_send")
 
-        record_send_result(task.id, SendResultIn(status="failed", detail="RPA_TRACE: 真实发送热键已触发", device_id="dev-a"), db=self.db)
+        record_send_result(task.id, SendResultIn(status="failed", detail="RPA_TRACE: 真实发送热键已触发", device_id="dev-a"), request=self.dev_request, db=self.db)
         self.db.refresh(task)
 
         self.assertEqual(task.status, "failed")
@@ -180,7 +186,7 @@ class SendTaskRetryTest(unittest.TestCase):
     def test_real_send_guard_skip_keeps_task_pending(self):
         task = self.add_task(send_mode="real_send")
 
-        record_send_result(task.id, SendResultIn(status="skipped", detail="REAL_SEND_GUARD: 控制端未开启该设备真实发送开关", device_id="dev-a"), db=self.db)
+        record_send_result(task.id, SendResultIn(status="skipped", detail="REAL_SEND_GUARD: 控制端未开启该设备真实发送开关", device_id="dev-a"), request=self.dev_request, db=self.db)
         self.db.refresh(task)
 
         self.assertEqual(task.status, "pending")

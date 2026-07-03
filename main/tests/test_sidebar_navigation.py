@@ -8,6 +8,7 @@ class SidebarParser(HTMLParser):
         super().__init__()
         self.panel_ids = []
         self.nav_tabs = []
+        self.subtab_tabs = []
         self.nav_titles = []
         self.active_tabs = []
         self.selects = {}
@@ -22,6 +23,8 @@ class SidebarParser(HTMLParser):
             self.nav_titles.append(data.get("data-title", ""))
             if "active" in data.get("class", "").split():
                 self.active_tabs.append(tab)
+        if tag == "button" and data.get("data-subtab"):
+            self.subtab_tabs.append(data["data-subtab"])
         if tag == "select" and data.get("id"):
             self.selects[data["id"]] = data
 
@@ -32,8 +35,9 @@ class SidebarNavigationTest(unittest.TestCase):
         self.parser = SidebarParser()
         self.parser.feed(html)
 
-    def test_every_panel_has_sidebar_entry(self):
-        self.assertEqual(sorted(self.parser.panel_ids), sorted(self.parser.nav_tabs))
+    def test_every_panel_has_navigation_entry(self):
+        reachable_tabs = set(self.parser.nav_tabs + self.parser.subtab_tabs)
+        self.assertEqual(sorted(self.parser.panel_ids), sorted(reachable_tabs))
 
     def test_sidebar_tabs_are_unique_and_titled(self):
         self.assertEqual(len(self.parser.nav_tabs), len(set(self.parser.nav_tabs)))

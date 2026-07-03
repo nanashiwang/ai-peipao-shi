@@ -61,10 +61,6 @@ const DEFAULT_REPLY_AGENT_CONFIG = {
   ],
 };
 
-const PENDING_TABS = {
-  parentDashboard: "家长画像功能待优化，当前暂不开放选择。",
-};
-
 // 统一封装 fetch，减少重复的错误处理代码。
 function authHeaders(source = {}) {
   const headers = new Headers(source || {});
@@ -760,16 +756,11 @@ const TAB_OWNERS = { familyDetailPanel: "families", profiles: "families" };
 const TAB_TITLES = { families: "家庭管理", familyDetailPanel: "家庭档案", profiles: "AI画像" };
 
 function switchTab(tabId) {
-  if (PENDING_TABS[tabId]) {
-    toast(PENDING_TABS[tabId]);
-    setActionStatus(PENDING_TABS[tabId]);
-    return false;
-  }
   localStorage.setItem("activeTab", tabId);
   const ownerTab = TAB_OWNERS[tabId] || tabId;
   document.querySelectorAll(".sidebar button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === ownerTab));
   document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tabId));
-  document.querySelectorAll(".subtabs button[data-tab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabId));
+  document.querySelectorAll(".subtabs button[data-subtab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.subtab === tabId));
   const active = document.querySelector(`.sidebar button[data-tab="${ownerTab}"]`);
   $("pageTitle").textContent = TAB_TITLES[tabId] || (active ? (active.dataset.title || active.textContent.trim()) : "工作台");
   // Agent 评测很重，只在进入系统设置页时惰性运行，不占刷新关键路径。
@@ -3346,7 +3337,7 @@ window.addEventListener("error", (event) => {
 function restoreActiveTab() {
   const stored = localStorage.getItem("activeTab") || "";
   if (!stored || stored === "dashboard") return;
-  if (PENDING_TABS[stored] || !document.querySelector(`.panel#${CSS.escape(stored)}`)) return;
+  if (!document.querySelector(`.panel#${CSS.escape(stored)}`)) return;
   switchTab(stored);
 }
 

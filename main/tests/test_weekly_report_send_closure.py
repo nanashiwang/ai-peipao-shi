@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,7 +12,7 @@ from app.main import (
     record_send_result,
     send_task_to_web_chat,
 )
-from app.models import Family, SendTask, WeeklyReport
+from app.models import Device, Family, SendTask, WeeklyReport
 
 
 class WeeklyReportSendClosureTest(unittest.TestCase):
@@ -19,8 +20,13 @@ class WeeklyReportSendClosureTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:", future=True)
         Base.metadata.create_all(bind=engine)
         self.db = sessionmaker(bind=engine, future=True)()
-        self.db.add(Family(family_id="f1", parent_nickname="张妈妈", coach_name="陪跑师"))
+        self.device = Device(device_id="dev-a", token="token", conversations='["张妈妈"]')
+        self.db.add_all([Family(family_id="f1", parent_nickname="张妈妈", coach_name="陪跑师"), self.device])
         self.db.commit()
+        self.device_request = SimpleNamespace(
+            headers={"x-device-id": self.device.device_id, "x-device-token": self.device.token},
+            state=SimpleNamespace(),
+        )
 
     def tearDown(self):
         self.db.close()
@@ -77,7 +83,12 @@ class WeeklyReportSendClosureTest(unittest.TestCase):
         create_task_from_report(report.id, db=self.db)
         self.db.refresh(report)
 
-        log = record_send_result(report.send_task_id, SendResultIn(status="sent", detail="REAL_RPA: 已发送"), db=self.db)
+        log = record_send_result(
+            report.send_task_id,
+            SendResultIn(status="sent", detail="REAL_RPA: 已发送", device_id=self.device.device_id),
+            request=self.device_request,
+            db=self.db,
+        )
 
         self.db.refresh(report)
         self.assertEqual(log["status"], "sent")
