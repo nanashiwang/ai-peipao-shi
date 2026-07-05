@@ -320,6 +320,10 @@
           <div class="section-head chat-room-head">
             <h2 id="chatTitle">请选择会话</h2>
             <span id="chatMeta" class="muted"></span>
+            <label class="inline-check chat-auto-reply-toggle" title="开启后，企微存档读取到新消息会自动生成 AI 回复并加入发送队列">
+              <input type="checkbox" id="chatAutoReplyToggle" />
+              <span>自动智能回复</span>
+            </label>
           </div>
           <div id="chatMessages" class="chat-messages"></div>
           <form id="chatForm" class="chat-compose">
@@ -327,7 +331,7 @@
             <div class="chat-send-actions">
               <label class="inline-check chat-smart-reply">
                 <input type="checkbox" name="smart_reply" id="chatSmartReply" />
-                <span>智能回复</span>
+                <span>本次 AI 生成</span>
               </label>
               <button class="danger-action">发送</button>
             </div>

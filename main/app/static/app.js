@@ -1637,7 +1637,7 @@ function renderChatSendHint(family) {
   if (!hint || !directBtn) return;
   directBtn.disabled = true;
   if (!state.selectedChatFamilyId || !family) {
-    hint.textContent = "请选择会话后再发送；可人工输入，也可勾选智能回复直接由 AI 生成并发送。";
+    hint.textContent = "请选择会话后再发送；可人工输入，也可勾选本次 AI 生成后直接发送。";
     return;
   }
   if (!["admin", "coach"].includes(state.currentUser?.role || "")) {
@@ -1676,7 +1676,51 @@ function renderChatSendHint(family) {
   if (outboxPending) busyParts.push(`${outboxPending} 条结果待补传`);
   hint.textContent = busyParts.length
     ? `设备 ${device.device_id} 正忙（${busyParts.join("，")}）；新消息会自动排队，空闲后依次发送并回读确认。`
-    : `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；人工输入或智能回复都不进入审核队列，发送后仍会回读确认。`;
+    : `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；人工输入或本次 AI 生成都不进入审核队列，发送后仍会回读确认。`;
+}
+
+function renderChatAutoReplyToggle() {
+  const input = $("chatAutoReplyToggle");
+  if (!input) return;
+  const wrap = input.closest(".chat-auto-reply-toggle");
+  const cfg = currentReplyAgentConfig();
+  const enabled = Boolean(cfg.auto_reply_enabled && cfg.auto_create_send_task && cfg.send_mode === "real_send");
+  input.checked = enabled;
+  input.disabled = !state.currentUser || !["admin", "coach"].includes(state.currentUser.role || "");
+  if (wrap) wrap.classList.toggle("enabled", enabled);
+  const title = enabled
+    ? "自动智能回复已开启：新企微消息会生成 AI 回复并进入真实发送队列"
+    : "自动智能回复未开启：点击后保存为真实发送队列配置";
+  input.title = title;
+  if (wrap) wrap.title = title;
+}
+
+async function saveChatAutoReplyToggle(enabled) {
+  if (!state.currentUser) return toast("请先登录控制端账号");
+  const current = currentReplyAgentConfig();
+  const agents = new Set(current.enabled_agents || []);
+  agents.add("reply_agent");
+  agents.add("safety_agent");
+  const payload = {
+    auto_reply_enabled: enabled,
+    auto_create_send_task: enabled ? true : current.auto_create_send_task,
+    send_mode: enabled ? "real_send" : current.send_mode,
+    tone: current.tone || "standard",
+    reply_agent: current.reply_agent || "ai_reply_agent",
+    high_risk_policy: current.high_risk_policy || "manual",
+    skip_recent_hours: enabled ? 0 : Number(current.skip_recent_hours || 0),
+    max_batch: Number(current.max_batch || 200),
+    enabled_agents: Array.from(agents),
+  };
+  state.replyAgentConfig = await api("/api/agent/reply-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  renderChatAutoReplyToggle();
+  renderReplyPage();
+  toast(enabled ? "自动智能回复已开启" : "自动智能回复已关闭");
+  return true;
 }
 
 // 渲染当前聊天消息，让它更接近真实陪跑师对话。
@@ -1684,6 +1728,7 @@ function renderChatMessages() {
   const family = state.families.find((item) => item.family_id === state.selectedChatFamilyId);
   $("chatTitle").textContent = family ? family.parent_nickname : "请选择会话";
   $("chatMeta").textContent = family ? `${family.family_id} · ${family.child_grade || "未知年级"} · ${family.campus_name || "未分配校区"} · ${family.coach_name || "未分配"}` : "";
+  renderChatAutoReplyToggle();
   renderChatSendHint(family);
   if (!state.selectedChatFamilyId) {
     $("chatMessages").innerHTML = emptyState("请选择家庭会话", "从左侧会话分组选择一个企微会话后，这里会展示聊天上下文。");
@@ -2539,6 +2584,7 @@ async function saveReplyAgentConfig(event) {
     });
     toast(payload.auto_reply_enabled ? "自动 AI 回复已开启" : "自动 AI 回复已关闭");
     renderReplyPage();
+    renderChatAutoReplyToggle();
   });
 }
 
@@ -3352,11 +3398,20 @@ function updateChatComposerMode() {
   const textarea = document.querySelector("#chatForm textarea[name='content']");
   if (!textarea) return;
   textarea.placeholder = smartReply
-    ? "智能回复已开启：可留空；填写内容会作为本次 AI 回复参考"
+    ? "本次 AI 生成：可留空；填写内容会作为本次 AI 回复参考"
     : "输入要发送到当前企微会话的内容";
 }
 
 if ($("chatSmartReply")) $("chatSmartReply").onchange = updateChatComposerMode;
+if ($("chatAutoReplyToggle")) $("chatAutoReplyToggle").onchange = (event) => {
+  const input = event.target;
+  const previous = !input.checked;
+  withAction("保存自动智能回复", () => saveChatAutoReplyToggle(input.checked))
+    .then((ok) => {
+      if (!ok) input.checked = previous;
+      renderChatAutoReplyToggle();
+    });
+};
 
 // 对当前会话快速生成可审核回复，只调用一次大模型。
 if ($("chatReplyBtn")) $("chatReplyBtn").onclick = async () => {

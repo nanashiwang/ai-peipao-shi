@@ -1538,6 +1538,22 @@ summary { cursor: pointer; color: var(--muted); }
 }
 
 .chat-side-head h3, .chat-room-head h2 { font-size: 14px; line-height: 1.3; }
+.chat-room-head h2 { min-width: 0; }
+.chat-room-head #chatMeta { flex: 1; min-width: 0; }
+.chat-auto-reply-toggle {
+  white-space: nowrap;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255,255,255,.72);
+  font-size: 11px;
+}
+.chat-auto-reply-toggle.enabled {
+  border-color: rgba(33, 132, 84, .35);
+  background: rgba(33, 132, 84, .10);
+  color: var(--ok);
+}
 
 #chatSearch {
   min-height: 28px;

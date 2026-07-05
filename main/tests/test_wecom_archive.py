@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import WecomArchiveSyncIn, sync_wecom_archive
+from app.main import WecomArchiveSyncIn, build_wecom_archive_poll_payload, sync_wecom_archive
 from app.models import AIOutput, RawMessage, WecomArchiveState
 from app.services.wecom_archive import WecomArchiveConfig, config_status, normalize_archive_message, ArchiveEnvelope
 
@@ -63,6 +63,20 @@ class WecomArchiveTest(unittest.TestCase):
         status = config_status(WecomArchiveConfig(True, "", "", "", "", ""))
         self.assertFalse(status["configured"])
         self.assertIn("WECOM_ARCHIVE_CORP_ID", status["missing"])
+
+    def test_archive_poller_uses_frontend_reply_config(self):
+        with patch(
+            "app.main.read_reply_agent_config",
+            return_value={
+                "auto_reply_enabled": True,
+                "auto_create_send_task": True,
+                "send_mode": "real_send",
+            },
+        ):
+            payload = build_wecom_archive_poll_payload()
+
+        self.assertTrue(payload.auto_generate_reply)
+        self.assertTrue(payload.auto_create_reply_task)
 
     def test_normalizes_private_archive_text_message(self):
         cfg = archive_config()

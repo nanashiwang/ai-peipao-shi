@@ -2225,16 +2225,21 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def build_wecom_archive_poll_payload() -> WecomArchiveSyncIn:
+    reply_config = read_reply_agent_config()
+    return WecomArchiveSyncIn(
+        auto_generate_reply=bool(reply_config.get("auto_reply_enabled")),
+        auto_create_reply_task=bool(reply_config.get("auto_create_send_task")),
+        auto_generate_all_agents=False,
+    )
+
+
 def _wecom_archive_poll_loop(interval_seconds: int) -> None:
     time.sleep(5)
     while True:
         db = next(get_db())
         try:
-            payload = WecomArchiveSyncIn(
-                auto_generate_reply=_env_bool("WECOM_ARCHIVE_AUTO_REPLY", False),
-                auto_create_reply_task=_env_bool("WECOM_ARCHIVE_AUTO_CREATE_TASK", False),
-                auto_generate_all_agents=False,
-            )
+            payload = build_wecom_archive_poll_payload()
             result = sync_wecom_archive(payload, request=None, db=db)
             print(
                 "wecom_archive_poll_ok "
