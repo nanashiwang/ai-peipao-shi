@@ -301,6 +301,16 @@ class WecomSenderPostSendSyncTest(unittest.TestCase):
         self.assertIn("message_count=1", verification["verify_detail"])
         sync.assert_called_once()
 
+    def test_post_send_screenshot_visible_text_accepts_short_target_from_found_map(self):
+        data = {"found": {"测试1111": True, "最终测试": True}}
+
+        self.assertEqual(wecom_sender.post_send_screenshot_visible_text(data, "最终测试"), "最终测试")
+
+    def test_post_send_screenshot_visible_text_accepts_found_bool(self):
+        data = {"found": True}
+
+        self.assertEqual(wecom_sender.post_send_screenshot_visible_text(data, "你好"), "你好")
+
 
 
 if __name__ == "__main__":

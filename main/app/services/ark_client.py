@@ -6,6 +6,7 @@
 import json
 import base64
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -67,20 +68,56 @@ def ark_endpoint_id() -> str:
 
 
 # 尽量从模型输出里提取 JSON 对象，兼容代码块和前后包裹文本。
+def _balanced_json_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    starts = [idx for idx, char in enumerate(text) if char == "{"]
+    for start in starts:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : index + 1])
+                    break
+    return candidates
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
     cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(cleaned[start : end + 1])
-        raise
+    candidates = [cleaned]
+    candidates.extend(
+        block.strip()
+        for block in re.findall(r"```(?:json)?\s*([\s\S]*?)```", cleaned, flags=re.IGNORECASE)
+        if block.strip().startswith("{")
+    )
+    candidates.extend(_balanced_json_candidates(cleaned))
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(data, dict):
+            return data
+    if last_error:
+        raise last_error
+    raise json.JSONDecodeError("No JSON object found", cleaned, 0)
 
 # 统一封装 Ark 聊天接口调用，返回解析后的 JSON。
 def call_ark_json(system_prompt: str, user_payload: dict[str, Any], temperature: float = 0.2) -> dict[str, Any]:

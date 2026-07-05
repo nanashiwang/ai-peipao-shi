@@ -68,6 +68,7 @@ try:
         send_trace_items,
         sent_content_confirmed_after_send,
         sent_content_match_count,
+        normalize_confirmation_text,
         should_press_send_hotkey,
         target_in_allowed_conversations,
         target_not_allowed_detail,
@@ -91,6 +92,7 @@ except ModuleNotFoundError:
         send_trace_items,
         sent_content_confirmed_after_send,
         sent_content_match_count,
+        normalize_confirmation_text,
         should_press_send_hotkey,
         target_in_allowed_conversations,
         target_not_allowed_detail,
@@ -1965,6 +1967,37 @@ def extract_chat_messages_by_ark(window, conversation: str, config: dict) -> lis
             _cleanup_debug_image(img, config)
 
 
+def post_send_screenshot_visible_text(data: dict, target_text: str) -> str:
+    """从视觉模型返回里提取能证明目标消息可见的文本。"""
+    if not isinstance(data, dict):
+        return ""
+    target = normalize_confirmation_text(target_text)
+    if not target:
+        return ""
+    visible = str(data.get("text") or data.get("content") or "").strip()
+    if not visible and isinstance(data.get("messages"), list):
+        visible = " ".join(
+            str(item.get("content") or item.get("text") or "")
+            for item in data["messages"]
+            if isinstance(item, dict)
+        ).strip()
+    if visible and sent_content_match_count(target_text, [{"content": visible}], 1) > 0:
+        return visible
+    found = data.get("found")
+    if found is True:
+        return target_text
+    if isinstance(found, dict):
+        for key, value in found.items():
+            if value and sent_content_match_count(target_text, [{"content": key}], 1) > 0:
+                return str(key)
+    if isinstance(found, list):
+        for item in found:
+            candidate = str(item).strip()
+            if candidate and sent_content_match_count(target_text, [{"content": candidate}], 1) > 0:
+                return candidate
+    return ""
+
+
 def extract_post_send_screenshot_messages(window, target: str, text: str, config: dict) -> list[dict]:
     if not config.get("post_send_verify_screenshot_fallback", True):
         return []
@@ -1988,12 +2021,10 @@ def extract_post_send_screenshot_messages(window, target: str, text: str, config
             str(crop),
             f"目标文本：{text}",
         )
-        visible = ""
-        if isinstance(data, dict):
-            visible = str(data.get("text") or data.get("content") or "").strip()
-            if not visible and isinstance(data.get("messages"), list):
-                visible = " ".join(str(item.get("content") or item.get("text") or "") for item in data["messages"] if isinstance(item, dict)).strip()
-        min_len = max(int(config.get("post_send_verify_screenshot_min_chars", 6) or 6), 1)
+        visible = post_send_screenshot_visible_text(data, text)
+        expected_len = len(normalize_confirmation_text(text))
+        configured_min_len = int(config.get("post_send_verify_screenshot_min_chars", 6) or 6)
+        min_len = max(min(configured_min_len, expected_len), 1)
         compact_visible = "".join(visible.split())
         if visible and len(compact_visible) >= min_len and sent_content_match_count(text, [{"content": visible}], 1) > 0:
             add_send_trace(config, "发送后截图回读命中")
