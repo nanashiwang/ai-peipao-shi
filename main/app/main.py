@@ -426,8 +426,10 @@ class ChatMessageIn(BaseModel):
 
 
 class ConversationDirectSendIn(BaseModel):
-    content: str
+    content: str = ""
     device_id: str = ""
+    smart_reply: bool = False
+    tone: str = "standard"
 
 
 class ChatAiIn(BaseModel):
@@ -2675,20 +2677,40 @@ def send_chat_message(payload: ChatMessageIn, request: Request = None, db: Sessi
 
 @app.post("/api/conversations/{family_id}/direct-send")
 def direct_send_conversation_message(family_id: str, payload: ConversationDirectSendIn, request: Request = None, db: Session = Depends(get_db)):
-    """会话工作台人工输入直发：不生成 AI 审核草稿，直接进入对应设备真实发送队列。"""
+    """会话工作台发送：人工文本或智能回复都会直接进入对应设备真实发送队列。"""
     ensure_conversation_direct_send_allowed(request)
     family = require_family_for_request(db, family_id, request)
     target_name = (family.parent_nickname or "").strip()
     if not target_name:
         raise HTTPException(400, "当前会话没有企微目标名，无法直接发送")
-    content = validate_send_task_content(payload.content)
+
+    ai_output = None
+    scene = "会话工作台人工发送"
+    if payload.smart_reply:
+        context = build_agent_context(db, family.family_id)
+        if not context["messages"]:
+            raise HTTPException(404, "当前会话还没有消息，无法智能回复")
+        reply_config = read_reply_agent_config()
+        tone = (payload.tone or reply_config["tone"] or "standard").strip()
+        latest = payload.content.strip() or latest_parent_message(context)
+        if reply_config["reply_agent"] == "quick_reply_agent":
+            result = run_quick_reply_agent_service(context, latest, tone)
+        else:
+            result = run_reply_agent_service(context, latest, tone)
+        ai_output = save_ai_output(db, family.family_id, "ai_reply", "会话工作台智能回复", result)
+        ai_output.status = "task_created"
+        content = validate_send_task_content(result["display_text"])
+        scene = str(result["raw"].get("场景类型") or "会话工作台智能回复")[:80]
+    else:
+        content = validate_send_task_content(payload.content)
+
     device_id = resolve_real_send_device_binding(db, payload.device_id, target_name)
     validate_real_send_device_binding(device_id)
     validate_real_send_risk(db, target_name, content)
     task = SendTask(
         family_id=family.family_id,
         target_name=target_name,
-        scene="会话工作台人工直发",
+        scene=scene,
         content=content,
         device_id=device_id,
         send_mode="real_send",
@@ -2699,17 +2721,18 @@ def direct_send_conversation_message(family_id: str, payload: ConversationDirect
     add_send_task_with_audit(
         db,
         task,
-        "direct_real_send",
+        "smart_reply_real_send" if payload.smart_reply else "direct_real_send",
         actor_from_request(request),
-        "会话工作台人工输入，跳过审核直接加入企微真实发送队列",
+        "会话工作台智能回复，跳过确认直接加入企微真实发送队列" if payload.smart_reply else "会话工作台人工输入，跳过确认直接加入企微真实发送队列",
     )
     db.commit()
     return {
         "task": send_task_view(task, request, db),
+        "ai_output": as_dict(ai_output) if ai_output else None,
         "family_id": family.family_id,
         "target_name": target_name,
         "device_id": device_id,
-        "note": "已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。",
+        "note": "智能回复已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。" if payload.smart_reply else "已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。",
     }
 
 

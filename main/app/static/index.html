@@ -325,8 +325,11 @@
           <form id="chatForm" class="chat-compose">
             <textarea name="content" rows="1" placeholder="输入要发送到当前企微会话的内容"></textarea>
             <div class="chat-send-actions">
-              <button class="danger-action">直接发企微</button>
-              <button type="button" id="chatLocalOnlyBtn">仅记入系统</button>
+              <label class="inline-check chat-smart-reply">
+                <input type="checkbox" name="smart_reply" id="chatSmartReply" />
+                <span>智能回复</span>
+              </label>
+              <button class="danger-action">发送</button>
             </div>
             <p id="chatSendHint" class="muted"></p>
           </form>

@@ -1635,7 +1635,7 @@ function renderChatSendHint(family) {
   if (!hint || !directBtn) return;
   directBtn.disabled = true;
   if (!state.selectedChatFamilyId || !family) {
-    hint.textContent = "请选择会话后再输入内容；人工直发会跳过审核，直接进入对应电脑的企微真实发送队列。";
+    hint.textContent = "请选择会话后再发送；可人工输入，也可勾选智能回复直接由 AI 生成并发送。";
     return;
   }
   if (!["admin", "coach"].includes(state.currentUser?.role || "")) {
@@ -1674,7 +1674,7 @@ function renderChatSendHint(family) {
   if (outboxPending) busyParts.push(`${outboxPending} 条结果待补传`);
   hint.textContent = busyParts.length
     ? `设备 ${device.device_id} 正忙（${busyParts.join("，")}）；新消息会自动排队，空闲后依次发送并回读确认。`
-    : `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；不进入审核队列，发送后仍会回读确认。`;
+    : `将由唯一负责设备 ${device.device_id}${device.name ? ` · ${device.name}` : ""} 发送到「${target}」；人工输入或智能回复都不进入审核队列，发送后仍会回读确认。`;
 }
 
 // 渲染当前聊天消息，让它更接近真实陪跑师对话。
@@ -1787,7 +1787,7 @@ function renderChatOutputs() {
               ${taskAllowedOperations(task).length === 1 ? '<span class="muted">仅可查看</span>' : ""}
             </div>
           </article>
-        `).join("") : emptyState("暂无待发送回复", "人工输入可直接发企微；AI 回复仍会先生成草稿，便于必要时编辑。")}
+        `).join("") : emptyState("暂无待发送回复", "勾选智能回复会直接生成并发送；这里保留最近 AI 草稿用于复盘。")}
       </div>
     </section>
     <section class="assist-section">
@@ -3261,26 +3261,24 @@ if ($("registerForm")) $("registerForm").onsubmit = async (event) => {
   });
 };
 
-// 会话工作台人工直发：跳过审核，直接创建企微真实发送任务，由唯一负责设备执行。
+// 会话工作台人工发送：跳过审核，直接创建企微真实发送任务，由唯一负责设备执行。
 $("chatForm").onsubmit = async (event) => {
   event.preventDefault();
-  await withAction("企微直发", async () => {
+  await withAction("发送", async () => {
     if (!state.currentUser) return toast("请先登录控制端账号");
     if (!state.selectedChatFamilyId) return toast("请先选择会话");
     const data = Object.fromEntries(new FormData(event.target).entries());
     const content = (data.content || "").trim();
-    if (!content) throw new Error("请填写发送内容");
-    const family = state.families.find((item) => item.family_id === state.selectedChatFamilyId);
-    const target = (family?.parent_nickname || state.selectedChatFamilyId).trim();
-    const ok = window.confirm(`确认将这条消息直接发送到企业微信「${target}」？\n\n${content.slice(0, 120)}${content.length > 120 ? "…" : ""}\n\n该操作跳过审核队列，由唯一负责设备执行，发送后会回读确认。`);
-    if (!ok) return;
+    const smartReply = data.smart_reply === "on";
+    if (!content && !smartReply) throw new Error("请填写发送内容，或勾选智能回复");
     const res = await api(`/api/conversations/${encodeURIComponent(state.selectedChatFamilyId)}/direct-send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, smart_reply: smartReply }),
     });
     event.target.reset();
-    toast(`已直发入队：${res.device_id} -> ${res.target_name}`);
+    updateChatComposerMode();
+    toast(`${smartReply ? "智能回复已入队" : "已直发入队"}：${res.device_id} -> ${res.target_name}`);
     try {
       await refreshAll();
     } catch (err) {
@@ -3290,25 +3288,16 @@ $("chatForm").onsubmit = async (event) => {
   });
 };
 
-if ($("chatLocalOnlyBtn")) $("chatLocalOnlyBtn").onclick = async () => {
-  await withAction("仅记入系统", async () => {
-    if (!state.currentUser) return toast("请先登录账号");
-    if (!state.selectedChatFamilyId) return toast("请先选择会话");
-    const form = $("chatForm");
-    const data = Object.fromEntries(new FormData(form).entries());
-    const content = (data.content || "").trim();
-    if (!content) throw new Error("请填写消息内容");
-    await api("/api/conversations/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ family_id: state.selectedChatFamilyId, username: state.currentUser.username, content }),
-    });
-    form.reset();
-    toast("消息已仅写入系统，不触发企微发送");
-    await refreshAll();
-    switchTab("webChat");
-  });
-};
+function updateChatComposerMode() {
+  const smartReply = $("chatSmartReply")?.checked === true;
+  const textarea = document.querySelector("#chatForm textarea[name='content']");
+  if (!textarea) return;
+  textarea.placeholder = smartReply
+    ? "智能回复已开启：可留空；填写内容会作为本次 AI 回复参考"
+    : "输入要发送到当前企微会话的内容";
+}
+
+if ($("chatSmartReply")) $("chatSmartReply").onchange = updateChatComposerMode;
 
 // 对当前会话快速生成可审核回复，只调用一次大模型。
 if ($("chatReplyBtn")) $("chatReplyBtn").onclick = async () => {
