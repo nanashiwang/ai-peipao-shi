@@ -14,13 +14,14 @@ import json
 import os
 import random
 import re
+import ssl
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener, ProxyHandler
+from urllib.request import HTTPSHandler, Request, build_opener, ProxyHandler
 
 try:
     from rpa.send_batch_guard import send_until_blocked
@@ -206,7 +207,9 @@ def import_ark_vision():
 def load_config(path: Path) -> dict:
     if not path.exists():
         path = FALLBACK_CONFIG
-    return apply_speed_profile(json.loads(path.read_text(encoding="utf-8")))
+    config = apply_speed_profile(json.loads(path.read_text(encoding="utf-8")))
+    configure_api_transport(config)
+    return config
 
 
 # 速度档位：fast 用于试运行/自家测试群，normal 对外真发，cautious 更保守。
@@ -311,6 +314,19 @@ def sleep_with_jitter(config: dict, stage: str, base_seconds: float, ratio: floa
 # 强制直连后端，忽略被控端机器上的系统/环境代理（V2Ray/Clash 等）。
 # 否则 urllib 默认会跟随系统代理，代理转发不到服务器时会返回 503，导致心跳/领取全部失败。
 _DIRECT_OPENER = build_opener(ProxyHandler({}))
+
+
+def configure_api_transport(config: dict) -> None:
+    global _DIRECT_OPENER
+    handlers = [ProxyHandler({})]
+    ca_file = str(config.get("api_ca_file") or "").strip()
+    verify_tls = bool(config.get("api_tls_verify", True))
+    if ca_file:
+        handlers.append(HTTPSHandler(context=ssl.create_default_context(cafile=ca_file)))
+    elif not verify_tls:
+        # 仅用于自签名 HTTPS 控制端；正式域名应保持 api_tls_verify=true。
+        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))
+    _DIRECT_OPENER = build_opener(*handlers)
 
 
 # 对后端接口发起 JSON 请求，是 RPA 和后台的数据桥梁。

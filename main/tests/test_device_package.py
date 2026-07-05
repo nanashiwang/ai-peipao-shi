@@ -51,6 +51,7 @@ class DevicePackageTest(unittest.TestCase):
         self.assertIn("package_manifest.json", names)
         self.assertIn("启动.bat", names)
         self.assertEqual(config["api_base_url"], "https://server.test")
+        self.assertTrue(config["api_tls_verify"])
         self.assertEqual(config["device_id"], "rpa-01")
         self.assertFalse(config["allow_real_send"])
         self.assertTrue(config["dry_run"])
@@ -77,6 +78,18 @@ class DevicePackageTest(unittest.TestCase):
         self.assertIn("rpa/send_batch_guard.py", manifest_paths)
         self.assertIn("rpa/result_outbox.py", manifest_paths)
         self.assertIn("校验接入包.ps1", manifest_paths)
+
+    def test_device_package_can_disable_tls_verify_for_self_signed_server(self):
+        self.db.add(Device(device_id="rpa-02", token="token-2", conversations="[]"))
+        self.db.commit()
+
+        response = download_device_package("rpa-02", server_url="https://107.172.96.31:9443", api_tls_verify=False, db=self.db)
+        body = asyncio.run(self.collect_body(response))
+
+        with zipfile.ZipFile(io.BytesIO(body)) as zf:
+            config = json.loads(zf.read("rpa/config.json").decode("utf-8"))
+
+        self.assertFalse(config["api_tls_verify"])
 
 
 if __name__ == "__main__":

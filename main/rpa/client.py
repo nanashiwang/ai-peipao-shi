@@ -7,9 +7,12 @@
 """
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.request
+
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def base_dir():
@@ -21,7 +24,22 @@ def base_dir():
 
 def load_config():
     with open(os.path.join(base_dir(), "config.json"), encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    configure_api_transport(cfg)
+    return cfg
+
+
+def configure_api_transport(cfg):
+    global _OPENER
+    handlers = [urllib.request.ProxyHandler({})]
+    ca_file = str(cfg.get("api_ca_file") or "").strip()
+    verify_tls = bool(cfg.get("api_tls_verify", True))
+    if ca_file:
+        handlers.append(urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=ca_file)))
+    elif not verify_tls:
+        # 仅用于自签名 HTTPS 控制端；正式域名应保持 api_tls_verify=true。
+        handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    _OPENER = urllib.request.build_opener(*handlers)
 
 
 def req(base, path, method="GET", payload=None, headers=None):
@@ -30,7 +48,7 @@ def req(base, path, method="GET", payload=None, headers=None):
     if headers:
         h.update(headers)
     r = urllib.request.Request(base.rstrip("/") + path, data=data, headers=h, method=method)
-    with urllib.request.urlopen(r, timeout=15) as resp:
+    with _OPENER.open(r, timeout=15) as resp:
         body = resp.read().decode("utf-8")
         return json.loads(body) if body else {}
 

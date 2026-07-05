@@ -1,5 +1,7 @@
 {
   "api_base_url": "http://127.0.0.1:8000",
+  "api_tls_verify": true,
+  "api_ca_file": "",
   "device_id": "",
   "device_token": "",
   "heartbeat_interval_seconds": 30,

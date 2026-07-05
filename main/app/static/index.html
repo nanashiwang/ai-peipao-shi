@@ -343,6 +343,19 @@
         <h2>企微会话</h2>
         <span class="muted">登记一次会话名后，RPA 使用 UIA 搜索进入该会话并同步聊天记录</span>
       </div>
+      <section class="assist-section" id="archivePanel" style="margin-bottom:14px">
+        <div class="section-head compact-head">
+          <div>
+            <h2>会话内容存档（官方 API）</h2>
+            <span class="muted">开通企业微信会话存档后，一对一/群聊消息由官方 SDK 结构化增量接入，替代截图识别</span>
+          </div>
+          <div class="actions left">
+            <span id="archiveStatusPill" class="badge">检查中…</span>
+            <button id="archiveSyncBtn" onclick="syncWecomArchive()">立即同步</button>
+          </div>
+        </div>
+        <div id="archiveStatusBoard"></div>
+      </section>
       <form id="wecomForm" class="wecom-form">
         <input name="parent_nickname" placeholder="企微会话名/家长名，如：艺博展讯" required />
         <input name="family_id" placeholder="家庭编号，可空" />

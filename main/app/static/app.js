@@ -811,6 +811,8 @@ function switchTab(tabId) {
   $("pageTitle").textContent = TAB_TITLES[tabId] || (active ? (active.dataset.title || active.textContent.trim()) : "工作台");
   // Agent 评测很重，只在进入系统设置页时惰性运行，不占刷新关键路径。
   if (tabId === "templates") refreshAgentEval();
+  // 会话存档状态单独惰性拉取。
+  if (tabId === "wecom") refreshArchiveStatus();
   // 设备页每 5 秒轮询刷新在线状态；离开则停止。
   if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
   if (tabId === "devices") {
@@ -1857,6 +1859,61 @@ function renderWecomPage() {
   if (!state.selectedFamilyId) {
     $("wecomPreview").innerHTML = emptyState("请选择一个会话", "选择左侧已登记会话后，这里会汇总聊天记录和 AI 输出。");
   }
+  renderArchiveStatus();
+}
+
+// 渲染会话内容存档状态卡（官方 API 接入的健康度）。
+function renderArchiveStatus() {
+  const pill = $("archiveStatusPill");
+  const board = $("archiveStatusBoard");
+  if (!board) return;
+  const st = state.archiveStatus;
+  if (!st) {
+    if (pill) { pill.textContent = "检查中…"; pill.className = "badge"; }
+    board.innerHTML = "";
+    return;
+  }
+  if (pill) {
+    if (!st.enabled) { pill.textContent = "未启用"; pill.className = "badge"; }
+    else if (!st.configured) { pill.textContent = "配置不完整"; pill.className = "badge warn"; }
+    else if (st.last_error) { pill.textContent = "同步异常"; pill.className = "badge danger"; }
+    else { pill.textContent = "已接入"; pill.className = "badge ok"; }
+  }
+  const rows = [
+    ["总开关", st.enabled ? "已启用" : "未启用（WECOM_ARCHIVE_ENABLED=false）"],
+    ["配置", st.configured ? "完整" : `缺少：${(st.missing || []).join("、") || "—"}`],
+    ["企业 corp_id", st.corp_id || "—"],
+    ["已同步 seq", String(st.seq ?? 0)],
+    ["最后消息时间", st.last_msg_time || "—"],
+    ["最后更新", st.updated_at || "—"],
+    ["最近错误", st.last_error || "无"],
+    ["已映射会话", (st.mapped_conversations || []).length ? st.mapped_conversations.join("、") : "未配置映射（按 roomid/userid 自动归档）"],
+  ];
+  board.innerHTML = `<div class="table-wrap"><table><tbody>${
+    rows.map(([k, v]) => `<tr><th style="width:140px">${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")
+  }</tbody></table></div>${st.enabled ? "" : '<p class="muted" style="margin-top:8px">未启用时消息仍走原有 RPA/手动同步链路；开通并在 .env 配置后设为启用即可切换到官方结构化接入。</p>'}`;
+}
+
+async function refreshArchiveStatus() {
+  try {
+    state.archiveStatus = await api("/api/wecom-archive/status");
+  } catch (err) {
+    state.archiveStatus = { enabled: false, configured: false, missing: ["状态接口不可用"], last_error: String(err?.message || err) };
+  }
+  renderArchiveStatus();
+}
+
+async function syncWecomArchive() {
+  return withAction("同步会话存档", async () => {
+    const res = await api("/api/wecom-archive/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    toast(`存档同步完成：拉取 ${res.pulled || 0} 条，入库 ${res.normalized || 0} 条`);
+    await refreshArchiveStatus();
+    await refreshAll();
+  });
 }
 
 // 企微同步后，用这个面板集中看聊天记录和四类 Agent 输出。
@@ -2240,7 +2297,9 @@ function renderDevices() {
     ` },
     { label: "接入包", render: (r) => {
       const id = encodeURIComponent(r.device_id);
-      const url = `/api/devices/${id}/package?server_url=${encodeURIComponent(location.origin)}`;
+      const isIpHost = /^(\d{1,3}\.){3}\d{1,3}$/.test(location.hostname);
+      const tlsVerify = location.protocol === "https:" && isIpHost ? "false" : "true";
+      const url = `/api/devices/${id}/package?server_url=${encodeURIComponent(location.origin)}&api_tls_verify=${tlsVerify}`;
       return `<button class="dl-link" data-url="${esc(url)}" data-filename="device_${esc(r.device_id)}.zip" onclick="downloadAuthorizedFile(this.dataset.url, this.dataset.filename, '下载接入包')">下载接入包</button>`;
     } },
   ], state.devices);
