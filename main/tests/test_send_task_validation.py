@@ -40,6 +40,7 @@ from app.main import (
     queue_device_conversation_check,
     queue_task_real_send,
     record_send_result,
+    resolve_real_send_device_binding,
     resolve_rpa_conversation,
     resolve_send_screenshot,
     sync_rpa_conversation,
@@ -1520,6 +1521,24 @@ class ClaimTaskGuardTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in claimed], [task.id])
         self.assertTrue(claimed[0]["server_allowed_target"])
         self.assertTrue(claimed[0]["device_allow_any_conversation"])
+
+    def test_resolve_real_send_binding_falls_back_to_single_allow_any_device(self):
+        self.dev.allow_any_conversation = True
+        self.db.commit()
+
+        device_id = resolve_real_send_device_binding(self.db, "", "Yao")
+
+        self.assertEqual(device_id, "dev-a")
+
+    def test_resolve_real_send_binding_rejects_multiple_allow_any_devices(self):
+        self.dev.allow_any_conversation = True
+        self.dev_b.allow_any_conversation = True
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            resolve_real_send_device_binding(self.db, "", "Yao")
+
+        self.assertIn("绑定了多个负责设备", ctx.exception.detail)
 
     def test_control_panel_can_queue_readonly_conversation_check_for_device(self):
         task = queue_device_conversation_check(

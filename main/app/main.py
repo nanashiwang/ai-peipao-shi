@@ -1294,13 +1294,20 @@ def resolve_real_send_device_binding(db: Session, device_id: str, target_name: s
     clean_device_id = validate_task_device_binding(db, device_id, target_name)
     if clean_device_id:
         return clean_device_id
-    devices = target_bound_devices(db, target_name)
-    if len(devices) == 1:
-        return devices[0].device_id
+    devices = db.query(Device).order_by(Device.device_id).all()
+    exact_devices = [dev for dev in devices if (target_name or "").strip() in device_conversations(dev)]
+    if len(exact_devices) == 1:
+        return exact_devices[0].device_id
     clean_target = (target_name or "").strip() or "未填写目标"
-    if not devices:
+    if len(exact_devices) > 1:
+        names = "、".join(dev.device_id for dev in exact_devices)
+        raise HTTPException(400, f"目标「{clean_target}」绑定了多个负责设备（{names}），请明确选择由哪台人员设备发送")
+    allow_any_devices = [dev for dev in devices if getattr(dev, "allow_any_conversation", False)]
+    if len(allow_any_devices) == 1:
+        return allow_any_devices[0].device_id
+    if not allow_any_devices:
         raise HTTPException(400, f"目标「{clean_target}」没有绑定唯一负责设备，请先在设备监控给对应人员设备配置负责会话")
-    names = "、".join(dev.device_id for dev in devices)
+    names = "、".join(dev.device_id for dev in allow_any_devices)
     raise HTTPException(400, f"目标「{clean_target}」绑定了多个负责设备（{names}），请明确选择由哪台人员设备发送")
 
 
