@@ -1061,6 +1061,9 @@ NON_RETRYABLE_FAILURE_TERMS = (
     "超过",
 )
 REAL_SEND_RETRYABLE_FAILURE_TERMS = (
+    "WECOM_AUTH_REQUIRED",
+    "安全验证",
+    "扫码",
     "没有找到企业微信窗口",
     "当前前台窗口不是企业微信",
     "无法确认当前前台窗口",
@@ -1495,7 +1498,10 @@ def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None
         if not device_online(dev, now):
             reasons.append(f"设备「{dev.device_id}」不在线或心跳超时")
         if dev.wecom_ok != "Y":
-            reasons.append(f"设备「{dev.device_id}」企微状态异常：{dev.wecom_ok or '未知'}")
+            detail = dev.wecom_ok or "未知"
+            if dev.last_error:
+                detail = f"{detail}（{dev.last_error[:120]}）"
+            reasons.append(f"设备「{dev.device_id}」企微状态异常：{detail}")
         if mode == "real_send" and not dev.allow_real_send:
             reasons.append(f"设备「{dev.device_id}」真实发送开关未开启")
             actions.append({
@@ -2245,12 +2251,17 @@ def _wecom_archive_poll_loop(interval_seconds: int) -> None:
         try:
             payload = build_wecom_archive_poll_payload()
             result = sync_wecom_archive(payload, request=None, db=db)
+            task_created = sum(1 for item in result.get("results", []) if item.get("send_task"))
+            notes = [item.get("auto_reply_note") for item in result.get("results", []) if item.get("auto_reply_note")]
             print(
                 "wecom_archive_poll_ok "
                 f"pulled={result.get('pulled', 0)} normalized={result.get('normalized', 0)} seq={result.get('seq', 0)}"
+                f" groups={result.get('groups', 0)} task_created={task_created}"
+                f" notes={' | '.join(notes[:3]) if notes else '-'}",
+                flush=True,
             )
         except Exception as exc:
-            print(f"wecom_archive_poll_failed detail={exc}")
+            print(f"wecom_archive_poll_failed detail={exc}", flush=True)
         finally:
             db.close()
         time.sleep(interval_seconds)
@@ -2266,7 +2277,7 @@ def start_wecom_archive_poller() -> None:
     thread = threading.Thread(target=_wecom_archive_poll_loop, args=(interval,), daemon=True)
     thread.start()
     _wecom_archive_poller_started = True
-    print(f"wecom_archive_poller_started interval={interval}s")
+    print(f"wecom_archive_poller_started interval={interval}s", flush=True)
 
 
 # 启动时初始化数据库并预置模板。
@@ -4201,10 +4212,16 @@ def archive_envelope_from_payload(item: dict) -> ArchiveEnvelope:
 @app.get("/api/wecom-archive/status")
 def wecom_archive_status(db: Session = Depends(get_db)):
     config = read_wecom_archive_config()
+    reply_config = read_reply_agent_config()
     state = archive_state_for_config(db, config.corp_id)
     db.commit()
     return {
         **wecom_archive_config_status(config),
+        "poll_enabled": _env_bool("WECOM_ARCHIVE_POLL_ENABLED", False),
+        "poll_interval_seconds": max(_env_int("WECOM_ARCHIVE_POLL_INTERVAL_SECONDS", 60), 10),
+        "auto_reply_enabled": bool(reply_config.get("auto_reply_enabled")),
+        "auto_create_send_task": bool(reply_config.get("auto_create_send_task")),
+        "auto_reply_send_mode": reply_config.get("send_mode"),
         "seq": state.seq,
         "last_msg_time": timeline_time(state.last_msg_time) if state.last_msg_time else "",
         "last_error": state.last_error,
@@ -5074,6 +5091,7 @@ def download_device_package(device_id: str, server_url: str = "", api_tls_verify
 
     # 复制项目文件，保持相对结构让 import 正常（wecom_sender 会把 main/ 加入 sys.path 再 import app.services）
     add_file(ROOT / "rpa" / "wecom_sender.py", "rpa/wecom_sender.py")
+    add_file(ROOT / "rpa" / "wecom_health.py", "rpa/wecom_health.py")
     add_file(ROOT / "rpa" / "send_guard.py", "rpa/send_guard.py")
     add_file(ROOT / "rpa" / "send_batch_guard.py", "rpa/send_batch_guard.py")
     add_file(ROOT / "rpa" / "result_outbox.py", "rpa/result_outbox.py")
@@ -5312,7 +5330,7 @@ def device_heartbeat(device_id: str, payload: HeartbeatIn, dev: Device = Depends
         raise HTTPException(403, "device_id 与鉴权头不一致")
     dev.last_heartbeat = datetime.utcnow()
     dev.status = "online"
-    dev.wecom_ok = payload.wecom_ok or dev.wecom_ok
+    dev.wecom_ok = (payload.wecom_ok or dev.wecom_ok or "")[:10]
     dev.last_error = payload.detail
     dev.outbox_pending_count = max(int(payload.outbox_pending_count or 0), 0)
     dev.outbox_last_error = (payload.outbox_last_error or "")[:500]

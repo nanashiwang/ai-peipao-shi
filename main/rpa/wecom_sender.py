@@ -54,6 +54,31 @@ except ModuleNotFoundError:
     )
 
 try:
+    from rpa.wecom_health import (
+        WECOM_STATUS_AUTH_REQUIRED,
+        WECOM_STATUS_ERROR,
+        WECOM_STATUS_NOT_FOUND,
+        WECOM_STATUS_OK,
+        clear_health_cache,
+        detect_qr_auth_page_from_image,
+        detect_wecom_unavailable_text,
+        read_cached_unavailable_health,
+        write_unavailable_health_cache,
+    )
+except ModuleNotFoundError:
+    from wecom_health import (
+        WECOM_STATUS_AUTH_REQUIRED,
+        WECOM_STATUS_ERROR,
+        WECOM_STATUS_NOT_FOUND,
+        WECOM_STATUS_OK,
+        clear_health_cache,
+        detect_qr_auth_page_from_image,
+        detect_wecom_unavailable_text,
+        read_cached_unavailable_health,
+        write_unavailable_health_cache,
+    )
+
+try:
     from rpa.send_guard import (
         SendGuardError,
         add_send_trace,
@@ -998,6 +1023,91 @@ def _cleanup_debug_image(path, config: dict):
     if config.get("keep_debug_screenshots", False):
         return
     _unlink_quietly(path)
+
+
+def _wecom_health_cache_filename(config: dict) -> str:
+    return str(config.get("wecom_health_cache_file") or ".wecom_health_cache.json")
+
+
+def _wecom_health_cache_ttl(config: dict) -> int:
+    try:
+        return max(0, int(config.get("wecom_health_cache_seconds", 180) or 180))
+    except Exception:
+        return 180
+
+
+def cached_wecom_unavailable(config: dict) -> dict | None:
+    return read_cached_unavailable_health(ROOT, _wecom_health_cache_ttl(config), _wecom_health_cache_filename(config))
+
+
+def cache_wecom_unavailable(config: dict, status: str, detail: str) -> None:
+    write_unavailable_health_cache(ROOT, status, detail, _wecom_health_cache_filename(config))
+
+
+def clear_wecom_unavailable_cache(config: dict) -> None:
+    clear_health_cache(ROOT, _wecom_health_cache_filename(config))
+
+
+def wecom_window_crop_box_for_image(window, image_path: Path) -> tuple[int, int, int, int] | None:
+    if Image is None:
+        return None
+    try:
+        with Image.open(image_path) as image:
+            image_width, image_height = image.size
+        scale = get_screen_scale(image_width)
+        rect = window.rectangle()
+        left = max(0, min(image_width, int(rect.left / scale)))
+        top = max(0, min(image_height, int(rect.top / scale)))
+        right = max(0, min(image_width, int(rect.right / scale)))
+        bottom = max(0, min(image_height, int(rect.bottom / scale)))
+        if right <= left or bottom <= top:
+            return None
+        return left, top, right, bottom
+    except Exception:
+        return None
+
+
+def detect_wecom_unavailable_reason(
+    window,
+    config: dict,
+    *,
+    include_screenshot: bool = True,
+    activate_before_screenshot: bool = False,
+    reason: str = "health",
+) -> str:
+    """识别企微是否处于安全验证/登录页；命中时必须阻断真实发送。"""
+    text_reason = detect_wecom_unavailable_text(f"{control_text(window)}\n{visible_text(window)}")
+    if text_reason:
+        return text_reason
+    if not include_screenshot or not config.get("wecom_health_screenshot_detection_enabled", True):
+        return ""
+    screenshot_path = None
+    try:
+        if activate_before_screenshot:
+            activate(window, config)
+            ensure_foreground_wecom(window, config)
+        screenshot_path = capture_fullscreen_image(f"health_{reason}", config)
+        crop_box = wecom_window_crop_box_for_image(window, screenshot_path)
+        return detect_qr_auth_page_from_image(screenshot_path, crop_box)
+    finally:
+        if screenshot_path:
+            _cleanup_debug_image(screenshot_path, config)
+
+
+def verify_wecom_ready(window, config: dict, stage: str = "发送前") -> None:
+    reason = detect_wecom_unavailable_reason(
+        window,
+        config,
+        include_screenshot=True,
+        activate_before_screenshot=bool(config.get("wecom_ready_check_activate_for_screenshot", True)),
+        reason=stage,
+    )
+    if not reason:
+        clear_wecom_unavailable_cache(config)
+        return
+    cache_wecom_unavailable(config, WECOM_STATUS_AUTH_REQUIRED, reason)
+    add_send_trace(config, f"{stage}企微不可用:{reason}")
+    raise RpaError(f"WECOM_AUTH_REQUIRED: {reason}")
 
 
 def click_window_ratio(window, rx: float, ry: float, config: dict):
@@ -2594,6 +2704,7 @@ def process_conversation_check_task(task: dict, config: dict) -> tuple[str, str,
     }
     try:
         window = find_wecom_window(task_config)
+        verify_wecom_ready(window, task_config, "只读校验前")
         search_conversation(window, target, task_config)
         verify_active_conversation(window, target, task_config)
         messages = extract_chat_messages(window, target, task_config)
@@ -2649,6 +2760,7 @@ def process_task(task: dict, config: dict):
             add_send_trace(task_config, f"发送前瞬时异常重试:{attempt}/{attempts}")
         try:
             window = find_wecom_window(task_config)
+            verify_wecom_ready(window, task_config, "发送前")
             search_conversation(window, target, task_config)
             verify_active_conversation(window, target, task_config)  # 发送前安全闸门：OCR 校验聊天标题，防发错群
             status, detail = send_message(window, content, task_config)
@@ -2686,6 +2798,8 @@ def send_task_and_record(task: dict, config: dict):
         post_send_result(config, task_id, payload)
     except Exception as exc:
         queue_send_result(config, task_id, payload, exc)
+    if "WECOM_AUTH_REQUIRED" in detail:
+        send_heartbeat(config)
     print(f"task={task_id} target={task.get('target_name')} mode={task.get('send_mode') or 'config_default'} status={status} detail={detail}")
     return status, detail
 
@@ -2809,15 +2923,39 @@ def send_heartbeat(config: dict):
     device_id = config.get("device_id", "")
     if not device_id:
         return None
-    wecom_ok = "N"
+    wecom_ok = WECOM_STATUS_NOT_FOUND
+    detail = ""
     try:
-        wins = find_wecom_windows(Desktop(backend="uia"), config)
-        wecom_ok = "Y" if wins else "N"
-    except Exception:
-        wecom_ok = "N"
+        cached = cached_wecom_unavailable(config)
+        if cached:
+            wecom_ok = str(cached.get("status") or WECOM_STATUS_AUTH_REQUIRED)[:10]
+            detail = str(cached.get("detail") or "")
+        else:
+            wins = find_wecom_windows(Desktop(backend="uia"), config)
+            if wins:
+                reason = detect_wecom_unavailable_reason(
+                    wins[0],
+                    config,
+                    include_screenshot=bool(config.get("wecom_heartbeat_screenshot_detection_enabled", True)),
+                    activate_before_screenshot=bool(config.get("wecom_heartbeat_activate_for_screenshot", False)),
+                    reason="heartbeat",
+                )
+                if reason:
+                    wecom_ok = WECOM_STATUS_AUTH_REQUIRED
+                    detail = reason
+                    cache_wecom_unavailable(config, wecom_ok, detail)
+                else:
+                    wecom_ok = WECOM_STATUS_OK
+                    clear_wecom_unavailable_cache(config)
+            else:
+                wecom_ok = WECOM_STATUS_NOT_FOUND
+                detail = "未找到企业微信窗口"
+    except Exception as exc:
+        wecom_ok = WECOM_STATUS_ERROR
+        detail = f"企微健康检测异常：{exc}"
     payload = {
-        "wecom_ok": wecom_ok,
-        "detail": "",
+        "wecom_ok": wecom_ok[:10],
+        "detail": detail,
         "conversations": watched_conversations(config),
         "outbox_pending_count": pending_result_count(config, ROOT) if config.get("result_outbox_enabled", True) else 0,
         "outbox_last_error": outbox_last_error(config, ROOT) if config.get("result_outbox_enabled", True) else "",
