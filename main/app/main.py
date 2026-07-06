@@ -815,6 +815,7 @@ def validate_send_task_content(content: str) -> str:
 
 AI_SENSITIVE_TERMS = ("退费", "退款", "投诉", "赔偿", "合同", "维权", "法律", "承诺效果", "保证效果", "价格争议")
 AI_UNCERTAIN_TERMS = ("不确定", "无法判断", "需要确认", "转人工", "人工介入", "主管确认", "先确认")
+AI_UNCERTAIN_NEGATION_PREFIXES = ("无需", "无须", "不需", "不需要", "不用", "不必", "不建议")
 
 
 def iter_ai_safety_texts(value) -> list[str]:
@@ -848,6 +849,9 @@ def iter_ai_safety_texts(value) -> list[str]:
 
 def ai_safety_findings(*texts: str) -> dict:
     blob = "\n".join(item for text in texts for item in iter_ai_safety_texts(text))
+    for prefix in AI_UNCERTAIN_NEGATION_PREFIXES:
+        for term in AI_UNCERTAIN_TERMS:
+            blob = re.sub(rf"{re.escape(prefix)}[\s，,。；;、]*{re.escape(term)}", "", blob)
     sensitive = sorted({term for term in AI_SENSITIVE_TERMS if term in blob})
     uncertain = sorted({term for term in AI_UNCERTAIN_TERMS if term in blob})
     return {
@@ -3924,7 +3928,52 @@ def run_checkin_pbl_agent(payload: AgentRequest, request: Request = None, db: Se
 
 
 def speaker_is_self(speaker: str) -> bool:
-    return (speaker or "").strip() in {"我", "本人", "自己", "老师", "陪跑师"}
+    clean = (speaker or "").strip()
+    if clean in {"我", "本人", "自己", "老师", "陪跑师"}:
+        return True
+    try:
+        cfg = read_wecom_archive_config()
+        self_names = set(cfg.self_userids or set())
+        self_names.update(str((cfg.user_map or {}).get(item) or "").strip() for item in cfg.self_userids or set())
+        return clean in {item for item in self_names if item}
+    except Exception:
+        return False
+
+
+def canonical_message_speaker(speaker: str, fallback: str) -> str:
+    clean = (speaker or fallback or "").strip()
+    return "我" if speaker_is_self(clean) else clean
+
+
+def maybe_update_family_target_name(family: Family, target_name: str, parent_nickname: str = "") -> None:
+    candidate = (parent_nickname or target_name or "").strip()
+    current = (family.parent_nickname or "").strip()
+    if not candidate or current == candidate:
+        return
+    if not current:
+        family.parent_nickname = candidate
+        return
+    if " / " in current and " / " not in candidate and candidate in {item.strip() for item in current.split("/") if item.strip()}:
+        family.parent_nickname = candidate
+
+
+def normalize_existing_self_speakers(db: Session, family_id: str) -> None:
+    self_names = {"我", "本人", "自己", "老师", "陪跑师"}
+    try:
+        cfg = read_wecom_archive_config()
+        self_names.update(str(item).strip() for item in (cfg.self_userids or set()) if str(item).strip())
+        self_names.update(str((cfg.user_map or {}).get(item) or "").strip() for item in (cfg.self_userids or set()))
+    except Exception:
+        pass
+    rows = (
+        db.query(RawMessage)
+        .filter(RawMessage.family_id == family_id, RawMessage.speaker.in_([item for item in self_names if item]))
+        .limit(500)
+        .all()
+    )
+    for row in rows:
+        if row.speaker != "我":
+            row.speaker = "我"
 
 
 def sync_conversation_payload(
@@ -3955,7 +4004,9 @@ def sync_conversation_payload(
         db.flush()
     elif payload.campus_name and not family.campus_name:
         family.campus_name = payload.campus_name
+    maybe_update_family_target_name(family, payload.target_name, payload.parent_nickname)
     family_id = family.family_id
+    normalize_existing_self_speakers(db, family_id)
 
     inserted = 0
     latest_parent_message = payload.latest_message.strip()
@@ -3979,6 +4030,7 @@ def sync_conversation_payload(
         if not content:
             continue
         external_id = (msg.external_id or "").strip()
+        speaker = canonical_message_speaker(msg.speaker, payload.target_name)
         if external_id:
             exists = db.query(RawMessage).filter(RawMessage.external_id == external_id).first()
         else:
@@ -3986,7 +4038,7 @@ def sync_conversation_payload(
                 db.query(RawMessage)
                 .filter(
                     RawMessage.family_id == family_id,
-                    RawMessage.speaker == (msg.speaker or payload.target_name),
+                    RawMessage.speaker == speaker,
                     RawMessage.content == content,
                     RawMessage.source == msg.source,
                 )
@@ -3994,7 +4046,6 @@ def sync_conversation_payload(
             )
         if exists:
             continue
-        speaker = msg.speaker or payload.target_name
         db.add(
             RawMessage(
                 family_id=family_id,

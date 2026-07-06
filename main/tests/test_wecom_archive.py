@@ -7,8 +7,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import WecomArchiveSyncIn, build_wecom_archive_poll_payload, sync_wecom_archive
-from app.models import AIOutput, RawMessage, WecomArchiveState
+from app.main import RpaConversationIn, RpaMessageIn, WecomArchiveSyncIn, build_wecom_archive_poll_payload, sync_conversation_payload, sync_wecom_archive
+from app.models import AIOutput, Family, RawMessage, WecomArchiveState
 from app.services.wecom_archive import WecomArchiveConfig, config_status, normalize_archive_message, ArchiveEnvelope
 
 
@@ -77,6 +77,43 @@ class WecomArchiveTest(unittest.TestCase):
 
         self.assertTrue(payload.auto_generate_reply)
         self.assertTrue(payload.auto_create_reply_task)
+
+    def test_sync_normalizes_stale_private_chat_family_and_self_speaker(self):
+        self.db.add(Family(family_id="WECOM_DM_old", parent_nickname="许宝月 / nanashi"))
+        self.db.add(
+            RawMessage(
+                family_id="WECOM_DM_old",
+                speaker="nanashi",
+                content="之前我发的消息",
+                source="企业微信存档:text",
+            )
+        )
+        self.db.commit()
+        payload = RpaConversationIn(
+            target_name="许宝月",
+            family_id="WECOM_DM_old",
+            messages=[
+                RpaMessageIn(
+                    speaker="许宝月",
+                    content="你好",
+                    message_time="2026-07-06T03:24:46",
+                    source="企业微信存档:text",
+                    external_id="wecom_archive:new",
+                )
+            ],
+            auto_generate_reply=False,
+        )
+
+        cfg = archive_config()
+        cfg.self_userids = {"nanashi"}
+        cfg.user_map = {"nanashi": "我", "XuBaoYue": "许宝月"}
+        with patch("app.main.read_wecom_archive_config", return_value=cfg):
+            sync_conversation_payload(self.db, payload, source_prefix="企业微信存档")
+
+        family = self.db.query(Family).filter_by(family_id="WECOM_DM_old").one()
+        self.assertEqual(family.parent_nickname, "许宝月")
+        speakers = [item.speaker for item in self.db.query(RawMessage).order_by(RawMessage.id).all()]
+        self.assertEqual(speakers, ["我", "许宝月"])
 
     def test_normalizes_private_archive_text_message(self):
         cfg = archive_config()

@@ -108,6 +108,11 @@ class AiSafetyBoundaryTest(unittest.TestCase):
 
         self.assertFalse(findings["requires_manual"])
 
+    def test_safety_scan_ignores_negated_manual_review_phrase(self):
+        findings = ai_safety_findings("标准首联欢迎场景，无需人工介入，直接发送模板回复即可。")
+
+        self.assertFalse(findings["requires_manual"])
+
     def test_safe_output_with_review_field_name_can_create_task(self):
         output = self.add_safe_output(status="needs_review")
         output.raw_json = json.dumps({"是否需要人工介入": False, "推荐回复": "今天继续打卡即可"}, ensure_ascii=False)
