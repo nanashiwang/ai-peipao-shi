@@ -232,6 +232,69 @@ class RealSendRiskValidationTest(unittest.TestCase):
         with self.assertRaises(HTTPException):
             validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u76f8\u540c\u5185\u5bb9", now=self.now)
 
+    def test_allows_same_content_when_duplicate_window_disabled(self):
+        task = SendTask(
+            family_id="f1",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="sent",
+            content="\u76f8\u540c\u5185\u5bb9",
+            send_mode="real_send",
+            status="sent",
+        )
+        self.db.add(task)
+        self.db.flush()
+        self.db.add(
+            SendLog(
+                task_id=task.id,
+                family_id=task.family_id,
+                target_name=task.target_name,
+                status="sent",
+                sent_at=self.now - timedelta(minutes=10),
+            )
+        )
+        self.db.commit()
+
+        self.assertIsNone(
+            validate_real_send_risk(
+                self.db,
+                "\u4e00\u5408\u5b66\u793e",
+                "\u76f8\u540c\u5185\u5bb9",
+                now=self.now,
+                duplicate_window_seconds=0,
+            )
+        )
+
+    def test_rejects_same_content_inside_custom_duplicate_window(self):
+        task = SendTask(
+            family_id="f1",
+            target_name="\u4e00\u5408\u5b66\u793e",
+            scene="sent",
+            content="\u76f8\u540c\u5185\u5bb9",
+            send_mode="real_send",
+            status="sent",
+        )
+        self.db.add(task)
+        self.db.flush()
+        self.db.add(
+            SendLog(
+                task_id=task.id,
+                family_id=task.family_id,
+                target_name=task.target_name,
+                status="sent",
+                sent_at=self.now - timedelta(minutes=2),
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(HTTPException):
+            validate_real_send_risk(
+                self.db,
+                "\u4e00\u5408\u5b66\u793e",
+                "\u76f8\u540c\u5185\u5bb9",
+                now=self.now,
+                duplicate_window_seconds=300,
+            )
+
     def test_rejects_min_interval_even_for_different_content(self):
         self.db.add(
             SendLog(

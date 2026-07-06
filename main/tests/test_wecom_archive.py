@@ -1,5 +1,6 @@
 import hashlib
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import RpaConversationIn, RpaMessageIn, WecomArchiveSyncIn, build_wecom_archive_poll_payload, sync_conversation_payload, sync_wecom_archive
-from app.models import AIOutput, Family, RawMessage, WecomArchiveState
+from app.models import AIOutput, Device, Family, RawMessage, SendLog, SendTask, WecomArchiveState
 from app.services.wecom_archive import WecomArchiveConfig, config_status, normalize_archive_message, ArchiveEnvelope
 
 
@@ -30,20 +31,20 @@ def archive_config() -> WecomArchiveConfig:
     )
 
 
-def agent_result(text: str = "收到，我来跟进。") -> dict:
+def agent_result(text: str = "收到，我来跟进。", need_human_review: bool = True) -> dict:
     return {
         "raw": {
             "agent": "ai_reply_agent",
             "推荐回复": text,
             "风险等级": "低",
-            "是否建议人工介入": True,
-            "推荐下一步动作": ["人工审核"],
+            "是否建议人工介入": need_human_review,
+            "推荐下一步动作": ["人工审核"] if need_human_review else ["加入发送任务"],
             "使用依据摘要": ["企业微信存档消息"],
         },
         "display_text": text,
         "risk_level": "低",
-        "need_human_review": True,
-        "suggested_actions": ["人工审核"],
+        "need_human_review": need_human_review,
+        "suggested_actions": ["人工审核"] if need_human_review else ["加入发送任务"],
     }
 
 
@@ -323,6 +324,85 @@ class WecomArchiveTest(unittest.TestCase):
         self.assertEqual(output.source, "企业微信存档：许宝月")
         self.assertEqual(self.db.query(WecomArchiveState).one().seq, 101)
         self.assertEqual(agent.call_count, 1)
+
+    def test_auto_reply_real_send_allows_same_content_from_prior_sent_log(self):
+        now = datetime.utcnow()
+        self.db.add(
+            Device(
+                device_id="rpa-01",
+                name="测试设备",
+                token="token",
+                conversations="[]",
+                status="online",
+                wecom_ok="Y",
+                allow_real_send=True,
+                allow_any_conversation=True,
+                last_heartbeat=now,
+            )
+        )
+        previous = SendTask(
+            family_id="WECOM_许宝月",
+            target_name="许宝月",
+            scene="sent",
+            content="收到，我来跟进。",
+            send_mode="real_send",
+            status="sent",
+            device_id="rpa-01",
+        )
+        self.db.add(previous)
+        self.db.flush()
+        self.db.add(
+            SendLog(
+                task_id=previous.id,
+                family_id=previous.family_id,
+                target_name=previous.target_name,
+                status="sent",
+                send_mode="real_send",
+                sent_at=now - timedelta(minutes=10),
+            )
+        )
+        self.db.commit()
+        payload = WecomArchiveSyncIn(
+            auto_generate_reply=True,
+            messages=[
+                {
+                    "seq": 103,
+                    "msgid": "msg-103",
+                    "from": "parent-a",
+                    "tolist": ["coach-a"],
+                    "msgtime": 1782850060000,
+                    "msgtype": "text",
+                    "text": {"content": "老师在吗"},
+                }
+            ],
+        )
+
+        with (
+            patch("app.main.AUTO_REPLY_DUPLICATE_WINDOW_SECONDS", 0),
+            patch("app.main.read_wecom_archive_config", return_value=archive_config()),
+            patch(
+                "app.main.read_reply_agent_config",
+                return_value={
+                    "auto_reply_enabled": True,
+                    "auto_create_send_task": True,
+                    "send_mode": "real_send",
+                    "tone": "standard",
+                    "reply_agent": "ai_reply_agent",
+                    "enabled_agents": ["reply_agent"],
+                    "high_risk_policy": "manual",
+                    "skip_recent_hours": 0,
+                    "max_batch": 200,
+                },
+            ),
+            patch("app.main.run_reply_agent_service", return_value=agent_result(need_human_review=False)),
+        ):
+            result = sync_wecom_archive(payload, request=None, db=self.db)
+
+        self.assertIsNotNone(result["results"][0]["send_task"])
+        task = self.db.query(SendTask).filter(SendTask.status == "pending").one()
+        self.assertEqual(task.target_name, "许宝月")
+        self.assertEqual(task.send_mode, "real_send")
+        self.assertTrue(task.scene.startswith("企微自动回复/"))
 
     def test_self_archive_message_does_not_create_reply(self):
         payload = WecomArchiveSyncIn(

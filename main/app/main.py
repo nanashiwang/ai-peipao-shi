@@ -107,10 +107,21 @@ SEND_SCREENSHOT_DIR = ROOT / "data" / "send_screenshots"
 BACKUP_DIR = ROOT / "data" / "backups"
 REPLY_AGENT_CONFIG_PATH = ROOT / "config" / "reply_agents.json"
 MAX_SEND_SCREENSHOT_BYTES = 6 * 1024 * 1024
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
+AUTO_REPLY_DUPLICATE_WINDOW_SECONDS = max(0, _env_int("AUTO_REPLY_DUPLICATE_WINDOW_SECONDS", 0))
 REAL_SEND_MIN_INTERVAL_SECONDS = 30
 SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
 DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS = 24
+AUTO_REPLY_SCENE_PREFIX = "企微自动回复"
 WEEKLY_REPORT_SCENE = "周报发送"
 CONVERSATION_CHECK_SCENE = "会话可读校验"
 CONVERSATION_CHECK_CONTENT = "只读校验：打开目标会话并读取可见消息，不粘贴不发送。"
@@ -1209,6 +1220,7 @@ def validate_real_send_risk(
     content: str,
     exclude_task_id: int = 0,
     now: datetime | None = None,
+    duplicate_window_seconds: int | None = None,
 ) -> None:
     now = now or datetime.utcnow()
     normalized = normalize_send_content(content)
@@ -1240,7 +1252,10 @@ def validate_real_send_risk(
     if last_sent:
         raise HTTPException(400, f"目标「{target_name}」距离上次发送不足 {REAL_SEND_MIN_INTERVAL_SECONDS} 秒，已阻止")
 
-    duplicate_start = now - timedelta(seconds=REAL_SEND_DUPLICATE_WINDOW_SECONDS)
+    duplicate_window = REAL_SEND_DUPLICATE_WINDOW_SECONDS if duplicate_window_seconds is None else max(0, duplicate_window_seconds)
+    if duplicate_window <= 0:
+        return
+    duplicate_start = now - timedelta(seconds=duplicate_window)
     recent_logs = (
         db.query(SendLog)
         .filter(SendLog.target_name == target_name, SendLog.status == "sent", SendLog.sent_at >= duplicate_start)
@@ -1249,8 +1264,23 @@ def validate_real_send_risk(
     for log in recent_logs:
         task = db.get(SendTask, log.task_id)
         if task and normalize_send_content(task.content) == normalized:
-            minutes = max(1, REAL_SEND_DUPLICATE_WINDOW_SECONDS // 60)
-            raise HTTPException(400, f"目标「{target_name}」近 {minutes} 分钟已发送相同内容，已阻止")
+            if duplicate_window >= 60:
+                window_label = f"{max(1, duplicate_window // 60)} 分钟"
+            else:
+                window_label = f"{duplicate_window} 秒"
+            raise HTTPException(400, f"目标「{target_name}」近 {window_label} 已发送相同内容，已阻止")
+
+
+def send_task_duplicate_window_seconds(task: SendTask) -> int | None:
+    scene = (task.scene or "").strip()
+    if scene.startswith(AUTO_REPLY_SCENE_PREFIX):
+        return AUTO_REPLY_DUPLICATE_WINDOW_SECONDS
+    return None
+
+
+def auto_reply_task_scene(raw_scene: str) -> str:
+    scene = (raw_scene or "普通咨询").strip()
+    return f"{AUTO_REPLY_SCENE_PREFIX}/{scene}"[:80]
 
 
 def device_conversations(dev: Device) -> list[str]:
@@ -2233,13 +2263,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except Exception:
-        return default
 
 
 def build_wecom_archive_poll_payload() -> WecomArchiveSyncIn:
@@ -4115,14 +4138,19 @@ def sync_conversation_payload(
                         if send_mode == "real_send":
                             device_id = resolve_real_send_device_binding(db, "", payload.target_name)
                             validate_real_send_device_binding(device_id)
-                            validate_real_send_risk(db, payload.target_name, content)
+                            validate_real_send_risk(
+                                db,
+                                payload.target_name,
+                                content,
+                                duplicate_window_seconds=AUTO_REPLY_DUPLICATE_WINDOW_SECONDS,
+                            )
                         else:
                             device_id = ""
                         validate_ai_output_send_boundary(ai_output, content, send_mode)
                         task = SendTask(
                             family_id=family_id,
                             target_name=payload.target_name,
-                            scene=result["raw"].get("场景类型", "企微AI回复"),
+                            scene=auto_reply_task_scene(str(result["raw"].get("场景类型") or "普通咨询")),
                             content=content,
                             device_id=device_id,
                             send_mode=send_mode,
@@ -4544,7 +4572,13 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     if send_mode == "real_send":
         clean_device_id = resolve_real_send_device_binding(db, device_id or "", target_name)
         validate_real_send_device_binding(clean_device_id)
-        validate_real_send_risk(db, target_name, content, exclude_task_id=task.id)
+        validate_real_send_risk(
+            db,
+            target_name,
+            content,
+            exclude_task_id=task.id,
+            duplicate_window_seconds=send_task_duplicate_window_seconds(task),
+        )
     else:
         clean_device_id = validate_task_device_binding(db, device_id or "", target_name)
     next_status = payload.status
@@ -4622,7 +4656,13 @@ def queue_task_real_send(
     device_id = task.device_id if not payload or payload.device_id is None else payload.device_id
     clean_device_id = resolve_real_send_device_binding(db, device_id or "", task.target_name)
     validate_real_send_device_binding(clean_device_id)
-    validate_real_send_risk(db, task.target_name, content, exclude_task_id=task.id)
+    validate_real_send_risk(
+        db,
+        task.target_name,
+        content,
+        exclude_task_id=task.id,
+        duplicate_window_seconds=send_task_duplicate_window_seconds(task),
+    )
     before = send_task_snapshot(task)
     task.content = content
     task.device_id = clean_device_id
@@ -4651,7 +4691,13 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
     if task.send_mode == "real_send":
         clean_device_id = resolve_real_send_device_binding(db, task.device_id or "", task.target_name)
         validate_real_send_device_binding(clean_device_id)
-        validate_real_send_risk(db, task.target_name, content, exclude_task_id=task.id)
+        validate_real_send_risk(
+            db,
+            task.target_name,
+            content,
+            exclude_task_id=task.id,
+            duplicate_window_seconds=send_task_duplicate_window_seconds(task),
+        )
     else:
         clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
     before = send_task_snapshot(task)
@@ -5416,7 +5462,13 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
             task.content = validate_send_task_content(task.content)
             task.send_mode = validate_send_task_execution_guard(task, reference_time=execution_reference_time)
             if task.send_mode == "real_send":
-                validate_real_send_risk(db, task.target_name, task.content, exclude_task_id=task.id)
+                validate_real_send_risk(
+                    db,
+                    task.target_name,
+                    task.content,
+                    exclude_task_id=task.id,
+                    duplicate_window_seconds=send_task_duplicate_window_seconds(task),
+                )
         except HTTPException as exc:
             task.status = "failed"
             db.add(
