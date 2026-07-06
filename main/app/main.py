@@ -4027,7 +4027,7 @@ def sync_conversation_payload(
     normalize_existing_self_speakers(db, family_id)
 
     inserted = 0
-    latest_parent_message = payload.latest_message.strip()
+    latest_parent_message = ""
     readable_messages = [msg for msg in payload.messages if (msg.content or "").strip()]
     empty_title_check = bool(payload.conversation_opened and payload.empty_conversation_ok and not readable_messages)
     proof_source = next((msg.source for msg in readable_messages if (msg.source or "").strip()), "")
