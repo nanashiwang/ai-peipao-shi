@@ -172,7 +172,7 @@ http://127.0.0.1:8000
 - `rpa/wecom_sender.py`：真实企业微信 PC 端 RPA 发送器，使用 pywinauto / pywin32 / pyperclip。
 - `APP_ENV`：`local/pilot/production` 等运行环境；`production` 会强制校验数据库和 ARK 密钥隔离。
 - `DATABASE_URL`：本地默认 SQLite，Docker 默认 PostgreSQL；正式环境禁止使用 SQLite。
-- `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_CAMPUS_NAMES`：管理端鉴权配置；Docker 试点和正式环境默认启用。首次打开控制端请进入「登录注册」注册第一个账号，该账号会自动成为超管；后续账号需超管登录后创建。未显式配置 `ADMIN_AUTH_SECRET` 的试点环境会在 `config/admin_secret.txt` 自动生成持久化密钥，正式环境必须显式设置密钥。
+- `ADMIN_AUTH_REQUIRED` / `ADMIN_AUTH_SECRET` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_CAMPUS_NAMES`：管理端鉴权配置；Docker 试点和正式环境默认启用。首次打开控制端请进入「登录注册」注册第一个账号，该账号会自动成为超管；后续账号需超管登录后创建。未显式配置 `ADMIN_AUTH_SECRET` 的试点环境会在 `config/admin_secret.txt` 自动生成持久化密钥，正式环境必须显式设置密钥。`ADMIN_TOKEN_TTL_SECONDS` / `PARENT_TOKEN_TTL_SECONDS` 可配置登录有效期，默认 30 天，最小 1 小时、最大 365 天。
 - `ADMIN_RATE_LIMIT_ENABLED` / `ADMIN_API_RATE_LIMIT` / `ADMIN_API_RATE_WINDOW_SECONDS` / `ADMIN_LOGIN_RATE_LIMIT` / `ADMIN_LOGIN_RATE_WINDOW_SECONDS`：管理端登录与控制端 API 限流配置；默认启用，设备心跳、领取任务和 RPA 回写接口不受影响。
 - `SEND_LOG_RETENTION_DAYS` / `SEND_SCREENSHOT_RETENTION_DAYS` / `RUNTIME_LOG_RETENTION_DAYS`：发送日志、截图证据、运行日志的保留天数；控制端可先预览，再显式确认清理。
 

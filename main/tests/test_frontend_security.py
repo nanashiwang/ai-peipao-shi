@@ -59,3 +59,13 @@ def test_send_artifacts_are_not_rendered_as_direct_href():
     assert 'href="${esc(item.screenshot_path)}"' not in app_js
     assert 'data-artifact="${esc(log.screenshot_path)}"' in app_js
     assert 'data-artifact="${esc(item.screenshot_path)}"' in app_js
+
+
+def test_frontend_handles_auth_expiry_consistently():
+    app_js = read(STATIC / "app.js")
+
+    assert "function throwResponseError" in app_js
+    assert "isTokenAuthFailure(res.status, text)" in app_js
+    assert "登录已失效，请重新登录" in app_js
+    assert "if (isLoginExpiredMessage(err?.message)) throw err;" in app_js
+    assert "if (!res.ok) await throwResponseError(res);" in app_js

@@ -1,9 +1,12 @@
 import unittest
+from unittest.mock import patch
 
 from app.services.admin_auth import (
     admin_auth_required,
     admin_auth_secret,
+    admin_token_ttl_seconds,
     normalize_campus_names,
+    parent_token_ttl_seconds,
     path_requires_admin_auth,
     role_allowed_for_request,
     sign_admin_token,
@@ -41,6 +44,20 @@ class AdminAuthTest(unittest.TestCase):
             verify_admin_token(token, "wrong", now=120)
         with self.assertRaises(ValueError):
             verify_admin_token(token, "secret", now=200)
+
+    def test_token_ttl_defaults_are_long_lived_and_configurable(self):
+        self.assertEqual(admin_token_ttl_seconds({}), 30 * 24 * 3600)
+        self.assertEqual(parent_token_ttl_seconds({}), 30 * 24 * 3600)
+        self.assertEqual(admin_token_ttl_seconds({"ADMIN_TOKEN_TTL_SECONDS": "7200"}), 7200)
+        self.assertEqual(parent_token_ttl_seconds({"PARENT_TOKEN_TTL_SECONDS": "7200"}), 7200)
+        self.assertEqual(admin_token_ttl_seconds({"ADMIN_TOKEN_TTL_SECONDS": "bad"}), 30 * 24 * 3600)
+        self.assertEqual(admin_token_ttl_seconds({"ADMIN_TOKEN_TTL_SECONDS": "1"}), 3600)
+
+        with patch.dict("os.environ", {"ADMIN_TOKEN_TTL_SECONDS": "7200"}):
+            token = sign_admin_token("ops", "admin", "系统管理员", "secret", now=100)
+        verify_admin_token(token, "secret", now=100 + 7199)
+        with self.assertRaises(ValueError):
+            verify_admin_token(token, "secret", now=100 + 7201)
 
     def test_token_keeps_account_campus_scope(self):
         token = sign_admin_token("ops", "readonly", "校区主管", "secret", campus_names="南坪校区，观音桥校区", now=100)

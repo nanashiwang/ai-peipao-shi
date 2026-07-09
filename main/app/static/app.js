@@ -74,13 +74,7 @@ async function api(path, options = {}) {
   const headers = authHeaders(options.headers || {});
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) {
-    const text = await res.text();
-    if (isTokenAuthFailure(res.status, text)) {
-      saveCurrentUser(null);
-      setAuthGateVisible(true);
-      throw new Error("登录已失效，请重新登录");
-    }
-    throw new Error(text);
+    await throwResponseError(res);
   }
   return res.json();
 }
@@ -96,13 +90,28 @@ function responseDetail(text) {
 
 function isTokenAuthFailure(status, text) {
   if (status !== 401) return false;
-  return /(管理端|家长端)?\s*token\s*(无效|已过期)|请先登录/.test(responseDetail(text));
+  return /(管理端|家长端)?\s*token\s*(无效|已过期)|请先登录|登录已失效|重新登录/.test(responseDetail(text));
+}
+
+function isLoginExpiredMessage(message) {
+  return /登录已失效|重新登录|(管理端|家长端)?\s*token\s*(无效|已过期)/.test(String(message || ""));
+}
+
+async function throwResponseError(res) {
+  const text = await res.text();
+  const detail = responseDetail(text);
+  if (isTokenAuthFailure(res.status, text)) {
+    saveCurrentUser(null);
+    setAuthGateVisible(true);
+    throw new Error("登录已失效，请重新登录");
+  }
+  throw new Error(detail || `HTTP ${res.status}`);
 }
 
 async function openSendArtifact(path) {
   return withAction("打开截图", async () => {
     const res = await fetch(path, { headers: authHeaders() });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) await throwResponseError(res);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const opened = window.open(url, "_blank", "noopener");
@@ -128,7 +137,7 @@ function filenameFromDisposition(header, fallback) {
 async function downloadAuthorizedFile(path, fallbackName, label = "下载文件") {
   return withAction(label, async () => {
     const res = await fetch(path, { headers: authHeaders() });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) await throwResponseError(res);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -161,7 +170,10 @@ function isAdminUser(user = state.currentUser) {
 }
 
 function safeApi(path, fallback, options = {}) {
-  return api(path, options).catch(() => fallback);
+  return api(path, options).catch((err) => {
+    if (isLoginExpiredMessage(err?.message)) throw err;
+    return fallback;
+  });
 }
 
 function saveCurrentUser(user) {
@@ -324,6 +336,13 @@ async function withAction(label, fn) {
     return result;
   } catch (err) {
     const message = err?.message || String(err);
+    if (isLoginExpiredMessage(message)) {
+      setActionStatus("登录已失效，请重新登录", "error");
+      setAuthGateVisible(true);
+      toast("登录已失效，请重新登录");
+      console.warn(`[action:auth-expired] ${label}`, err);
+      return null;
+    }
     setActionStatus(`${label}失败：${message}`, "error");
     if (label === "刷新数据" && isInitialDataEmpty()) renderGlobalError(message);
     toast(`${label}失败：${message}`);
@@ -3591,7 +3610,7 @@ async function bootApp() {
       restoreActiveTab();
     }
   } catch (err) {
-    if (String(err?.message || "").includes("401")) {
+    if (isLoginExpiredMessage(err?.message)) {
       saveCurrentUser(null);
       setAuthGateVisible(true);
       toast("登录已失效，请重新登录");

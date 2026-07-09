@@ -39,6 +39,10 @@ ADMIN_ONLY_PREFIXES = (
     "/api/import",
     "/api/sample-data",
 )
+DEFAULT_ADMIN_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+DEFAULT_PARENT_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+MIN_TOKEN_TTL_SECONDS = 3600
+MAX_TOKEN_TTL_SECONDS = 365 * 24 * 3600
 PUBLIC_PATHS = {
     "/health",
     "/api/admin/auth/status",
@@ -134,23 +138,41 @@ def normalize_campus_names(value) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _token_ttl_seconds(env: dict | None, name: str, default: int) -> int:
+    source = env or os.environ
+    try:
+        value = int(str(source.get(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+    return min(max(value, MIN_TOKEN_TTL_SECONDS), MAX_TOKEN_TTL_SECONDS)
+
+
+def admin_token_ttl_seconds(env: dict | None = None) -> int:
+    return _token_ttl_seconds(env, "ADMIN_TOKEN_TTL_SECONDS", DEFAULT_ADMIN_TOKEN_TTL_SECONDS)
+
+
+def parent_token_ttl_seconds(env: dict | None = None) -> int:
+    return _token_ttl_seconds(env, "PARENT_TOKEN_TTL_SECONDS", DEFAULT_PARENT_TOKEN_TTL_SECONDS)
+
+
 def sign_admin_token(
     username: str,
     role: str,
     display_name: str,
     secret: str,
-    ttl_seconds: int = 8 * 3600,
+    ttl_seconds: int | None = None,
     now: int | None = None,
     campus_names=None,
 ) -> str:
     if role not in ADMIN_ROLES:
         raise ValueError("非管理端角色不能签发控制端 token")
     issued_at = int(now if now is not None else time.time())
+    ttl = int(ttl_seconds if ttl_seconds is not None else admin_token_ttl_seconds())
     payload = {
         "username": username,
         "role": role,
         "display_name": display_name,
-        "exp": issued_at + int(ttl_seconds),
+        "exp": issued_at + ttl,
         "campus_names": list(normalize_campus_names(campus_names)),
     }
     payload_b64 = _b64(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -158,14 +180,15 @@ def sign_admin_token(
     return f"{payload_b64}.{_b64(sig)}"
 
 
-def sign_parent_token(username: str, display_name: str, family_id: str, secret: str, ttl_seconds: int = 8 * 3600, now: int | None = None) -> str:
+def sign_parent_token(username: str, display_name: str, family_id: str, secret: str, ttl_seconds: int | None = None, now: int | None = None) -> str:
     issued_at = int(now if now is not None else time.time())
+    ttl = int(ttl_seconds if ttl_seconds is not None else parent_token_ttl_seconds())
     payload = {
         "username": username,
         "role": "parent",
         "display_name": display_name,
         "family_id": family_id,
-        "exp": issued_at + int(ttl_seconds),
+        "exp": issued_at + ttl,
     }
     payload_b64 = _b64(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).digest()
