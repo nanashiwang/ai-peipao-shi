@@ -1595,13 +1595,14 @@ summary { cursor: pointer; color: var(--muted); }
   padding-right: 2px;
 }
 
-#webChat .list-item small {
-  display: -webkit-box;
-  overflow: hidden;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+#webChat .list-item {
+  min-height: 44px;
+  padding: 7px 10px;
+  align-content: center;
 }
+
+#webChat .list-item strong { line-height: 1.25; }
+#webChat .list-item span { line-height: 1.25; }
 
 .chat-messages {
   height: clamp(360px, 56vh, 600px);

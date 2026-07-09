@@ -1623,8 +1623,7 @@ function renderWebChat() {
   const list = visible.length ? visible.map((item) => `
     <button class="list-item ${item.family_id === state.selectedChatFamilyId ? "selected" : ""}" onclick="selectChat('${esc(item.family_id)}')">
       <strong>${esc(item.parent_nickname || item.family_id)}</strong>
-      <span>${esc(item.child_grade || "未知年级")} · ${esc(item.message_count || 0)} 条 · ${esc(item.last_speaker || "")}</span>
-      <small>${esc(item.last_message || "")}</small>
+      <span>${esc(item.child_grade || "未知年级")} · ${esc(item.message_count || 0)} 条记录</span>
     </button>
   `).join("") : emptyState(keyword ? "没有匹配的会话" : "暂无会话", keyword ? "换一个关键词，或清空搜索框查看全部会话。" : "请先同步企业微信会话，或导入真实聊天记录。");
   $("chatConversations").innerHTML = list;
