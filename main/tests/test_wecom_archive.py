@@ -337,6 +337,8 @@ class WecomArchiveTest(unittest.TestCase):
                 wecom_ok="Y",
                 allow_real_send=True,
                 allow_any_conversation=True,
+                wecom_userid="coach-a",
+                wecom_account_name="我",
                 last_heartbeat=now,
             )
         )
@@ -403,6 +405,65 @@ class WecomArchiveTest(unittest.TestCase):
         self.assertEqual(task.target_name, "许宝月")
         self.assertEqual(task.send_mode, "real_send")
         self.assertTrue(task.scene.startswith("企微自动回复/"))
+
+    def test_auto_reply_real_send_skips_when_archive_account_unbound(self):
+        now = datetime.utcnow()
+        self.db.add(
+            Device(
+                device_id="rpa-other",
+                name="其他设备",
+                token="token",
+                conversations="[]",
+                status="online",
+                wecom_ok="Y",
+                allow_real_send=True,
+                allow_any_conversation=True,
+                wecom_userid="coach-b",
+                last_heartbeat=now,
+            )
+        )
+        self.db.commit()
+        payload = WecomArchiveSyncIn(
+            auto_generate_reply=True,
+            messages=[
+                {
+                    "seq": 104,
+                    "msgid": "msg-104",
+                    "from": "parent-a",
+                    "tolist": ["coach-a"],
+                    "msgtime": 1782850120000,
+                    "msgtype": "text",
+                    "text": {"content": "老师在吗"},
+                }
+            ],
+        )
+
+        with (
+            patch("app.main.read_wecom_archive_config", return_value=archive_config()),
+            patch(
+                "app.main.read_reply_agent_config",
+                return_value={
+                    "auto_reply_enabled": True,
+                    "auto_create_send_task": True,
+                    "send_mode": "real_send",
+                    "tone": "standard",
+                    "reply_agent": "ai_reply_agent",
+                    "enabled_agents": ["reply_agent"],
+                    "high_risk_policy": "manual",
+                    "skip_recent_hours": 0,
+                    "max_batch": 200,
+                },
+            ),
+            patch("app.main.run_reply_agent_service", return_value=agent_result(need_human_review=False)) as agent,
+        ):
+            result = sync_wecom_archive(payload, request=None, db=self.db)
+
+        note = result["results"][0]["auto_reply_note"]
+        self.assertIn("没有绑定被控端", note)
+        self.assertIsNone(result["results"][0]["send_task"])
+        self.assertEqual(self.db.query(SendTask).count(), 0)
+        self.assertEqual(self.db.query(AIOutput).count(), 0)
+        agent.assert_not_called()
 
     def test_self_archive_message_does_not_create_reply(self):
         payload = WecomArchiveSyncIn(

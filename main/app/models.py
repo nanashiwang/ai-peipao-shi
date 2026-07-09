@@ -229,6 +229,8 @@ class Device(Base):
     device_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")
     token: Mapped[str] = mapped_column(String(80), default="")
+    wecom_userid: Mapped[str] = mapped_column(String(120), default="", index=True)
+    wecom_account_name: Mapped[str] = mapped_column(String(120), default="")
     conversations: Mapped[str] = mapped_column(Text, default="[]")
     status: Mapped[str] = mapped_column(String(20), default="offline")
     wecom_ok: Mapped[str] = mapped_column(String(10), default="")

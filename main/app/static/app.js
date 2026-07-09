@@ -1933,6 +1933,11 @@ function renderArchiveStatus() {
     ["最后更新", st.updated_at || "—"],
     ["最近错误", st.last_error || "无"],
     ["已映射会话", (st.mapped_conversations || []).length ? st.mapped_conversations.join("、") : "未配置映射（按 roomid/userid 自动归档）"],
+    ["存档账号", (st.self_userids || []).length ? st.self_userids.join("、") : "未配置 WECOM_ARCHIVE_SELF_USERIDS"],
+    ["设备账号绑定", (st.device_account_bindings || []).length
+      ? st.device_account_bindings.map((item) => `${item.device_id} -> ${item.label}`).join("；")
+      : "暂无设备绑定企微账号"],
+    ["未绑定账号", (st.unbound_self_userids || []).length ? st.unbound_self_userids.join("、") : "无"],
   ];
   board.innerHTML = `<div class="table-wrap"><table><tbody>${
     rows.map(([k, v]) => `<tr><th style="width:140px">${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")
@@ -2282,6 +2287,19 @@ function deviceConversationScopeControl(device) {
   `;
 }
 
+function deviceAccountBindingControl(device) {
+  const bound = device.wecom_account_bound === true;
+  const label = device.wecom_account_label || "未绑定企微账号";
+  const detail = device.wecom_userid
+    ? `<p class="muted">userid：${esc(device.wecom_userid)}</p>`
+    : `<p class="muted">自动回复真发前必须绑定接收账号</p>`;
+  return `
+    ${badge(label, bound ? "ok" : "warn")}
+    ${detail}
+    <button onclick="editDeviceAccountBinding('${esc(device.device_id)}')">${bound ? "修改绑定" : "绑定账号"}</button>
+  `;
+}
+
 function deviceOutboxStatus(device) {
   const pending = Number(device.outbox_pending_count || 0);
   if (pending <= 0) {
@@ -2322,6 +2340,7 @@ function renderDevices() {
   $("deviceTable").innerHTML = table([
     { label: "设备ID", key: "device_id" },
     { label: "名称", key: "name" },
+    { label: "绑定企微账号", render: deviceAccountBindingControl },
     { label: "在线", render: (r) => badge(r.online ? "在线" : "离线", r.online ? "ok" : "") },
     { label: "企微", render: (r) => badge(r.wecom_ok === "Y" ? "正常" : (r.wecom_ok || "未知"), r.wecom_ok === "Y" ? "ok" : "") },
     { label: "会话可读证明", render: deviceConversationProofStatus },
@@ -3056,12 +3075,53 @@ $("deviceForm").onsubmit = async (event) => {
   await withAction("添加设备", async () => {
     const data = Object.fromEntries(new FormData(event.target).entries());
     const conversations = (data.conversations || "").split(/[,，]/).map((s) => s.trim()).filter(Boolean);
-    const dev = await api("/api/devices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: data.device_id, name: data.name || "", conversations }) });
+    const dev = await api("/api/devices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_id: data.device_id,
+        name: data.name || "",
+        wecom_userid: data.wecom_userid || "",
+        wecom_account_name: data.wecom_account_name || "",
+        conversations,
+      }),
+    });
     event.target.reset();
     toast(`设备已添加：${dev.device_id}，可在列表点「下载接入包」发给对方`);
     await refreshAll();
   });
 };
+
+async function editDeviceAccountBinding(deviceId) {
+  const device = state.devices.find((item) => item.device_id === deviceId) || {};
+  const useridRaw = window.prompt(`输入设备 ${deviceId} 当前登录企微的 userid`, device.wecom_userid || "");
+  if (useridRaw === null) return;
+  const userid = useridRaw.trim();
+  if (!userid && device.wecom_userid) {
+    const ok = window.confirm(`确认清空设备 ${deviceId} 的企微账号绑定？\n清空后，企业微信存档自动回复不会把该账号的消息派给这台设备。`);
+    if (!ok) return;
+  }
+  const accountNameRaw = window.prompt(`输入企微账号显示名（可选）`, device.wecom_account_name || "");
+  if (accountNameRaw === null) return;
+  const accountName = accountNameRaw.trim();
+  await withAction("保存设备账号绑定", async () => {
+    await api(`/api/devices/${encodeURIComponent(deviceId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: device.name || "",
+        note: device.note || "",
+        wecom_userid: userid,
+        wecom_account_name: accountName,
+        conversations: deviceConversationList(device),
+        allow_real_send: device.allow_real_send === true,
+        allow_any_conversation: device.allow_any_conversation === true,
+      }),
+    });
+    toast(userid ? `已绑定：${deviceId} -> ${userid}` : `已清空设备 ${deviceId} 的企微账号绑定`);
+    await refreshAll();
+  });
+}
 
 async function saveDeviceRealSendPolicy(deviceId, enabled) {
   const device = state.devices.find((item) => item.device_id === deviceId) || {};

@@ -122,6 +122,8 @@ def ensure_columns_for_bind(conn):
         "user_accounts": [("campus_names", "TEXT")],
         "raw_messages": [("external_id", "VARCHAR(160)")],
         "devices": [
+            ("wecom_userid", "VARCHAR(120)"),
+            ("wecom_account_name", "VARCHAR(120)"),
             ("allow_real_send", "BOOLEAN"),
             ("allow_any_conversation", "BOOLEAN"),
             ("outbox_pending_count", "INTEGER"),

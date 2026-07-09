@@ -282,6 +282,15 @@ WECOM_ARCHIVE_PRIVATE_KEY_PATH=/app/config/wecom_archive_private_key.pem
 WECOM_ARCHIVE_SELF_USERIDS=<陪跑师 userid,逗号分隔>
 ```
 
+设备与账号必须在控制端显式绑定：进入「设备监控 -> 设备列表」，给每台 Windows 被控端填写“绑定企微 userid”和“企微账号名”。`WECOM_ARCHIVE_SELF_USERIDS` 负责告诉存档 SDK 监听哪些企业成员；设备绑定负责告诉系统“哪个被控端代表哪个成员发送”。自动回复创建真实发送任务前会校验：
+
+- 存档消息能识别到接收账号；
+- 该账号已绑定唯一被控端；
+- 绑定设备覆盖目标会话，或已开启全会话；
+- 设备真实发送开关、企微状态和回读证明满足发送条件。
+
+如果账号没有绑定设备，消息只入库，不会自动生成并发送回复，避免多账号场景下发错人。
+
 更完整的接入步骤见 `docs/会话内容存档接入.md`。
 
 ## 企业微信 PC 端真实 RPA

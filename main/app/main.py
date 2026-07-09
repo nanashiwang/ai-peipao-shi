@@ -264,6 +264,8 @@ class DeviceIn(BaseModel):
     device_id: str
     name: str = ""
     note: str = ""
+    wecom_userid: str = ""
+    wecom_account_name: str = ""
     conversations: list[str] = []
     allow_real_send: bool | None = None
     allow_any_conversation: bool | None = None
@@ -272,6 +274,8 @@ class DeviceIn(BaseModel):
 class DeviceUpdateIn(BaseModel):
     name: str = ""
     note: str = ""
+    wecom_userid: str | None = None
+    wecom_account_name: str | None = None
     conversations: list[str] | None = None
     allow_real_send: bool | None = None
     allow_any_conversation: bool | None = None
@@ -343,6 +347,7 @@ class RpaConversationIn(BaseModel):
     latest_message: str = ""
     conversation_opened: bool = False
     empty_conversation_ok: bool = False
+    archive_self_userids: list[str] = Field(default_factory=list)
 
 
 class WecomArchiveSyncIn(BaseModel):
@@ -1289,6 +1294,62 @@ def device_conversations(dev: Device) -> list[str]:
     except Exception:
         return []
     return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def normalize_wecom_userid(value: str) -> str:
+    return (value or "").strip()[:120]
+
+
+def normalize_wecom_account_name(value: str) -> str:
+    return (value or "").strip()[:120]
+
+
+def device_wecom_account_label(dev: Device) -> str:
+    userid = normalize_wecom_userid(getattr(dev, "wecom_userid", ""))
+    name = normalize_wecom_account_name(getattr(dev, "wecom_account_name", ""))
+    if userid and name:
+        return f"{name}（{userid}）"
+    return userid or name or "未绑定企微账号"
+
+
+def ensure_unique_device_wecom_userid(db: Session, wecom_userid: str, device_id: str) -> None:
+    clean = normalize_wecom_userid(wecom_userid)
+    if not clean:
+        return
+    exists = db.query(Device).filter(Device.wecom_userid == clean, Device.device_id != device_id).first()
+    if exists:
+        raise HTTPException(400, f"企微账号 userid「{clean}」已绑定设备「{exists.device_id}」，一个企微账号只能绑定一台被控端")
+
+
+def devices_for_archive_account(db: Session, archive_self_userids: list[str], target_name: str) -> list[Device]:
+    userids = [normalize_wecom_userid(item) for item in archive_self_userids if normalize_wecom_userid(item)]
+    if not userids:
+        return []
+    devices = db.query(Device).filter(Device.wecom_userid.in_(userids)).order_by(Device.device_id).all()
+    clean_target = (target_name or "").strip()
+    return [
+        dev
+        for dev in devices
+        if getattr(dev, "allow_any_conversation", False) or not clean_target or clean_target in device_conversations(dev)
+    ]
+
+
+def resolve_auto_reply_device_binding(db: Session, archive_self_userids: list[str], target_name: str) -> str:
+    userids = [normalize_wecom_userid(item) for item in archive_self_userids if normalize_wecom_userid(item)]
+    if not userids:
+        raise HTTPException(400, "企业微信存档没有识别到消息接收账号，已阻止自动回复；请确认 WECOM_ARCHIVE_SELF_USERIDS 和会话存档消息参与人")
+    candidates = devices_for_archive_account(db, userids, target_name)
+    clean_target = (target_name or "").strip() or "未填写目标"
+    if len(candidates) == 1:
+        return candidates[0].device_id
+    if len(candidates) > 1:
+        names = "、".join(f"{dev.device_id}({device_wecom_account_label(dev)})" for dev in candidates)
+        raise HTTPException(400, f"消息接收账号「{'、'.join(userids)}」匹配到多台可发送设备（{names}），请保留唯一账号绑定")
+    bound = db.query(Device).filter(Device.wecom_userid.in_(userids)).order_by(Device.device_id).all()
+    if bound:
+        names = "、".join(f"{dev.device_id}({device_wecom_account_label(dev)})" for dev in bound)
+        raise HTTPException(400, f"消息接收账号「{'、'.join(userids)}」已绑定设备（{names}），但这些设备未覆盖目标「{clean_target}」；请在设备监控配置负责会话或开启全会话")
+    raise HTTPException(400, f"消息接收账号「{'、'.join(userids)}」没有绑定被控端；请在设备监控把该企微 userid 绑定到对应 Windows 设备")
 
 
 def validate_device_conversation_scope(dev: Device | None, target_name: str) -> None:
@@ -4107,6 +4168,7 @@ def sync_conversation_payload(
     task = None
     generated_outputs = []
     auto_reply_note = ""
+    auto_reply_device_id = ""
     reply_config = read_reply_agent_config()
     auto_reply_enabled = (
         payload.auto_generate_reply
@@ -4118,6 +4180,29 @@ def sync_conversation_payload(
         if has_recent_reply_output(db, family_id, reply_config["skip_recent_hours"]):
             auto_reply_note = f"已跳过自动回复：{reply_config['skip_recent_hours']} 小时内已有回复记录"
         else:
+            try:
+                send_mode_for_guard = validate_send_mode(reply_config["send_mode"])
+                if reply_config["auto_create_send_task"] and send_mode_for_guard == "real_send":
+                    if source_prefix == "企业微信存档" or payload.archive_self_userids:
+                        auto_reply_device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
+                    else:
+                        auto_reply_device_id = resolve_real_send_device_binding(db, "", payload.target_name)
+                    validate_real_send_device_binding(auto_reply_device_id)
+            except HTTPException as exc:
+                auto_reply_note = f"已跳过自动回复：{exc.detail}"
+            if auto_reply_note:
+                db.commit()
+                return {
+                    "family_id": family_id,
+                    "target_name": payload.target_name,
+                    "messages_inserted": inserted,
+                    "conversation_check": as_dict(conversation_check) if conversation_check else None,
+                    "ai_output": None,
+                    "auto_reply_enabled": auto_reply_enabled,
+                    "auto_reply_note": auto_reply_note,
+                    "generated_outputs": [],
+                    "send_task": None,
+                }
             context = build_agent_context(db, family_id)
             if reply_config["reply_agent"] == "quick_reply_agent":
                 result = run_quick_reply_agent_service(context, latest_parent_message, reply_config["tone"])
@@ -4136,7 +4221,12 @@ def sync_conversation_payload(
                         content = validate_send_task_content(result["display_text"])
                         send_mode = validate_send_mode(reply_config["send_mode"])
                         if send_mode == "real_send":
-                            device_id = resolve_real_send_device_binding(db, "", payload.target_name)
+                            device_id = auto_reply_device_id
+                            if not device_id:
+                                if source_prefix == "企业微信存档" or payload.archive_self_userids:
+                                    device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
+                                else:
+                                    device_id = resolve_real_send_device_binding(db, "", payload.target_name)
                             validate_real_send_device_binding(device_id)
                             validate_real_send_risk(
                                 db,
@@ -4249,6 +4339,24 @@ def wecom_archive_status(db: Session = Depends(get_db)):
     config = read_wecom_archive_config()
     reply_config = read_reply_agent_config()
     state = archive_state_for_config(db, config.corp_id)
+    devices = db.query(Device).order_by(Device.device_id).all()
+    account_bindings = [
+        {
+            "device_id": dev.device_id,
+            "name": dev.name,
+            "wecom_userid": normalize_wecom_userid(getattr(dev, "wecom_userid", "")),
+            "wecom_account_name": normalize_wecom_account_name(getattr(dev, "wecom_account_name", "")),
+            "label": device_wecom_account_label(dev),
+            "online": device_online(dev),
+            "allow_real_send": bool(dev.allow_real_send),
+            "allow_any_conversation": bool(dev.allow_any_conversation),
+            "conversation_count": len(device_conversations(dev)),
+        }
+        for dev in devices
+        if normalize_wecom_userid(getattr(dev, "wecom_userid", "")) or normalize_wecom_account_name(getattr(dev, "wecom_account_name", ""))
+    ]
+    bound_userids = {item["wecom_userid"] for item in account_bindings if item["wecom_userid"]}
+    configured_self_userids = set(config.self_userids or set())
     db.commit()
     return {
         **wecom_archive_config_status(config),
@@ -4261,6 +4369,8 @@ def wecom_archive_status(db: Session = Depends(get_db)):
         "last_msg_time": timeline_time(state.last_msg_time) if state.last_msg_time else "",
         "last_error": state.last_error,
         "updated_at": timeline_time(state.updated_at),
+        "device_account_bindings": account_bindings,
+        "unbound_self_userids": sorted(configured_self_userids - bound_userids),
     }
 
 
@@ -4304,6 +4414,7 @@ def sync_wecom_archive(payload: WecomArchiveSyncIn, request: Request = None, db:
                 auto_generate_all_agents=payload.auto_generate_all_agents,
                 conversation_opened=True,
                 empty_conversation_ok=False,
+                archive_self_userids=group.get("archive_self_userids") or [],
             )
             results.append(
                 sync_conversation_payload(
@@ -5025,6 +5136,8 @@ def device_view(dev: Device, db: Session) -> dict:
     data["task_counts"] = counts
     data["real_send_policy_label"] = "允许真实发送" if dev.allow_real_send else "仅试运行"
     data["conversation_scope_label"] = "全会话" if dev.allow_any_conversation else "白名单会话"
+    data["wecom_account_label"] = device_wecom_account_label(dev)
+    data["wecom_account_bound"] = bool(normalize_wecom_userid(getattr(dev, "wecom_userid", "")))
     data["outbox_blocked"] = bool((dev.outbox_pending_count or 0) > 0)
     data["outbox_status_label"] = f"结果待补传 {dev.outbox_pending_count} 条" if data["outbox_blocked"] else "结果已同步"
     proof_summary = device_conversation_proof_summary(db, dev)
@@ -5068,6 +5181,8 @@ def device_task_payload(task: SendTask, dev: Device) -> dict:
     data["device_allow_real_send"] = bool(dev.allow_real_send)
     data["server_allowed_target"] = True
     data["device_allow_any_conversation"] = bool(dev.allow_any_conversation)
+    data["device_wecom_userid"] = normalize_wecom_userid(getattr(dev, "wecom_userid", ""))
+    data["device_wecom_account_name"] = normalize_wecom_account_name(getattr(dev, "wecom_account_name", ""))
     return data
 
 
@@ -5076,9 +5191,16 @@ def device_task_payload(task: SendTask, dev: Device) -> dict:
 def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
     dev = db.query(Device).filter(Device.device_id == payload.device_id).first()
     convs = json.dumps(payload.conversations, ensure_ascii=False) if payload.conversations else None
+    wecom_userid = normalize_wecom_userid(payload.wecom_userid)
+    wecom_account_name = normalize_wecom_account_name(payload.wecom_account_name)
+    ensure_unique_device_wecom_userid(db, wecom_userid, payload.device_id)
     if dev:
         dev.name = payload.name or dev.name
         dev.note = payload.note or dev.note
+        if wecom_userid:
+            dev.wecom_userid = wecom_userid
+        if wecom_account_name:
+            dev.wecom_account_name = wecom_account_name
         if payload.allow_real_send is not None:
             dev.allow_real_send = bool(payload.allow_real_send)
         if payload.allow_any_conversation is not None:
@@ -5090,6 +5212,8 @@ def register_device(payload: DeviceIn, db: Session = Depends(get_db)):
             device_id=payload.device_id,
             name=payload.name,
             note=payload.note,
+            wecom_userid=wecom_userid,
+            wecom_account_name=wecom_account_name,
             token=secrets.token_hex(16),
             conversations=convs or "[]",
             allow_real_send=bool(payload.allow_real_send),
@@ -5123,6 +5247,8 @@ def download_device_package(device_id: str, server_url: str = "", api_tls_verify
         "api_ca_file": "",
         "device_id": dev.device_id,
         "device_token": dev.token,
+        "wecom_userid": normalize_wecom_userid(getattr(dev, "wecom_userid", "")),
+        "wecom_account_name": normalize_wecom_account_name(getattr(dev, "wecom_account_name", "")),
         "watch_conversations": convs,
         "allowed_conversations": convs,
         "use_local_ocr": False,          # 被控端走 ARK 云端定位，不装 paddleocr
@@ -5366,6 +5492,12 @@ def update_device(device_id: str, payload: DeviceUpdateIn, db: Session = Depends
         raise HTTPException(404, "设备不存在")
     dev.name = payload.name or dev.name
     dev.note = payload.note or dev.note
+    if payload.wecom_userid is not None:
+        wecom_userid = normalize_wecom_userid(payload.wecom_userid)
+        ensure_unique_device_wecom_userid(db, wecom_userid, device_id)
+        dev.wecom_userid = wecom_userid
+    if payload.wecom_account_name is not None:
+        dev.wecom_account_name = normalize_wecom_account_name(payload.wecom_account_name)
     if payload.conversations is not None:
         dev.conversations = json.dumps(payload.conversations, ensure_ascii=False)
     if payload.allow_real_send is not None:

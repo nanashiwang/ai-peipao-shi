@@ -61,6 +61,7 @@ class NormalizedArchiveMessage:
     source: str
     external_id: str
     latest_inbound: bool = False
+    archive_self_userids: list[str] | None = None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -455,6 +456,20 @@ def _conversation_key(message: dict[str, Any]) -> str:
     return "|".join(sorted(x for x in users if x))
 
 
+def _archive_self_userids_for_message(message: dict[str, Any], config: WecomArchiveConfig) -> list[str]:
+    self_userids = config.self_userids or set()
+    if not self_userids:
+        return []
+    sender = str(message.get("from") or "").strip()
+    tolist = [str(item).strip() for item in (message.get("tolist") or []) if str(item).strip()]
+    participants = {item for item in [sender, *tolist] if item}
+    matched = sorted(item for item in self_userids if item in participants)
+    if matched:
+        return matched
+    # 单账号部署下部分群聊存档不会在 tolist 里展开成员；此时可安全归属到唯一账号。
+    return sorted(self_userids) if len(self_userids) == 1 else []
+
+
 def _private_chat_target_name(participants: list[str], sender: str, config: WecomArchiveConfig, conv_key: str) -> str:
     self_userids = config.self_userids or set()
     others = [item for item in participants if item and item not in self_userids]
@@ -494,6 +509,7 @@ def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveCon
     self_userids = cfg.self_userids or set()
     is_self = bool(sender and sender in self_userids)
     speaker = "我" if is_self else _display_user(sender, cfg)
+    archive_self_userids = _archive_self_userids_for_message(message, cfg)
 
     if mapping.get("target_name"):
         target_name = str(mapping["target_name"]).strip()
@@ -513,6 +529,7 @@ def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveCon
         source=f"企业微信存档:{message.get('msgtype', 'unknown')}",
         external_id=f"wecom_archive:{msgid}" if msgid else "",
         latest_inbound=not is_self,
+        archive_self_userids=archive_self_userids,
     )
 
 
@@ -527,11 +544,13 @@ def group_archive_messages(messages: list[NormalizedArchiveMessage]) -> list[dic
                 "target_name": msg.target_name,
                 "messages": [],
                 "latest_message": "",
+                "archive_self_userids": [],
             },
         )
         item["messages"].append(msg)
         if msg.latest_inbound:
             item["latest_message"] = msg.content
+            item["archive_self_userids"] = sorted(set(item["archive_self_userids"]) | set(msg.archive_self_userids or []))
     return list(grouped.values())
 
 
