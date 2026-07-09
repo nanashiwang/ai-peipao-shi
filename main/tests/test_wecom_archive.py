@@ -325,6 +325,57 @@ class WecomArchiveTest(unittest.TestCase):
         self.assertEqual(self.db.query(WecomArchiveState).one().seq, 101)
         self.assertEqual(agent.call_count, 1)
 
+    def test_empty_recent_reply_output_does_not_block_next_auto_reply(self):
+        self.db.add(
+            AIOutput(
+                family_id="WECOM_许宝月",
+                agent_type="ai_reply",
+                status="approved",
+                display_text="",
+                edited_output="",
+                created_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+        payload = WecomArchiveSyncIn(
+            auto_generate_reply=True,
+            messages=[
+                {
+                    "seq": 102,
+                    "msgid": "msg-102",
+                    "from": "parent-a",
+                    "tolist": ["coach-a"],
+                    "msgtime": 1782850030000,
+                    "msgtype": "text",
+                    "text": {"content": "老师，刚才那条看到吗？"},
+                }
+            ],
+        )
+
+        with (
+            patch("app.main.read_wecom_archive_config", return_value=archive_config()),
+            patch(
+                "app.main.read_reply_agent_config",
+                return_value={
+                    "auto_reply_enabled": True,
+                    "auto_create_send_task": False,
+                    "send_mode": "dry_run",
+                    "tone": "standard",
+                    "reply_agent": "ai_reply_agent",
+                    "enabled_agents": ["reply_agent"],
+                    "high_risk_policy": "manual",
+                    "skip_recent_hours": 24,
+                    "max_batch": 200,
+                },
+            ),
+            patch("app.main.run_reply_agent_service", return_value=agent_result()) as agent,
+        ):
+            result = sync_wecom_archive(payload, request=None, db=self.db)
+
+        agent.assert_called_once()
+        self.assertEqual(result["results"][0]["auto_reply_note"], "")
+        self.assertEqual(self.db.query(AIOutput).count(), 2)
+
     def test_auto_reply_real_send_allows_same_content_from_prior_sent_log(self):
         now = datetime.utcnow()
         self.db.add(

@@ -1000,6 +1000,7 @@ def has_recent_reply_output(db: Session, family_id: str, hours: int) -> bool:
             AIOutput.family_id == family_id,
             AIOutput.agent_type == "ai_reply",
             AIOutput.created_at >= cutoff,
+            AIOutput.display_text != "",
         )
         .first()
         is not None
@@ -1319,6 +1320,13 @@ def send_task_duplicate_window_seconds(task: SendTask) -> int | None:
 def auto_reply_task_scene(raw_scene: str) -> str:
     scene = (raw_scene or "普通咨询").strip()
     return f"{AUTO_REPLY_SCENE_PREFIX}/{scene}"[:80]
+
+
+def ai_reply_scene(raw: dict, fallback: str = "普通咨询") -> str:
+    if not isinstance(raw, dict):
+        return fallback
+    scene = str(raw.get("场景类型") or raw.get("意图") or raw.get("scene") or fallback).strip()
+    return (scene or fallback)[:80]
 
 
 def device_conversations(dev: Device) -> list[str]:
@@ -2846,7 +2854,7 @@ def direct_send_conversation_message(family_id: str, payload: ConversationDirect
         ai_output = save_ai_output(db, family.family_id, "ai_reply", "会话工作台智能回复", result)
         ai_output.status = "task_created"
         content = validate_send_task_content(result["display_text"])
-        scene = str(result["raw"].get("场景类型") or "会话工作台智能回复")[:80]
+        scene = ai_reply_scene(result["raw"], "会话工作台智能回复")
     else:
         content = validate_send_task_content(payload.content)
 
@@ -2907,7 +2915,7 @@ def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Sessio
         task = SendTask(
             family_id=family.family_id,
             target_name=family.parent_nickname,
-            scene=reply_result["raw"].get("场景类型", "网页AI回复"),
+            scene=ai_reply_scene(reply_result["raw"], "网页AI回复"),
             content=reply_result["display_text"],
             status="pending",
         )
@@ -2940,7 +2948,7 @@ def generate_test_chat_reply(payload: ChatReplyIn, request: Request = None, db: 
         task = SendTask(
             family_id=family.family_id,
             target_name=family.parent_nickname,
-            scene=reply_result["raw"].get("场景类型", "网页AI回复"),
+            scene=ai_reply_scene(reply_result["raw"], "网页AI回复"),
             content=reply_result["display_text"],
             status="pending",
         )
@@ -4326,7 +4334,7 @@ def sync_conversation_payload(
                         task = SendTask(
                             family_id=family_id,
                             target_name=payload.target_name,
-                            scene=auto_reply_task_scene(str(result["raw"].get("场景类型") or "普通咨询")),
+                            scene=auto_reply_task_scene(ai_reply_scene(result["raw"], "普通咨询")),
                             content=content,
                             device_id=device_id,
                             send_mode=send_mode,

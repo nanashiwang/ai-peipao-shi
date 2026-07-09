@@ -105,6 +105,18 @@ def _safe_list(value) -> list[str]:
     return [str(value)]
 
 
+def _first_text(raw: dict, *keys: str) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _reply_text(raw: dict) -> str:
+    return _first_text(raw, "推荐回复", "回复正文", "reply", "reply_text", "content")
+
+
 # 把字符串/布尔值统一成布尔判断，适配模型返回的各种写法。
 def _bool_value(value) -> bool:
     if isinstance(value, bool):
@@ -189,8 +201,17 @@ def _prompt_and_knowledge(context: dict, agent_key: str, fallback_prompt: str, q
 # 统一 Ark 返回格式，保证后续保存逻辑只处理同一种结构。
 def _normalize_result(raw: dict, display_text: str, fallback_risk: str = "低", fallback_review: bool = True, actions: list[str] | None = None) -> dict:
     risk_level = str(raw.get("风险等级") or raw.get("risk_level") or fallback_risk)
-    need_review = _bool_value(raw.get("是否需要人工介入", raw.get("是否建议人工介入", raw.get("need_human_review", fallback_review))))
-    suggested_actions = _safe_list(raw.get("建议跟进动作") or raw.get("推荐下一步动作") or raw.get("suggested_actions") or actions)
+    review_value = raw.get(
+        "是否需要人工介入",
+        raw.get("是否建议人工介入", raw.get("need_human_review", raw.get("needs_human_review", fallback_review))),
+    )
+    need_review = _bool_value(review_value)
+    can_queue = raw.get("是否可加入发送任务", raw.get("can_create_send_task"))
+    if can_queue is not None and not _bool_value(can_queue):
+        need_review = True
+    if risk_level == "高":
+        need_review = True
+    suggested_actions = _safe_list(raw.get("建议跟进动作") or raw.get("推荐下一步动作") or raw.get("下一步动作") or raw.get("suggested_actions") or actions)
     return {
         "raw": raw,
         "display_text": display_text,
@@ -375,7 +396,7 @@ def run_reply_agent_service(context: dict, message: str = "", tone: str = "stand
     if ark_raw and "_ark_error" not in ark_raw:
         return _normalize_result(
             ark_raw,
-            str(ark_raw.get("推荐回复", "")),
+            _reply_text(ark_raw),
             fallback_review=False,
             actions=_safe_list(ark_raw.get("推荐下一步动作")),
         )
@@ -456,7 +477,7 @@ def run_quick_reply_agent_service(context: dict, message: str = "", tone: str = 
     if ark_raw and "_ark_error" not in ark_raw:
         return _normalize_result(
             ark_raw,
-            str(ark_raw.get("推荐回复", "")),
+            _reply_text(ark_raw),
             fallback_risk=risk_level,
             fallback_review=False,
             actions=_safe_list(ark_raw.get("推荐下一步动作")),
