@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.db import migrations_enabled, run_schema_migrations
 
 
-BASELINE_REVISION = "20260703_0001"
+HEAD_REVISION = "20260710_0003"
 
 
 class DbMigrationsTest(unittest.TestCase):
@@ -43,6 +43,8 @@ class DbMigrationsTest(unittest.TestCase):
                 self.assertIn("families", tables)
                 self.assertIn("raw_messages", tables)
                 self.assertIn("send_logs", tables)
+                self.assertIn("agent_configs", tables)
+                self.assertIn("knowledge_chunks", tables)
                 self.assertIn("alembic_version", tables)
 
                 family_columns = {column["name"] for column in inspector.get_columns("families")}
@@ -52,7 +54,7 @@ class DbMigrationsTest(unittest.TestCase):
 
                 with engine.connect() as conn:
                     version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                self.assertEqual(version, BASELINE_REVISION)
+                self.assertEqual(version, HEAD_REVISION)
             finally:
                 engine.dispose()
 

@@ -202,6 +202,7 @@
         <span class="nav-label">资料与 AI</span>
         <button data-tab="reports" data-title="AI周报"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>AI周报</button>
         <button data-tab="replies" data-title="AI回复"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>AI回复</button>
+        <button data-tab="agentConfig" data-title="Agent配置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 8.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15.4 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.36.25.74.45 1.1.6H21a2 2 0 1 1 0 4h-.09c-.4.1-.79.3-1.1.4a1.65 1.65 0 0 0-.4 1z"/></svg>Agent配置</button>
         <button data-tab="checkins" data-title="打卡/PBL"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>打卡/PBL</button>
       </div>
       <div class="nav-group">
@@ -476,6 +477,45 @@
       </section>
     </section>
 
+    <section id="agentConfig" class="panel agent-config-page">
+      <div class="section-head">
+        <div>
+          <h2>Agent配置</h2>
+          <span class="muted">维护各 Agent 的系统提示词和知识库；知识库会向量检索后注入阿里模型上下文。</span>
+        </div>
+        <div class="actions left">
+          <button type="button" onclick="refreshAgentConfig()">刷新配置</button>
+        </div>
+      </div>
+      <div id="agentConfigPanel"></div>
+      <section class="agent-knowledge-panel">
+        <div class="section-head compact-head">
+          <div>
+            <h2>知识库</h2>
+            <span class="muted">适合放服务SOP、回复口径、周报规范、打卡评价标准。</span>
+          </div>
+        </div>
+        <form id="knowledgeForm" class="template-form">
+          <input name="title" placeholder="知识标题，如：负面反馈处理SOP" required />
+          <select name="agent_scope" id="knowledgeAgentScope">
+            <option value="all">全部 Agent</option>
+          </select>
+          <input name="tags" placeholder="标签，逗号分隔，如：投诉,续费" />
+          <textarea name="content" placeholder="粘贴知识库内容，会自动切分并生成向量" required></textarea>
+          <button>加入知识库</button>
+        </form>
+        <form id="knowledgeSearchForm" class="template-form inline-form">
+          <input name="query" placeholder="测试检索：输入家长问题或场景" required />
+          <select name="agent_key" id="knowledgeSearchAgent">
+            <option value="">全部 Agent</option>
+          </select>
+          <button>测试检索</button>
+        </form>
+        <div id="knowledgeSearchResult" class="stack"></div>
+        <div id="knowledgeTable"></div>
+      </section>
+    </section>
+
     <section id="checkins" class="panel">
       <div class="section-head">
         <h2>打卡/PBL</h2>
@@ -584,6 +624,7 @@
         <form id="arkConfigForm" class="template-form">
           <input name="api_key" placeholder="阿里百炼 API-KEY (sk-...)" required />
           <input name="endpoint_id" placeholder="模型名，默认 qwen-vl-plus" />
+          <input name="embedding_model" placeholder="向量模型，默认 text-embedding-v4" />
           <button>保存密钥</button>
         </form>
       </div>

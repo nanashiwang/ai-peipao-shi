@@ -54,6 +54,14 @@ from app.services.agent_service import (
     run_reply_agent_service,
     run_weekly_report_agent as run_weekly_report_agent_service,
 )
+from app.services.agent_config_service import (
+    create_knowledge_chunks,
+    delete_knowledge_chunk,
+    list_agent_configs,
+    list_knowledge_chunks,
+    search_knowledge,
+    update_agent_config,
+)
 from app.services.agent_eval import list_agent_eval_cases, run_agent_evaluation
 from app.services.ai_mock import generate_parent_profile, generate_weekly_report
 from app.services.admin_auth import (
@@ -311,6 +319,7 @@ class ArkConfigIn(BaseModel):
     api_key: str
     endpoint_id: str = "qwen-vl-plus"
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    embedding_model: str = "text-embedding-v4"
 
 
 class ReplyAgentConfigIn(BaseModel):
@@ -323,6 +332,28 @@ class ReplyAgentConfigIn(BaseModel):
     high_risk_policy: str = "manual"
     skip_recent_hours: int = 8
     max_batch: int = 200
+
+
+class AgentConfigUpdateIn(BaseModel):
+    name: str = ""
+    system_prompt: str = ""
+    enabled: bool = True
+    retrieval_enabled: bool = True
+    retrieval_top_k: int = 5
+
+
+class KnowledgeChunkIn(BaseModel):
+    title: str
+    content: str
+    tags: str = ""
+    agent_scope: str = "all"
+    source: str = "manual"
+
+
+class KnowledgeSearchIn(BaseModel):
+    query: str
+    agent_key: str = ""
+    top_k: int = 5
 
 
 # RPA 同步会话里的单条消息结构。
@@ -3968,6 +3999,57 @@ def save_reply_agent_config(payload: ReplyAgentConfigIn):
     return reply_agent_config_view(write_reply_agent_config(payload.model_dump()))
 
 
+@app.get("/api/agent/config")
+def get_agent_config_page(db: Session = Depends(get_db)):
+    return {
+        "agents": list_agent_configs(db),
+        "knowledge_chunks": list_knowledge_chunks(db),
+    }
+
+
+@app.put("/api/agent/config/{agent_key}")
+def save_agent_config(agent_key: str, payload: AgentConfigUpdateIn, db: Session = Depends(get_db)):
+    return update_agent_config(
+        db,
+        agent_key,
+        name=payload.name,
+        system_prompt=payload.system_prompt,
+        enabled=payload.enabled,
+        retrieval_enabled=payload.retrieval_enabled,
+        retrieval_top_k=payload.retrieval_top_k,
+    )
+
+
+@app.post("/api/agent/knowledge")
+def add_agent_knowledge(payload: KnowledgeChunkIn, db: Session = Depends(get_db)):
+    chunks = create_knowledge_chunks(
+        db,
+        title=payload.title,
+        content=payload.content,
+        tags=payload.tags,
+        agent_scope=payload.agent_scope,
+        source=payload.source,
+    )
+    if not chunks:
+        raise HTTPException(400, "知识库内容不能为空")
+    return {"created": len(chunks), "chunks": chunks}
+
+
+@app.delete("/api/agent/knowledge/{chunk_id}")
+def remove_agent_knowledge(chunk_id: int, db: Session = Depends(get_db)):
+    if not delete_knowledge_chunk(db, chunk_id):
+        raise HTTPException(404, "知识库条目不存在")
+    return {"deleted": True}
+
+
+@app.post("/api/agent/knowledge/search")
+def search_agent_knowledge(payload: KnowledgeSearchIn, db: Session = Depends(get_db)):
+    return {
+        "query": payload.query,
+        "results": search_knowledge(db, payload.query, payload.agent_key, payload.top_k),
+    }
+
+
 @app.post("/api/agent/replies/auto-draft")
 def auto_draft_replies(payload: AutoReplyDraftIn | None = None, request: Request = None, db: Session = Depends(get_db)):
     data = payload or AutoReplyDraftIn()
@@ -5651,9 +5733,10 @@ def get_ark_config():
             "configured": bool(key),
             "api_key_masked": _mask_key(key),
             "endpoint_id": data.get("endpoint_id", ""),
+            "embedding_model": data.get("embedding_model", "text-embedding-v4"),
             "base_url": data.get("base_url", ""),
         }
-    return {"configured": False, "api_key_masked": "", "endpoint_id": "", "base_url": ""}
+    return {"configured": False, "api_key_masked": "", "endpoint_id": "", "embedding_model": "text-embedding-v4", "base_url": ""}
 
 
 def component_status(status: str, label: str, detail: str, metrics: dict | None = None) -> dict:
@@ -5923,11 +6006,13 @@ def save_ark_config(payload: ArkConfigIn):
         raise HTTPException(400, "api_key 不能为空")
     ARK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     model = payload.endpoint_id.strip() or "qwen-vl-plus"
+    embedding_model = payload.embedding_model.strip() or "text-embedding-v4"
     cfg = {
         "base_url": payload.base_url.strip() or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": api_key,
         "endpoint_id": model,
         "model_name": model,
+        "embedding_model": embedding_model,
     }
     ARK_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     # 清掉 ark_client 的 lru_cache，使新密钥立即生效（否则要重启后端）。
@@ -5937,4 +6022,4 @@ def save_ark_config(payload: ArkConfigIn):
         ark_client.cache_clear()
     except Exception as exc:
         print(f"ark_cache_clear_failed detail={exc}")
-    return {"ok": True, "endpoint_id": model}
+    return {"ok": True, "endpoint_id": model, "embedding_model": embedding_model}

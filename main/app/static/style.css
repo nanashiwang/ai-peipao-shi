@@ -2064,6 +2064,34 @@ summary { cursor: pointer; color: var(--muted); }
 .reply-agent-card span { color: var(--muted); font-size: 12px; line-height: 1.4; }
 
 .reply-config-status { display: grid; align-content: start; gap: 8px; }
+
+.agent-config-page { display: grid; gap: 18px; }
+.agent-config-card, .agent-knowledge-panel, .knowledge-hit {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: var(--shadow-soft);
+}
+.agent-config-card { display: grid; gap: 12px; }
+.agent-config-head, .agent-config-controls, .row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agent-config-head input {
+  margin-top: 6px;
+  max-width: 280px;
+  font-weight: 700;
+}
+.agent-config-card textarea { min-height: 150px; font-family: inherit; line-height: 1.5; }
+.agent-config-controls label { width: auto; min-width: 140px; }
+.agent-config-controls input[type="number"] { max-width: 90px; }
+.agent-knowledge-panel { display: grid; gap: 14px; }
+.inline-form { grid-template-columns: minmax(240px, 1fr) 220px auto; }
+.knowledge-hit p { margin: 8px 0; color: var(--text); line-height: 1.5; }
 .reply-record-panel { margin-top: 12px; }
 .reply-output-panel .compact-head { margin-bottom: 10px; }
 

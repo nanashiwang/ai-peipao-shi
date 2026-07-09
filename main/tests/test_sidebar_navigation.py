@@ -66,6 +66,17 @@ class SidebarNavigationTest(unittest.TestCase):
         self.assertIn("saveReplyAgentConfig", js)
         self.assertIn("/api/agent/reply-config", js)
 
+    def test_agent_config_page_exposes_prompts_and_knowledge_base(self):
+        html = Path("app/static/index.html").read_text(encoding="utf-8")
+        js = Path("app/static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-tab="agentConfig"', html)
+        self.assertIn('id="agentConfigPanel"', html)
+        self.assertIn('id="knowledgeForm"', html)
+        self.assertIn("saveAgentConfig", js)
+        self.assertIn("/api/agent/config", js)
+        self.assertIn("/api/agent/knowledge/search", js)
+
     def test_task_page_exposes_wecom_real_send_action(self):
         js = Path("app/static/app.js").read_text(encoding="utf-8")
         self.assertIn("企微试运行（不发送）", js)

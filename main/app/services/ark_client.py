@@ -33,10 +33,11 @@ def ark_config() -> dict[str, str]:
         if env_api_key.lower() in PLACEHOLDER_KEYS or not env_endpoint_id:
             raise ArkNotConfigured("ARK_API_KEY and ARK_ENDPOINT_ID must be configured together")
         return {
-            "base_url": os.getenv("ARK_BASE_URL", "").strip() or "https://ark.cn-beijing.volces.com/api/v3",
+            "base_url": os.getenv("ARK_BASE_URL", "").strip() or "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "api_key": env_api_key,
             "endpoint_id": env_endpoint_id,
             "model_name": os.getenv("ARK_MODEL_NAME", "").strip() or env_endpoint_id,
+            "embedding_model": os.getenv("ARK_EMBEDDING_MODEL", "").strip() or "text-embedding-v4",
         }
 
     path = ARK_CONFIG if ARK_CONFIG.exists() else ARK_EXAMPLE_CONFIG
@@ -48,10 +49,11 @@ def ark_config() -> dict[str, str]:
     if api_key.lower() in PLACEHOLDER_KEYS or not endpoint_id:
         raise ArkNotConfigured("config/ark.json requires api_key and endpoint_id")
     return {
-        "base_url": str(data.get("base_url") or "https://ark.cn-beijing.volces.com/api/v3"),
+        "base_url": str(data.get("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         "api_key": api_key,
         "endpoint_id": endpoint_id,
         "model_name": str(data.get("model_name") or ""),
+        "embedding_model": str(data.get("embedding_model") or "text-embedding-v4"),
     }
 
 
@@ -65,6 +67,10 @@ def ark_client() -> OpenAI:
 # 读取 endpoint id。
 def ark_endpoint_id() -> str:
     return ark_config()["endpoint_id"]
+
+
+def ark_embedding_model() -> str:
+    return ark_config().get("embedding_model") or "text-embedding-v4"
 
 
 # 尽量从模型输出里提取 JSON 对象，兼容代码块和前后包裹文本。
@@ -131,6 +137,11 @@ def call_ark_json(system_prompt: str, user_payload: dict[str, Any], temperature:
     )
     content = response.choices[0].message.content or "{}"
     return extract_json_object(content)
+
+
+def call_ark_embedding(text: str) -> list[float]:
+    response = ark_client().embeddings.create(model=ark_embedding_model(), input=text)
+    return [float(value) for value in response.data[0].embedding]
 
 
 def call_ark_vision_json(system_prompt: str, image_path: str | Path, user_text: str = "", temperature: float = 0.0) -> dict[str, Any]:

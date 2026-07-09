@@ -18,6 +18,7 @@ const state = {
   retention: {},
   backupDrills: {},
   arkConfig: {},
+  agentConfig: { agents: [], knowledge_chunks: [] },
   importTemplates: [],
   agentEval: {},
   replyAgentConfig: {},
@@ -26,6 +27,7 @@ const state = {
   accounts: [],
   conversations: [],
   chatMessages: [],
+  knowledgeSearchResults: [],
   currentUser: JSON.parse(localStorage.getItem("controlUser") || localStorage.getItem("chatUser") || "null"),
   authStatus: {},
   selectedCampusName: localStorage.getItem("campusFilter") || "",
@@ -196,7 +198,7 @@ const STATE_CACHE_FIELDS = [
   "families", "profiles", "reports", "templates", "tasks", "logs", "outputs",
   "conversations", "todayPriorities", "workbenchOverview", "devices", "auditLogs",
   "serviceQuality", "importTemplates", "replyAgentConfig", "opsHealth", "backups",
-  "retention", "accounts", "arkConfig",
+  "retention", "accounts", "arkConfig", "agentConfig",
 ];
 
 function saveStateCache() {
@@ -781,6 +783,9 @@ const GLOBAL_STATE_TARGETS = [
   "replyContext",
   "replyConfigPanel",
   "replyOutputs",
+  "agentConfigPanel",
+  "knowledgeTable",
+  "knowledgeSearchResult",
   "checkinBoard",
   "taskTable",
   "logTable",
@@ -2145,6 +2150,87 @@ function renderReplyPage() {
     : emptyState("暂无自动回复记录", "开启自动 AI 回复并同步企微消息后，这里会展示最近生成和入队情况。");
 }
 
+function agentConfigs() {
+  return (state.agentConfig?.agents || []).filter((item) => item.agent_key);
+}
+
+function knowledgeChunks() {
+  return state.agentConfig?.knowledge_chunks || [];
+}
+
+function agentScopeOptions(selected = "", includeAll = true) {
+  const agents = agentConfigs();
+  const all = includeAll ? [`<option value="all" ${selected === "all" ? "selected" : ""}>全部 Agent</option>`] : [`<option value="" ${!selected ? "selected" : ""}>全部 Agent</option>`];
+  return all.concat(agents.map((agent) => `
+    <option value="${esc(agent.agent_key)}" ${selected === agent.agent_key ? "selected" : ""}>${esc(agent.name || agent.agent_key)}</option>
+  `)).join("");
+}
+
+function renderAgentConfig() {
+  const panel = $("agentConfigPanel");
+  if (!panel) return;
+  const agents = agentConfigs();
+  panel.innerHTML = agents.length ? agents.map((agent) => `
+    <form class="agent-config-card" onsubmit="saveAgentConfig(event, '${esc(agent.agent_key)}')">
+      <div class="agent-config-head">
+        <div>
+          <span class="eyebrow">${esc(agent.agent_key)}</span>
+          <input name="name" value="${esc(agent.name || agent.agent_key)}" aria-label="Agent名称" />
+        </div>
+        <div class="actions left">
+          ${badge(agent.enabled ? "启用" : "停用", agent.enabled ? "ok" : "")}
+          ${badge(agent.retrieval_enabled ? "知识库检索" : "不检索", agent.retrieval_enabled ? "ok" : "")}
+        </div>
+      </div>
+      <textarea name="system_prompt" rows="7" placeholder="系统提示词">${esc(agent.system_prompt || "")}</textarea>
+      <div class="agent-config-controls">
+        <label class="inline-check"><input type="checkbox" name="enabled" ${agent.enabled ? "checked" : ""}>启用 Agent</label>
+        <label class="inline-check"><input type="checkbox" name="retrieval_enabled" ${agent.retrieval_enabled ? "checked" : ""}>启用知识库检索</label>
+        <label>检索条数
+          <input type="number" name="retrieval_top_k" min="1" max="12" value="${esc(agent.retrieval_top_k || 5)}">
+        </label>
+        <button>保存配置</button>
+      </div>
+    </form>
+  `).join("") : emptyState("暂无 Agent 配置", "刷新后会自动初始化默认 Agent。");
+
+  const scope = $("knowledgeAgentScope");
+  if (scope) scope.innerHTML = agentScopeOptions(scope.value || "all", true);
+  const searchScope = $("knowledgeSearchAgent");
+  if (searchScope) searchScope.innerHTML = agentScopeOptions(searchScope.value || "", false);
+  renderKnowledgeSearchResults();
+  renderKnowledgeTable();
+}
+
+function renderKnowledgeSearchResults() {
+  const el = $("knowledgeSearchResult");
+  if (!el) return;
+  const rows = state.knowledgeSearchResults || [];
+  el.innerHTML = rows.length ? rows.map((item) => `
+    <article class="knowledge-hit">
+      <div class="row-between">
+        <strong>${esc(item.title)}</strong>
+        ${badge(`相似度 ${esc(item.score ?? "—")}`, "ok")}
+      </div>
+      <p>${esc(textPreview(item.content, 260))}</p>
+      <small class="muted">${esc(item.agent_scope || "all")} · ${esc(item.embedding_model || "")}</small>
+    </article>
+  `).join("") : "";
+}
+
+function renderKnowledgeTable() {
+  const el = $("knowledgeTable");
+  if (!el) return;
+  el.innerHTML = table([
+    { label: "标题", render: (r) => `<strong>${esc(r.title)}</strong><p class="muted">${esc(textPreview(r.content, 110))}</p>` },
+    { label: "作用范围", render: (r) => badge(r.agent_scope === "all" ? "全部 Agent" : r.agent_scope, r.agent_scope === "all" ? "ok" : "") },
+    { label: "标签", key: "tags" },
+    { label: "向量模型", key: "embedding_model" },
+    { label: "更新时间", key: "updated_at" },
+    { label: "操作", render: (r) => `<button class="danger-action" onclick="deleteKnowledgeChunk(${Number(r.id)})">删除</button>` },
+  ], knowledgeChunks());
+}
+
 // 渲染回复上下文。
 async function renderReplyContext() {
   if (!$("replyContext")) return;
@@ -2393,8 +2479,8 @@ function renderArkConfig() {
   if (!el) return;
   const a = state.arkConfig || {};
   el.textContent = a.configured
-    ? `已配置：${a.api_key_masked}　模型 ${a.endpoint_id || "qwen-vl-plus"}`
-    : "未配置 —— 被控端云端定位需要它，请填入阿里百炼 API-KEY";
+    ? `已配置：${a.api_key_masked}　对话模型 ${a.endpoint_id || "qwen-vl-plus"}　向量 ${a.embedding_model || "text-embedding-v4"}`
+    : "未配置 —— Agent 和被控端云端定位需要它，请填入阿里百炼 API-KEY";
 }
 
 function renderImportTemplates() {
@@ -2463,6 +2549,7 @@ function renderAll() {
   renderProfiles();
   renderReports();
   renderReplyPage();
+  renderAgentConfig();
   renderCheckins();
   renderTasks();
   renderLogs();
@@ -2527,6 +2614,7 @@ async function refreshAll() {
       adminOnly ? api("/api/ops/retention") : Promise.resolve({}),
       adminOnly ? safeApi("/api/ark-config", {}) : Promise.resolve({}),
       adminOnly ? api("/api/import/templates") : Promise.resolve([]),
+      safeApi("/api/agent/config", { agents: [], knowledge_chunks: [] }),
       safeApi("/api/agent/reply-config", DEFAULT_REPLY_AGENT_CONFIG),
     ]);
     const [families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices] = await corePromise;
@@ -2540,8 +2628,8 @@ async function refreshAll() {
           .then((messages) => { state.chatMessages = messages; renderChatMessages(); })
           .catch(() => { state.chatMessages = state.chatMessages || []; })
       : Promise.resolve();
-    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, replyAgentConfig] = await restPromise;
-    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, replyAgentConfig });
+    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig] = await restPromise;
+    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig });
     renderAll();
     await chatPromise;
     saveStateCache();
@@ -2622,6 +2710,79 @@ async function saveReplyAgentConfig(event) {
     toast(payload.auto_reply_enabled ? "自动 AI 回复已开启" : "自动 AI 回复已关闭");
     renderReplyPage();
     renderChatAutoReplyToggle();
+  });
+}
+
+async function refreshAgentConfig() {
+  return withAction("刷新Agent配置", async () => {
+    state.agentConfig = await api("/api/agent/config");
+    renderAgentConfig();
+  });
+}
+
+async function saveAgentConfig(event, agentKey) {
+  event.preventDefault();
+  const data = new FormData(event.target);
+  const payload = {
+    name: data.get("name") || agentKey,
+    system_prompt: data.get("system_prompt") || "",
+    enabled: data.has("enabled"),
+    retrieval_enabled: data.has("retrieval_enabled"),
+    retrieval_top_k: Number(data.get("retrieval_top_k") || 5),
+  };
+  return withAction("保存Agent配置", async () => {
+    const saved = await api(`/api/agent/config/${encodeURIComponent(agentKey)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const agents = agentConfigs();
+    const idx = agents.findIndex((item) => item.agent_key === saved.agent_key);
+    if (idx >= 0) agents[idx] = saved;
+    else agents.push(saved);
+    state.agentConfig = { ...(state.agentConfig || {}), agents };
+    toast("Agent配置已保存");
+    renderAgentConfig();
+  });
+}
+
+async function saveKnowledgeChunk(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target).entries());
+  return withAction("加入知识库", async () => {
+    const result = await api("/api/agent/knowledge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    state.agentConfig = await api("/api/agent/config");
+    event.target.reset();
+    toast(`已加入 ${result.created || 0} 个知识分片`);
+    renderAgentConfig();
+  });
+}
+
+async function searchAgentKnowledge(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target).entries());
+  return withAction("测试知识检索", async () => {
+    const result = await api("/api/agent/knowledge/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...data, top_k: 5 }),
+    });
+    state.knowledgeSearchResults = result.results || [];
+    renderKnowledgeSearchResults();
+  });
+}
+
+async function deleteKnowledgeChunk(id) {
+  const ok = window.confirm(`确认删除知识库分片 #${id}？`);
+  if (!ok) return;
+  return withAction("删除知识库", async () => {
+    await api(`/api/agent/knowledge/${encodeURIComponent(id)}`, { method: "DELETE" });
+    state.agentConfig = await api("/api/agent/config");
+    renderAgentConfig();
   });
 }
 
@@ -2997,6 +3158,9 @@ $("templateForm").onsubmit = async (event) => {
   });
 };
 
+if ($("knowledgeForm")) $("knowledgeForm").onsubmit = saveKnowledgeChunk;
+if ($("knowledgeSearchForm")) $("knowledgeSearchForm").onsubmit = searchAgentKnowledge;
+
 if ($("manualTaskTarget")) $("manualTaskTarget").addEventListener("input", () => syncManualTaskDeviceSelection(true));
 if ($("manualTaskMode")) $("manualTaskMode").addEventListener("change", () => syncManualTaskDeviceSelection(true));
 
@@ -3316,7 +3480,7 @@ $("arkConfigForm").onsubmit = async (event) => {
   event.preventDefault();
   await withAction("保存ARK密钥", async () => {
     const data = Object.fromEntries(new FormData(event.target).entries());
-    await api("/api/ark-config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: data.api_key, endpoint_id: data.endpoint_id || "qwen-vl-plus" }) });
+    await api("/api/ark-config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: data.api_key, endpoint_id: data.endpoint_id || "qwen-vl-plus", embedding_model: data.embedding_model || "text-embedding-v4" }) });
     event.target.reset();
     toast("ARK 密钥已保存并生效");
     await refreshAll();

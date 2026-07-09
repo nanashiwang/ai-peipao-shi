@@ -181,6 +181,34 @@ class AIOutput(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class AgentConfig(Base):
+    __tablename__ = "agent_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_key: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    retrieval_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    retrieval_top_k: Mapped[int] = mapped_column(Integer, default=5)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(160), default="", index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[str] = mapped_column(Text, default="")
+    agent_scope: Mapped[str] = mapped_column(String(80), default="all", index=True)
+    source: Mapped[str] = mapped_column(String(120), default="manual")
+    embedding_json: Mapped[str] = mapped_column(Text, default="")
+    embedding_model: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # 待发送任务表，是后端与 RPA 发送器之间的中转队列。
 class SendTask(Base):
     __tablename__ = "send_tasks"

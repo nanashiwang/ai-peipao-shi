@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import datetime
 
 from app.models import Family, ParentProfile, RawMessage, SendLog, Template, WeeklyReport
+from app.services.agent_config_service import agent_prompt_with_knowledge
 from app.services.ark_client import ArkNotConfigured, call_ark_json
 from app.services.scenario import detect_pain_points, detect_scene
 
@@ -174,6 +175,17 @@ def _context_payload(context: dict, extra: dict | None = None) -> dict:
     return payload
 
 
+def _context_query(context: dict, latest: str = "") -> str:
+    messages = " ".join(msg.content or "" for msg in _recent_messages(context.get("messages", []), 12))
+    family = context.get("family")
+    family_text = f"{family.parent_nickname} {family.child_grade} {family.course_stage}" if family else ""
+    return " ".join(item for item in [latest, family_text, messages] if item).strip()
+
+
+def _prompt_and_knowledge(context: dict, agent_key: str, fallback_prompt: str, query: str = "") -> tuple[str, list[dict]]:
+    return agent_prompt_with_knowledge(context.get("db"), agent_key, fallback_prompt, query or _context_query(context))
+
+
 # 统一 Ark 返回格式，保证后续保存逻辑只处理同一种结构。
 def _normalize_result(raw: dict, display_text: str, fallback_risk: str = "低", fallback_review: bool = True, actions: list[str] | None = None) -> dict:
     risk_level = str(raw.get("风险等级") or raw.get("risk_level") or fallback_risk)
@@ -207,6 +219,7 @@ def build_agent_context(db, family_id: str) -> dict:
     logs = db.query(SendLog).filter(SendLog.family_id == family_id).order_by(SendLog.id.desc()).limit(5).all()
     templates = db.query(Template).filter(Template.enabled == "Y").all()
     return {
+        "db": db,
         "family": family,
         "messages": messages,
         "profile": profile,
@@ -221,9 +234,14 @@ def run_family_profile_agent(context: dict) -> dict:
     family = context["family"]
     messages = context["messages"]
     family_id = family.family_id if family else ""
-    ark_raw = _call_ark_or_none(
+    system_prompt, knowledge_hits = _prompt_and_knowledge(
+        context,
+        "family_profile_agent",
         "你是教育机构陪跑师效率系统的家庭画像Agent。只输出JSON，不要Markdown。字段必须包含：agent,family_id,家长关注点,沟通风格,满意度评级,风险等级,风险信号,续报意向,学生状态,推荐沟通策略,建议跟进动作,是否需要人工介入,使用依据摘要。",
-        _context_payload(context, {"agent": "family_profile_agent"}),
+    )
+    ark_raw = _call_ark_or_none(
+        system_prompt,
+        _context_payload(context, {"agent": "family_profile_agent", "retrieved_knowledge": knowledge_hits}),
     )
     if ark_raw and "_ark_error" not in ark_raw:
         display = (
@@ -279,9 +297,14 @@ def run_weekly_report_agent(context: dict) -> dict:
     messages = context["messages"]
     profile = context["profile"]
     family_id = family.family_id if family else ""
-    ark_raw = _call_ark_or_none(
+    system_prompt, knowledge_hits = _prompt_and_knowledge(
+        context,
+        "weekly_report_agent",
         "你是教育机构陪跑师效率系统的AI周报Agent。只输出JSON，不要Markdown。字段必须包含：agent,family_id,period,本周学习总结,学习亮点,需要关注,下周建议,给家长的话,给孩子的话,风险提示,风险等级,是否需要人工介入,是否可加入发送任务,使用依据摘要。",
-        _context_payload(context, {"agent": "weekly_report_agent"}),
+    )
+    ark_raw = _call_ark_or_none(
+        system_prompt,
+        _context_payload(context, {"agent": "weekly_report_agent", "retrieved_knowledge": knowledge_hits}),
     )
     if ark_raw and "_ark_error" not in ark_raw:
         display = (
@@ -339,9 +362,15 @@ def run_reply_agent_service(context: dict, message: str = "", tone: str = "stand
     templates = context["templates"]
     family_id = family.family_id if family else ""
     latest = message.strip() or (messages[-1].content if messages else "")
-    ark_raw = _call_ark_or_none(
+    system_prompt, knowledge_hits = _prompt_and_knowledge(
+        context,
+        "ai_reply_agent",
         "你是教育机构陪跑师效率系统的AI回复Agent。先识别场景和风险，再结合话术模板与家庭画像生成可审核回复。只输出JSON，不要Markdown。字段必须包含：agent,family_id,最新消息摘要,场景类型,风险等级,是否建议人工介入,调用模板,推荐回复,推荐下一步动作,是否生成待办,是否可加入发送任务,使用依据摘要。",
-        _context_payload(context, {"agent": "ai_reply_agent", "latest_message": latest, "tone": tone}),
+        latest,
+    )
+    ark_raw = _call_ark_or_none(
+        system_prompt,
+        _context_payload(context, {"agent": "ai_reply_agent", "latest_message": latest, "tone": tone, "retrieved_knowledge": knowledge_hits}),
     )
     if ark_raw and "_ark_error" not in ark_raw:
         return _normalize_result(
@@ -397,8 +426,14 @@ def run_quick_reply_agent_service(context: dict, message: str = "", tone: str = 
         {"speaker": msg.speaker, "content": msg.content[:120]}
         for msg in _recent_messages(messages, 8)
     ]
-    ark_raw = _call_ark_or_none(
+    system_prompt, knowledge_hits = _prompt_and_knowledge(
+        context,
+        "quick_reply_agent",
         "你是陪跑师的快速回复助手。只输出JSON，不要Markdown。字段：agent,family_id,场景类型,风险等级,推荐回复,推荐下一步动作,是否建议人工介入。回复要可直接发给家长，80-180字，先共情再给明确下一步。",
+        latest,
+    )
+    ark_raw = _call_ark_or_none(
+        system_prompt,
         {
             "agent": "quick_reply_agent",
             "family": {
@@ -415,6 +450,7 @@ def run_quick_reply_agent_service(context: dict, message: str = "", tone: str = 
                 "content": template.content[:220],
             } if template else None,
             "recent_messages": recent_rows,
+            "retrieved_knowledge": knowledge_hits,
         },
     )
     if ark_raw and "_ark_error" not in ark_raw:
@@ -453,9 +489,14 @@ def run_checkin_pbl_agent(context: dict) -> dict:
     family = context["family"]
     messages = context["messages"]
     family_id = family.family_id if family else ""
-    ark_raw = _call_ark_or_none(
+    system_prompt, knowledge_hits = _prompt_and_knowledge(
+        context,
+        "checkin_pbl_agent",
         "你是教育机构陪跑师效率系统的打卡/PBL Agent。识别完成率、未完成项、PBL点评和提醒话术。只输出JSON，不要Markdown。字段必须包含：agent,family_id,student_name,week,完成率,每日状态,状态标签,未完成项,PBL点评,提醒话术,风险等级,是否需要人工介入,是否加入发送任务,是否标记优秀作品,使用依据摘要。",
-        _context_payload(context, {"agent": "checkin_pbl_agent"}),
+    )
+    ark_raw = _call_ark_or_none(
+        system_prompt,
+        _context_payload(context, {"agent": "checkin_pbl_agent", "retrieved_knowledge": knowledge_hits}),
     )
     if ark_raw and "_ark_error" not in ark_raw:
         comment = ark_raw.get("PBL点评") or {}

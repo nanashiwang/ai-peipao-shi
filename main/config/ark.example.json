@@ -1,6 +1,7 @@
 {
-  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "api_key": "",
   "endpoint_id": "",
-  "model_name": "Doubao-Seed-2.0-pro"
+  "model_name": "qwen-vl-plus",
+  "embedding_model": "text-embedding-v4"
 }
