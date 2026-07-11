@@ -10,13 +10,22 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import RpaConversationIn, RpaMessageIn, WecomKfSyncIn, dispatch_wecom_kf_tasks, sync_conversation_payload, sync_wecom_kf_channel
+from app.main import (
+    RpaConversationIn,
+    RpaMessageIn,
+    WecomKfSyncIn,
+    dispatch_wecom_kf_tasks,
+    sync_conversation_payload,
+    sync_wecom_kf_channel,
+    verify_wecom_kf_callback,
+)
 from app.models import CustomerChannelBinding, Family, RawMessage, SendLog, SendTask
 from app.services.agent_config_service import list_agent_configs, update_agent_config
 from app.services.agent_service import build_agent_context, run_reply_agent_service
 from app.services.wecom_kf import (
     WecomKfConfig,
     callback_signature,
+    callback_config_status,
     config_status,
     decrypt_callback_request,
     normalized_inbound_message,
@@ -65,6 +74,28 @@ class WecomKfServiceTest(unittest.TestCase):
         status = config_status(WecomKfConfig(True, "corp", "", "", ""))
         self.assertFalse(status["configured"])
         self.assertIn("WECOM_KF_SECRET", status["missing"])
+
+    def test_callback_can_be_verified_before_secret_is_available(self):
+        config = WecomKfConfig(
+            enabled=True,
+            corp_id="ww-test-corp",
+            secret="",
+            token="callback-token",
+            encoding_aes_key="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        )
+        callback_status = callback_config_status(config)
+        full_status = config_status(config)
+        timestamp = "1783820000"
+        nonce = "nonce-1"
+        encrypted = encrypt_callback_value("callback-ok", config)
+        signature = callback_signature(config.token, timestamp, nonce, encrypted)
+
+        self.assertTrue(callback_status["callback_configured"])
+        self.assertFalse(full_status["configured"])
+        self.assertIn("WECOM_KF_SECRET", full_status["missing"])
+        with patch("app.main.read_wecom_kf_config", return_value=config):
+            response = verify_wecom_kf_callback(signature, timestamp, nonce, encrypted)
+        self.assertEqual(response.body.decode("utf-8"), "callback-ok")
 
     def test_callback_signature_and_aes_round_trip(self):
         config = kf_config()

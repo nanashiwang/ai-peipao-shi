@@ -114,6 +114,7 @@ from app.services.wecom_archive import (
 from app.services.wecom_kf import (
     WecomKfApiError,
     batch_get_customers,
+    callback_config_status as wecom_kf_callback_config_status,
     config_status as wecom_kf_config_status,
     decrypt_callback_request,
     normalized_inbound_message,
@@ -5109,7 +5110,7 @@ def dispatch_wecom_kf_tasks(db: Session, limit: int = 20) -> dict:
 @app.get("/api/wecom-kf/callback")
 def verify_wecom_kf_callback(msg_signature: str, timestamp: str, nonce: str, echostr: str):
     config = read_wecom_kf_config()
-    if not wecom_kf_config_status(config).get("configured"):
+    if not wecom_kf_callback_config_status(config).get("callback_configured"):
         raise HTTPException(503, "微信客服回调尚未启用或配置不完整")
     try:
         value = verify_callback_echo(echostr, signature=msg_signature, timestamp=timestamp, nonce=nonce, config=config)
@@ -5121,7 +5122,7 @@ def verify_wecom_kf_callback(msg_signature: str, timestamp: str, nonce: str, ech
 @app.post("/api/wecom-kf/callback")
 async def receive_wecom_kf_callback(request: Request, msg_signature: str, timestamp: str, nonce: str, db: Session = Depends(get_db)):
     config = read_wecom_kf_config()
-    if not wecom_kf_config_status(config).get("configured"):
+    if not wecom_kf_callback_config_status(config).get("callback_configured"):
         raise HTTPException(503, "微信客服回调尚未启用或配置不完整")
     body = (await request.body()).decode("utf-8")
     try:

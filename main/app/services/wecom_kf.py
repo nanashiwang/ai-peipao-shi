@@ -75,11 +75,10 @@ def read_wecom_kf_config() -> WecomKfConfig:
     )
 
 
-def config_status(config: WecomKfConfig | None = None) -> dict:
+def callback_config_status(config: WecomKfConfig | None = None) -> dict:
     cfg = config or read_wecom_kf_config()
     required = {
         "WECOM_KF_CORP_ID": cfg.corp_id,
-        "WECOM_KF_SECRET": cfg.secret,
         "WECOM_KF_TOKEN": cfg.token,
         "WECOM_KF_ENCODING_AES_KEY": cfg.encoding_aes_key,
     }
@@ -87,9 +86,22 @@ def config_status(config: WecomKfConfig | None = None) -> dict:
     if cfg.encoding_aes_key and len(cfg.encoding_aes_key) != 43:
         missing.append("WECOM_KF_ENCODING_AES_KEY(必须43位)")
     return {
+        "callback_configured": cfg.enabled and not missing,
+        "callback_missing": missing,
+    }
+
+
+def config_status(config: WecomKfConfig | None = None) -> dict:
+    cfg = config or read_wecom_kf_config()
+    callback_status = callback_config_status(cfg)
+    missing = list(callback_status["callback_missing"])
+    if not cfg.secret:
+        missing.append("WECOM_KF_SECRET")
+    return {
         "enabled": cfg.enabled,
         "configured": cfg.enabled and not missing,
         "missing": missing,
+        **callback_status,
         "corp_id": cfg.corp_id,
         "default_open_kfid": cfg.default_open_kfid,
         "poll_enabled": cfg.poll_enabled,
