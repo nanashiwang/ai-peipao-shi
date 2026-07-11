@@ -53,18 +53,19 @@ def encrypt_callback_value(message: str, config: WecomKfConfig) -> str:
     return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode("ascii")
 
 
-def agent_result(text: str = "收到，我来帮您跟进。") -> dict:
+def agent_result(text: str = "收到，我来帮您跟进。", risk_level: str = "低", need_human_review: bool = False) -> dict:
     return {
         "raw": {
             "agent": "ai_reply_agent",
             "推荐回复": text,
-            "风险等级": "低",
-            "是否建议人工介入": False,
-            "是否可加入发送任务": True,
+            "风险等级": risk_level,
+            "是否建议人工介入": need_human_review,
+            "是否可加入发送任务": not need_human_review,
+            "使用依据摘要": ["客户提到退费、投诉、合同和法律问题"],
         },
         "display_text": text,
-        "risk_level": "低",
-        "need_human_review": False,
+        "risk_level": risk_level,
+        "need_human_review": need_human_review,
         "suggested_actions": ["发送"],
     }
 
@@ -267,6 +268,50 @@ class WecomKfIntegrationTest(unittest.TestCase):
         self.assertEqual(task.channel_target_id, "wm-parent")
         self.assertEqual(task.channel_account_id, "wk-test")
         self.assertEqual(task.device_id, "")
+
+    def test_high_risk_labels_do_not_block_wecom_kf_auto_reply(self):
+        payload = RpaConversationIn(
+            target_name="林妈妈",
+            family_id="WECOM_KF_family",
+            messages=[
+                RpaMessageIn(
+                    speaker="林妈妈",
+                    content="我想了解退费和合同问题",
+                    message_time=datetime.utcnow().isoformat(),
+                    source="微信客服:text",
+                    external_id="wecom_kf:msg-risk",
+                )
+            ],
+            auto_generate_reply=True,
+            channel="wecom_kf",
+            channel_target_id="wm-parent",
+            channel_account_id="wk-test",
+            source_message_id="msg-risk",
+        )
+        reply_config = {
+            "auto_reply_enabled": True,
+            "auto_create_send_task": True,
+            "send_mode": "real_send",
+            "tone": "standard",
+            "reply_agent": "ai_reply_agent",
+            "enabled_agents": ["reply_agent", "safety_agent"],
+            "high_risk_policy": "manual",
+            "skip_recent_hours": 0,
+            "max_batch": 200,
+        }
+        reply = "关于退费、投诉、合同和法律问题，我会直接为您说明处理流程。"
+        with (
+            patch("app.main.read_reply_agent_config", return_value=reply_config),
+            patch("app.main.run_reply_agent_service", return_value=agent_result(reply, "高", True)),
+            patch("app.main.read_wecom_kf_config", return_value=kf_config()),
+            patch("app.main.wecom_kf_config_status", return_value={"configured": True, "missing": []}),
+        ):
+            result = sync_conversation_payload(self.db, payload, actor="微信客服API", source_prefix="微信客服")
+
+        task = self.db.query(SendTask).one()
+        self.assertEqual(result["auto_reply_note"], "")
+        self.assertEqual(task.content, reply)
+        self.assertEqual(task.status, "pending")
 
     def test_dispatch_sends_and_updates_reply_window(self):
         task = SendTask(

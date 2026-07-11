@@ -143,7 +143,6 @@ def _env_int(name: str, default: int) -> int:
 
 REAL_SEND_DUPLICATE_WINDOW_SECONDS = 3600
 AUTO_REPLY_DUPLICATE_WINDOW_SECONDS = max(0, _env_int("AUTO_REPLY_DUPLICATE_WINDOW_SECONDS", 0))
-REAL_SEND_MIN_INTERVAL_SECONDS = 30
 SEND_TASK_EXECUTION_MAX_AGE_DAYS = 7
 DEVICE_CONVERSATION_PROOF_MAX_AGE_HOURS = 24
 AUTO_REPLY_SCENE_PREFIX = "企微自动回复"
@@ -167,7 +166,7 @@ REPLY_AGENT_DEFAULT_CONFIG = {
     "tone": "standard",
     "reply_agent": "ai_reply_agent",
     "enabled_agents": [item["key"] for item in REPLY_AGENT_OPTIONS],
-    "high_risk_policy": "manual",
+    "high_risk_policy": "create_task",
     "skip_recent_hours": 8,
     "max_batch": 200,
 }
@@ -349,7 +348,7 @@ class ReplyAgentConfigIn(BaseModel):
     tone: str = "standard"
     reply_agent: str = "ai_reply_agent"
     enabled_agents: list[str] = Field(default_factory=lambda: ["context_agent", "scene_agent", "reply_agent", "safety_agent"])
-    high_risk_policy: str = "manual"
+    high_risk_policy: str = "create_task"
     skip_recent_hours: int = 8
     max_batch: int = 200
 
@@ -903,63 +902,6 @@ def validate_send_task_content(content: str) -> str:
     return text
 
 
-AI_SENSITIVE_TERMS = ("退费", "退款", "投诉", "赔偿", "合同", "维权", "法律", "承诺效果", "保证效果", "价格争议")
-AI_UNCERTAIN_TERMS = ("不确定", "无法判断", "需要确认", "转人工", "人工介入", "主管确认", "先确认")
-AI_UNCERTAIN_NEGATION_PREFIXES = ("无需", "无须", "不需", "不需要", "不用", "不必", "不建议")
-
-
-def iter_ai_safety_texts(value) -> list[str]:
-    """只扫描正文和值，避免 JSON 字段名误触发安全词。"""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        if text[0] in "{[":
-            try:
-                return iter_ai_safety_texts(json.loads(text))
-            except json.JSONDecodeError:
-                pass
-        return [value]
-    if isinstance(value, dict):
-        items: list[str] = []
-        for item in value.values():
-            items.extend(iter_ai_safety_texts(item))
-        return items
-    if isinstance(value, (list, tuple, set)):
-        items: list[str] = []
-        for item in value:
-            items.extend(iter_ai_safety_texts(item))
-        return items
-    if isinstance(value, (bool, int, float)):
-        return []
-    return [str(value)]
-
-
-def ai_safety_findings(*texts: str) -> dict:
-    blob = "\n".join(item for text in texts for item in iter_ai_safety_texts(text))
-    for prefix in AI_UNCERTAIN_NEGATION_PREFIXES:
-        for term in AI_UNCERTAIN_TERMS:
-            blob = re.sub(rf"{re.escape(prefix)}[\s，,。；;、]*{re.escape(term)}", "", blob)
-    sensitive = sorted({term for term in AI_SENSITIVE_TERMS if term in blob})
-    uncertain = sorted({term for term in AI_UNCERTAIN_TERMS if term in blob})
-    return {
-        "sensitive_terms": sensitive,
-        "uncertain_terms": uncertain,
-        "requires_manual": bool(sensitive or uncertain),
-    }
-
-
-def validate_ai_output_send_boundary(output: AIOutput, content: str, send_mode: str) -> dict:
-    findings = ai_safety_findings(output.raw_json, output.display_text, output.edited_output, content)
-    if findings["requires_manual"] and output.status != "approved":
-        raise HTTPException(400, "AI输出包含敏感或不确定内容，必须先人工审核后再加入发送任务")
-    if send_mode == "real_send" and findings["requires_manual"]:
-        raise HTTPException(400, "AI敏感/不确定内容禁止直接真实发送，请改为试运行或人工发送")
-    return findings
-
-
 def validate_send_mode(send_mode: str) -> str:
     mode = (send_mode or "dry_run").strip()
     if mode not in {"dry_run", "real_send"}:
@@ -990,9 +932,6 @@ def normalize_reply_agent_config(data: dict | None = None) -> dict:
     send_mode = str(raw.get("send_mode") or "dry_run").strip()
     if send_mode not in {"dry_run", "real_send"}:
         send_mode = "dry_run"
-    high_risk_policy = str(raw.get("high_risk_policy") or "manual").strip()
-    if high_risk_policy not in {"manual", "create_task"}:
-        high_risk_policy = "manual"
     reply_agent = str(raw.get("reply_agent") or "ai_reply_agent").strip()
     if reply_agent not in {"ai_reply_agent", "quick_reply_agent"}:
         reply_agent = "ai_reply_agent"
@@ -1003,7 +942,8 @@ def normalize_reply_agent_config(data: dict | None = None) -> dict:
         "tone": tone,
         "reply_agent": reply_agent,
         "enabled_agents": enabled_agents,
-        "high_risk_policy": high_risk_policy,
+        # 保留字段兼容旧配置，AI 风险标签只用于事后复盘，不再阻断发送。
+        "high_risk_policy": "create_task",
         "skip_recent_hours": bounded_int("skip_recent_hours", 8, 0, 168),
         "max_batch": bounded_int("max_batch", 200, 1, 500),
     }
@@ -1321,16 +1261,6 @@ def validate_real_send_risk(
             continue
         if normalize_send_content(task.content) == normalized:
             raise HTTPException(400, f"目标「{target_name}」已有相同真实发送任务，已阻止重复排队")
-
-    interval_start = now - timedelta(seconds=REAL_SEND_MIN_INTERVAL_SECONDS)
-    last_sent = (
-        db.query(SendLog)
-        .filter(SendLog.target_name == target_name, SendLog.status == "sent", SendLog.sent_at >= interval_start)
-        .order_by(SendLog.sent_at.desc())
-        .first()
-    )
-    if last_sent:
-        raise HTTPException(400, f"目标「{target_name}」距离上次发送不足 {REAL_SEND_MIN_INTERVAL_SECONDS} 秒，已阻止")
 
     duplicate_window = REAL_SEND_DUPLICATE_WINDOW_SECONDS if duplicate_window_seconds is None else max(0, duplicate_window_seconds)
     if duplicate_window <= 0:
@@ -2154,9 +2084,8 @@ def seed_templates(db: Session):
     db.commit()
 
 
-# 把 Agent 结果写入 ai_outputs 表，作为后续人工审核入口。
+# 把 Agent 结果写入 ai_outputs 表，作为后续效果复盘入口。
 def save_ai_output(db: Session, family_id: str, agent_type: str, source: str, result: dict) -> AIOutput:
-    safety = ai_safety_findings(json.dumps(result.get("raw", {}), ensure_ascii=False), result.get("display_text", ""))
     output = AIOutput(
         family_id=family_id,
         agent_type=agent_type,
@@ -2167,7 +2096,7 @@ def save_ai_output(db: Session, family_id: str, agent_type: str, source: str, re
         edited_output=result["display_text"],
         status="needs_review",
         risk_level=result["risk_level"],
-        need_human_review="Y" if result["need_human_review"] or safety["requires_manual"] else "N",
+        need_human_review="Y" if result["need_human_review"] else "N",
         suggested_actions="、".join(result["suggested_actions"]),
     )
     db.add(output)
@@ -4173,7 +4102,6 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
         ensure_new_task_operation_allowed(request, "assign_device")
     send_mode = validate_send_mode_submit(data.send_mode, data.confirm_real_send)
     route = family_delivery_route(db, output.family_id)
-    validate_ai_output_send_boundary(output, content, send_mode)
     if send_mode == "real_send":
         ensure_new_task_operation_allowed(request, "confirm_real_send")
         if route["channel"] == "wecom_kf":
@@ -4552,53 +4480,47 @@ def sync_conversation_payload(
                 result = run_reply_agent_service(context, latest_parent_message, reply_config["tone"])
             ai_output = save_ai_output(db, family_id, "ai_reply", f"{source_prefix}：{payload.target_name}", result)
             generated_outputs.append(ai_output)
-            manual_required = ai_output.need_human_review == "Y" or ai_output.risk_level == "高"
-            if not manual_required:
-                ai_output.status = "approved"
+            ai_output.status = "approved"
             if reply_config["auto_create_send_task"]:
-                if manual_required and reply_config["high_risk_policy"] == "manual":
-                    auto_reply_note = "已生成回复但命中人工介入策略，未自动加入发送任务"
-                else:
-                    try:
-                        content = validate_send_task_content(result["display_text"])
-                        send_mode = validate_send_mode(reply_config["send_mode"])
-                        if send_mode == "real_send":
-                            device_id = ""
-                            if channel != "wecom_kf":
-                                device_id = auto_reply_device_id
-                                if not device_id:
-                                    if source_prefix == "企业微信存档" or payload.archive_self_userids:
-                                        device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
-                                    else:
-                                        device_id = resolve_real_send_device_binding(db, "", payload.target_name)
-                                validate_real_send_device_binding(device_id)
+                try:
+                    content = validate_send_task_content(result["display_text"])
+                    send_mode = validate_send_mode(reply_config["send_mode"])
+                    if send_mode == "real_send":
+                        device_id = ""
+                        if channel != "wecom_kf":
+                            device_id = auto_reply_device_id
+                            if not device_id:
+                                if source_prefix == "企业微信存档" or payload.archive_self_userids:
+                                    device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
+                                else:
+                                    device_id = resolve_real_send_device_binding(db, "", payload.target_name)
+                            validate_real_send_device_binding(device_id)
                             validate_real_send_risk(
                                 db,
                                 payload.target_name,
                                 content,
                                 duplicate_window_seconds=AUTO_REPLY_DUPLICATE_WINDOW_SECONDS,
                             )
-                        else:
-                            device_id = ""
-                        validate_ai_output_send_boundary(ai_output, content, send_mode)
-                        task = SendTask(
-                            family_id=family_id,
-                            target_name=payload.target_name,
-                            scene=auto_reply_task_scene(ai_reply_scene(result["raw"], "普通咨询")),
-                            content=content,
-                            channel=channel,
-                            channel_target_id=payload.channel_target_id,
-                            channel_account_id=payload.channel_account_id,
-                            source_message_id=payload.source_message_id,
-                            device_id=device_id,
-                            send_mode=send_mode,
-                            status="pending",
-                        )
-                        ensure_auto_reply_real_send_queueable(db, task)
-                        ai_output.status = "task_created"
-                        add_send_task_with_audit(db, task, "create", actor, f"企微会话「{payload.target_name}」自动回复生成发送任务")
-                    except HTTPException as exc:
-                        auto_reply_note = f"自动回复已生成，但加入发送任务失败：{exc.detail}"
+                    else:
+                        device_id = ""
+                    task = SendTask(
+                        family_id=family_id,
+                        target_name=payload.target_name,
+                        scene=auto_reply_task_scene(ai_reply_scene(result["raw"], "普通咨询")),
+                        content=content,
+                        channel=channel,
+                        channel_target_id=payload.channel_target_id,
+                        channel_account_id=payload.channel_account_id,
+                        source_message_id=payload.source_message_id,
+                        device_id=device_id,
+                        send_mode=send_mode,
+                        status="pending",
+                    )
+                    ensure_auto_reply_real_send_queueable(db, task)
+                    ai_output.status = "task_created"
+                    add_send_task_with_audit(db, task, "create", actor, f"企微会话「{payload.target_name}」自动回复生成发送任务")
+                except HTTPException as exc:
+                    auto_reply_note = f"自动回复已生成，但加入发送任务失败：{exc.detail}"
 
     if payload.auto_generate_all_agents:
         db.flush()

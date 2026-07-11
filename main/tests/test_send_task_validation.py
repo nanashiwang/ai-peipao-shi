@@ -12,7 +12,6 @@ from sqlalchemy.orm import sessionmaker
 import app.main as main_module
 from app.db import Base
 from app.main import (
-    REAL_SEND_MIN_INTERVAL_SECONDS,
     DeviceUpdateIn,
     DeviceConversationBatchCheckRequestIn,
     DeviceConversationCheckRequestIn,
@@ -295,20 +294,19 @@ class RealSendRiskValidationTest(unittest.TestCase):
                 duplicate_window_seconds=300,
             )
 
-    def test_rejects_min_interval_even_for_different_content(self):
+    def test_allows_consecutive_send_with_different_content(self):
         self.db.add(
             SendLog(
                 task_id=1,
                 family_id="f1",
                 target_name="\u4e00\u5408\u5b66\u793e",
                 status="sent",
-                sent_at=self.now - timedelta(seconds=REAL_SEND_MIN_INTERVAL_SECONDS - 1),
+                sent_at=self.now - timedelta(seconds=1),
             )
         )
         self.db.commit()
 
-        with self.assertRaises(HTTPException):
-            validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u4e0d\u540c\u5185\u5bb9", now=self.now)
+        self.assertIsNone(validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u4e0d\u540c\u5185\u5bb9", now=self.now))
 
     def test_allows_real_send_when_no_duplicate_or_recent_send(self):
         self.assertIsNone(validate_real_send_risk(self.db, "\u4e00\u5408\u5b66\u793e", "\u65b0\u5185\u5bb9", now=self.now))

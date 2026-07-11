@@ -1,12 +1,11 @@
 import json
 import unittest
 
-from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.main import AIOutputTaskIn, ai_safety_findings, create_task_from_ai_output, save_ai_output
+from app.main import AIOutputTaskIn, create_task_from_ai_output, save_ai_output
 from app.models import AIOutput, AuditLog, Family, SendTask
 
 
@@ -53,47 +52,30 @@ class AiSafetyBoundaryTest(unittest.TestCase):
         self.db.commit()
         return output
 
-    def test_unapproved_sensitive_output_cannot_create_task(self):
+    def test_unapproved_sensitive_output_can_create_task(self):
         output = self.add_output(status="needs_review")
 
-        with self.assertRaises(HTTPException):
-            create_task_from_ai_output(output.id, AIOutputTaskIn(send_mode="dry_run"), db=self.db)
+        task = create_task_from_ai_output(output.id, AIOutputTaskIn(send_mode="dry_run"), db=self.db)
 
         self.db.refresh(output)
-        self.assertEqual(output.status, "needs_review")
-        self.assertEqual(self.db.query(SendTask).count(), 0)
-        self.assertEqual(self.db.query(AuditLog).count(), 0)
+        self.assertEqual(task["send_mode"], "dry_run")
+        self.assertEqual(output.status, "task_created")
+        self.assertEqual(self.db.query(SendTask).count(), 1)
+        self.assertEqual(self.db.query(AuditLog).count(), 1)
 
-    def test_approved_sensitive_output_cannot_create_real_send_task(self):
-        output = self.add_output(status="approved")
-
-        with self.assertRaises(HTTPException):
-            create_task_from_ai_output(
-                output.id,
-                AIOutputTaskIn(send_mode="real_send", confirm_real_send=True),
-                db=self.db,
-            )
-
-        self.db.refresh(output)
-        self.assertEqual(output.status, "approved")
-        self.assertEqual(self.db.query(SendTask).count(), 0)
-        self.assertEqual(self.db.query(AuditLog).count(), 0)
-
-    def test_sensitive_override_content_requires_manual_review(self):
+    def test_sensitive_override_content_can_create_task(self):
         output = self.add_safe_output(status="needs_review")
 
-        with self.assertRaises(HTTPException):
-            create_task_from_ai_output(
-                output.id,
-                AIOutputTaskIn(content="\u8bf7\u5904\u7406\u9000\u6b3e\u6295\u8bc9", send_mode="dry_run"),
-                db=self.db,
-            )
+        task = create_task_from_ai_output(
+            output.id,
+            AIOutputTaskIn(content="\u8bf7\u5904\u7406\u9000\u6b3e\u6295\u8bc9", send_mode="dry_run"),
+            db=self.db,
+        )
 
         self.db.refresh(output)
-        self.assertEqual(output.status, "needs_review")
-        self.assertEqual(output.edited_output, "\u5e38\u89c4\u6253\u5361\u63d0\u9192")
-        self.assertEqual(self.db.query(SendTask).count(), 0)
-        self.assertEqual(self.db.query(AuditLog).count(), 0)
+        self.assertEqual(task["content"], "\u8bf7\u5904\u7406\u9000\u6b3e\u6295\u8bc9")
+        self.assertEqual(output.edited_output, "\u8bf7\u5904\u7406\u9000\u6b3e\u6295\u8bc9")
+        self.assertEqual(self.db.query(SendTask).count(), 1)
 
     def test_approved_sensitive_output_can_create_dry_run_review_task(self):
         output = self.add_output(status="approved")
@@ -102,16 +84,6 @@ class AiSafetyBoundaryTest(unittest.TestCase):
 
         self.assertEqual(task["send_mode"], "dry_run")
         self.assertEqual(self.db.query(SendTask).count(), 1)
-
-    def test_safety_scan_ignores_json_field_names(self):
-        findings = ai_safety_findings(json.dumps({"是否需要人工介入": False, "推荐回复": "今天继续打卡即可"}, ensure_ascii=False))
-
-        self.assertFalse(findings["requires_manual"])
-
-    def test_safety_scan_ignores_negated_manual_review_phrase(self):
-        findings = ai_safety_findings("标准首联欢迎场景，无需人工介入，直接发送模板回复即可。")
-
-        self.assertFalse(findings["requires_manual"])
 
     def test_safe_output_with_review_field_name_can_create_task(self):
         output = self.add_safe_output(status="needs_review")
@@ -123,7 +95,7 @@ class AiSafetyBoundaryTest(unittest.TestCase):
         self.assertEqual(task["send_mode"], "dry_run")
         self.assertEqual(self.db.query(SendTask).count(), 1)
 
-    def test_save_ai_output_marks_sensitive_result_as_manual_review(self):
+    def test_save_ai_output_does_not_infer_review_from_keywords(self):
         result = {
             "raw": {"\u5efa\u8bae\u8ddf\u8fdb\u52a8\u4f5c": ["\u8f6c\u4eba\u5de5"], "\u4f7f\u7528\u4f9d\u636e\u6458\u8981": ["\u6295\u8bc9"]},
             "display_text": "\u8fd9\u91cc\u6d89\u53ca\u6295\u8bc9\uff0c\u9700\u8981\u4e3b\u7ba1\u786e\u8ba4\u3002",
@@ -134,7 +106,7 @@ class AiSafetyBoundaryTest(unittest.TestCase):
 
         output = save_ai_output(self.db, "f1", "ai_reply", "\u5355\u6d4b", result)
 
-        self.assertEqual(output.need_human_review, "Y")
+        self.assertEqual(output.need_human_review, "N")
 
 
 if __name__ == "__main__":

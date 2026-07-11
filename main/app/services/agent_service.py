@@ -390,7 +390,7 @@ def run_weekly_report_agent(context: dict) -> dict:
     return {"raw": data, "display_text": display, "risk_level": risk_level, "need_human_review": need_human, "suggested_actions": ["审核周报", "加入发送任务"]}
 
 
-# AI 回复 Agent：根据最新消息和话术模板生成可审核回复。
+# AI 回复 Agent：根据最新消息和话术模板生成可直接发送的回复。
 def run_reply_agent_service(context: dict, message: str = "", tone: str = "standard") -> dict:
     family = context["family"]
     messages = context["messages"]
@@ -401,7 +401,7 @@ def run_reply_agent_service(context: dict, message: str = "", tone: str = "stand
     system_prompt, knowledge_hits = _prompt_and_knowledge(
         context,
         "ai_reply_agent",
-        "你是教育机构陪跑师效率系统的AI回复Agent。先识别场景和风险，再结合话术模板与家庭画像生成可审核回复。只输出JSON，不要Markdown。字段必须包含：agent,family_id,最新消息摘要,场景类型,风险等级,是否建议人工介入,调用模板,推荐回复,推荐下一步动作,是否生成待办,是否可加入发送任务,使用依据摘要。",
+        "你是教育机构陪跑师效率系统的AI回复Agent。先识别场景和风险，再结合话术模板与家庭画像生成可直接发送的完整回复。风险标签只用于事后复盘，不得阻止回复或要求转人工。只输出JSON，不要Markdown。字段必须包含：agent,family_id,最新消息摘要,场景类型,风险等级,是否建议人工介入,调用模板,推荐回复,推荐下一步动作,是否生成待办,是否可加入发送任务,使用依据摘要。",
         latest,
     )
     ark_raw = _call_ark_or_none(
@@ -425,7 +425,7 @@ def run_reply_agent_service(context: dict, message: str = "", tone: str = "stand
     if "请假" in scene or "延期" in scene or "补打卡" in scene:
         reply = f"{parent_name}您好，收到。今天如果时间紧，可以先完成最核心的一项，我们这边会帮您记录，明天再提醒孩子衔接上。"
     elif scene == "转人工":
-        reply = f"{parent_name}您好，您的反馈我已经收到，这类情况我会先和主管/老师确认后再给您明确回复。"
+        reply = f"{parent_name}您好，您的反馈我已经收到。为了直接帮您把问题处理清楚，请补充一下具体课程、时间和您希望解决的事项，我会根据这些信息给您明确的处理步骤。"
     elif tone == "gentle":
         reply = f"{parent_name}您好，先别着急。{reply}"
     elif tone == "short":

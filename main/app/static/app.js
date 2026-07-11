@@ -54,7 +54,7 @@ const DEFAULT_REPLY_AGENT_CONFIG = {
   tone: "standard",
   reply_agent: "ai_reply_agent",
   enabled_agents: ["context_agent", "scene_agent", "reply_agent", "safety_agent"],
-  high_risk_policy: "manual",
+  high_risk_policy: "create_task",
   skip_recent_hours: 8,
   max_batch: 200,
   available_agents: [
@@ -1388,7 +1388,7 @@ function outputCard(output, compact = false) {
           ${badge(agent.name)}
           ${badge(output.risk_level || "低", output.risk_level === "高" ? "danger" : output.risk_level === "中" ? "warn" : "ok")}
           ${badge(output.status)}
-          ${output.need_human_review === "Y" ? badge("需人工", "warn") : ""}
+          ${output.need_human_review === "Y" ? badge("复盘关注", "warn") : ""}
           <strong>${esc(familyName(output.family_id))}</strong>
         </div>
         <small>${esc(output.created_at || "")}</small>
@@ -1489,16 +1489,10 @@ function renderReplyAgentConfig(replyOutputs = []) {
           <label>单批上限
             <input name="max_batch" type="number" min="1" max="500" value="${esc(cfg.max_batch)}">
           </label>
-          <label>高风险策略
-            <select name="high_risk_policy">
-              <option value="manual" ${cfg.high_risk_policy === "manual" ? "selected" : ""}>转人工，不自动建任务</option>
-              <option value="create_task" ${cfg.high_risk_policy === "create_task" ? "selected" : ""}>尝试建任务（安全词仍会拦截）</option>
-            </select>
-          </label>
         </div>
         <label class="inline-check">
           <input type="checkbox" name="auto_create_send_task" ${cfg.auto_create_send_task ? "checked" : ""}>
-          自动把低风险回复加入发送任务
+          自动把 AI 回复加入发送任务
         </label>
       </section>
       <section class="reply-config-card">
@@ -1536,7 +1530,7 @@ function renderReplyMetrics(replyOutputs) {
   const cards = [
     ["自动回复", cfg.auto_reply_enabled ? "开" : "关", cfg.auto_reply_enabled ? "新消息自动触发" : "仅保留手动生成"],
     ["自动建任务", cfg.auto_create_send_task ? "开" : "关", cfg.send_mode === "real_send" ? "真实发送队列" : "试运行队列"],
-    ["需人工关注", humanCount || pendingCount, "高风险/安全拦截"],
+    ["复盘关注", humanCount || pendingCount, "风险标签不影响自动发送"],
     ["覆盖家庭", familyCount, `最近 ${replyOutputs.length} 条回复`],
   ];
   el.innerHTML = cards.map(([label, value, detail]) => `
@@ -1567,7 +1561,7 @@ function replyRecordCard(output) {
           <div class="reply-draft-meta">
             ${aiOutputStatusBadge(output.status)}
             ${aiRiskBadge(output.risk_level)}
-            ${output.need_human_review === "Y" ? badge("需人工", "warn") : badge("可自动", "ok")}
+            ${output.need_human_review === "Y" ? badge("复盘关注", "warn") : badge("自动发送", "ok")}
             <strong>${esc(familyName(output.family_id))}</strong>
           </div>
         </div>
@@ -1752,7 +1746,7 @@ async function saveChatAutoReplyToggle(enabled) {
     send_mode: enabled ? "real_send" : current.send_mode,
     tone: current.tone || "standard",
     reply_agent: current.reply_agent || "ai_reply_agent",
-    high_risk_policy: current.high_risk_policy || "manual",
+    high_risk_policy: "create_task",
     skip_recent_hours: enabled ? 0 : Number(current.skip_recent_hours || 0),
     max_batch: Number(current.max_batch || 200),
     enabled_agents: Array.from(agents),
@@ -2788,13 +2782,13 @@ async function saveReplyAgentConfig(event) {
     send_mode: data.get("send_mode") || "dry_run",
     tone: data.get("tone") || "standard",
     reply_agent: data.get("reply_agent") || "ai_reply_agent",
-    high_risk_policy: data.get("high_risk_policy") || "manual",
+    high_risk_policy: "create_task",
     skip_recent_hours: Number(data.get("skip_recent_hours") || 0),
     max_batch: Number(data.get("max_batch") || 200),
     enabled_agents: data.getAll("enabled_agents"),
   };
   if (payload.auto_reply_enabled && payload.send_mode === "real_send") {
-    const ok = confirm("你正在开启真实发送队列：低风险 AI 回复会自动进入企微真实发送链路，仍受设备白名单和安全词拦截。确认保存吗？");
+    const ok = confirm("你正在开启真实发送队列：AI 回复会自动进入发送链路，仅保留渠道官方发送条件校验。确认保存吗？");
     if (!ok) return;
   }
   return withAction("保存自动回复配置", async () => {

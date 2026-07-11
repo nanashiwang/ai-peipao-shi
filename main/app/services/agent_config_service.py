@@ -104,25 +104,25 @@ JSON 格式：
 
 工作流程：
 1. 先判断消息意图：咨询、催进度、请假、补打卡、投诉、退费、续报、闲聊、其他。
-2. 判断风险等级：低、中、高；高风险必须进入人工复核。
+2. 判断风险等级：低、中、高；风险标签只用于事后复盘，不得阻止生成和发送回复。
 3. 先共情和确认，再给明确下一步动作。
 4. 回复要像真实陪跑师，不要暴露 Agent、模型、系统、RPA、知识库等内部信息。
 5. 不编造未发生的打卡、课程、成绩、优惠、承诺和处理结果。
-6. 涉及投诉、退费、强烈不满、价格争议、隐私、未成年人安全、医疗心理、法律财务时，是否可加入发送任务=false。
+6. 涉及投诉、退费、强烈不满、价格争议、隐私、未成年人安全、医疗心理、法律财务时，也必须给出完整、可直接发送的回复；不确定的信息用澄清问题承接。
 7. 如果信息不足，给出低风险澄清问题，不强行结论。
 8. 回复正文建议 80-220 字，语气温和、专业、具体。
 9. 优先引用命中的知识库 SOP，并在 evidence 中写依据摘要。
 
-风险兜底：
-- 高风险不能自动真实发送，只能生成待复核草稿。
+回复边界：
+- 所有文本消息都要生成完整回复并允许进入自动发送；高风险标签仅供事后复盘和 Prompt 优化。
 - 不确定事实不能写成确定事实。
 - 不得承诺退款、提分、疗效、保过、排名提升或额外权益。
 
 输出要求：
 - 严格只输出 JSON，不要 Markdown，不要解释。
 - JSON 必须可解析。
-- 如果风险等级为高，是否可加入发送任务必须为 false。
-- 如果可以自动发送，回复正文必须完整、自然、可直接发送。
+- 无论风险等级如何，是否可加入发送任务必须为 true。
+- 回复正文必须完整、自然、可直接发送，不得只说“转人工”“等待审核”或暴露内部处理流程。
 
 JSON 格式：
 {
@@ -278,20 +278,20 @@ DEFAULT_KNOWLEDGE_CHUNKS = [
 2. 默认一次只生成一条完整回复，避免把一句话拆成多条消耗单轮额度。
 3. 家长主动发消息后才允许回复；48小时窗口、单轮最多5条和2048字节限制由发送层强制校验。
 4. 图片、语音、视频、文件等非文本消息只入库并提示人工查看，不自动猜测内容。
-5. 投诉、退费、价格争议、隐私和未成年人安全等高风险内容仍执行统一人工复核规则。""",
+5. 投诉、退费、价格争议、隐私和未成年人安全等内容也由 AI 直接回复；风险标签仅供事后复盘，不影响发送。""",
     },
     {
         "title": "高风险回复兜底规则",
         "agent_scope": "ai_reply_agent",
         "tags": "高风险,投诉,退费,负面反馈",
-        "content": """当家长出现退费、投诉、强烈不满、质疑效果、价格争议、隐私安全、未成年人安全、医疗心理或法律财务相关内容时，一律视为高风险。
+        "content": """当家长出现退费、投诉、强烈不满、质疑效果、价格争议、隐私安全、未成年人安全、医疗心理或法律财务相关内容时，AI 仍需直接生成完整回复。
 
 处理原则：
 1. 先共情和确认，不争辩，不反驳，不甩锅。
 2. 不承诺退款、补偿、提分、保过或额外权益。
-3. 明确下一步：记录问题、同步负责同事、约定反馈时间。
+3. 基于现有事实直接说明可执行的处理步骤；信息不足时提出具体澄清问题。
 4. 不把内部流程、系统、自动化、Agent 或审核机制暴露给家长。
-5. 需要主管或人工复核时，回复草稿只能作为待审核内容。
+5. 风险等级和复盘标签不影响自动发送，不得只回复“转人工”或“等待审核”。
 
 推荐话术方向：
 “我理解您现在最关注的是实际效果和后续安排，这个问题我先完整记录下来，并同步负责老师一起核对孩子近期情况。我们会先把事实和可调整的方案整理清楚，再给您一个明确反馈。”""",
@@ -357,7 +357,11 @@ def ensure_agent_configs(db: Session) -> None:
     for agent_key in DEFAULT_AGENT_CONFIGS:
         row = db.query(AgentConfig).filter(AgentConfig.agent_key == agent_key).one_or_none()
         if row:
-            if not row.system_prompt.strip() or _has_encoding_damage(row.name) or _has_encoding_damage(row.system_prompt):
+            legacy_reply_policy = agent_key == "ai_reply_agent" and any(
+                phrase in row.system_prompt
+                for phrase in ("高风险必须进入人工复核", "高风险不能自动真实发送", "是否可加入发送任务必须为 false")
+            )
+            if not row.system_prompt.strip() or _has_encoding_damage(row.name) or _has_encoding_damage(row.system_prompt) or legacy_reply_policy:
                 default_row = _default_config_row(agent_key)
                 row.name = default_row["name"]
                 row.system_prompt = default_row["system_prompt"]
@@ -375,32 +379,37 @@ def ensure_default_knowledge_chunks(db: Session) -> None:
             db.delete(row)
     db.flush()
 
-    existing_titles = {
-        title
-        for (title,) in db.query(KnowledgeChunk.title)
-        .filter(KnowledgeChunk.source == default_source)
-        .all()
+    existing_rows = {
+        row.title: row
+        for row in db.query(KnowledgeChunk).filter(KnowledgeChunk.source == default_source).all()
     }
     for item in DEFAULT_KNOWLEDGE_CHUNKS:
         for index, chunk in enumerate(split_knowledge_content(item["content"]), 1):
             title = item["title"] if index == 1 else f"{item['title']} #{index}"
-            if title in existing_titles:
+            row = existing_rows.get(title)
+            if row:
+                if row.content != chunk or row.tags != item.get("tags", "") or row.agent_scope != item.get("agent_scope", "all"):
+                    row.content = chunk
+                    row.tags = item.get("tags", "")
+                    row.agent_scope = item.get("agent_scope", "all")
+                    row.embedding_json = _vector_json(local_embedding(f"{title}\n{chunk}"))
+                    row.embedding_model = LOCAL_EMBEDDING_MODEL
+                    row.updated_at = datetime.utcnow()
                 continue
             vector = local_embedding(f"{title}\n{chunk}")
-            db.add(
-                KnowledgeChunk(
-                    title=title,
-                    content=chunk,
-                    tags=item.get("tags", ""),
-                    agent_scope=item.get("agent_scope", "all"),
-                    source=default_source,
-                    embedding_json=_vector_json(vector),
-                    embedding_model=LOCAL_EMBEDDING_MODEL,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
-                )
+            row = KnowledgeChunk(
+                title=title,
+                content=chunk,
+                tags=item.get("tags", ""),
+                agent_scope=item.get("agent_scope", "all"),
+                source=default_source,
+                embedding_json=_vector_json(vector),
+                embedding_model=LOCAL_EMBEDDING_MODEL,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
             )
-            existing_titles.add(title)
+            db.add(row)
+            existing_rows[title] = row
     db.flush()
 
 

@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
+from app.models import AgentConfig, KnowledgeChunk
 from app.services.agent_config_service import (
     LOCAL_EMBEDDING_MODEL,
     create_knowledge_chunks,
@@ -61,6 +62,22 @@ class AgentConfigKnowledgeTest(unittest.TestCase):
         self.assertEqual(created[0]["embedding_model"], LOCAL_EMBEDDING_MODEL)
         self.assertGreaterEqual(len(results), 1)
         self.assertIn("负面反馈", results[0]["title"])
+
+    def test_legacy_manual_review_defaults_are_upgraded(self):
+        list_agent_configs(self.db)
+        config = self.db.query(AgentConfig).filter(AgentConfig.agent_key == "ai_reply_agent").one()
+        config.system_prompt = "高风险必须进入人工复核，是否可加入发送任务必须为 false。"
+        chunk = self.db.query(KnowledgeChunk).filter(KnowledgeChunk.title == "微信客服渠道回复规范").one()
+        chunk.content = "高风险内容仍执行统一人工复核规则。"
+        self.db.commit()
+
+        configs = list_agent_configs(self.db)
+        updated = next(item for item in configs if item["agent_key"] == "ai_reply_agent")
+        self.db.refresh(chunk)
+
+        self.assertIn("风险标签只用于事后复盘", updated["system_prompt"])
+        self.assertNotIn("高风险必须进入人工复核", updated["system_prompt"])
+        self.assertIn("风险标签仅供事后复盘", chunk.content)
 
 
 if __name__ == "__main__":
