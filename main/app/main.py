@@ -15,7 +15,7 @@ import secrets
 import threading
 import time
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import unquote
@@ -111,6 +111,18 @@ from app.services.wecom_archive import (
     pull_archive_messages,
     read_wecom_archive_config,
 )
+from app.services.wecom_customer import (
+    WecomCustomerApiError,
+    callback_config_status as wecom_customer_callback_config_status,
+    config_status as wecom_customer_config_status,
+    create_group_message as create_wecom_customer_group_message,
+    decrypt_callback_request as decrypt_wecom_customer_callback_request,
+    parse_customer_event,
+    read_wecom_customer_config,
+    send_welcome_message as send_wecom_customer_welcome,
+    sync_customer_contacts,
+    verify_callback_echo as verify_wecom_customer_callback_echo,
+)
 from app.services.wecom_kf import (
     WecomKfApiError,
     batch_get_customers,
@@ -152,6 +164,7 @@ CONVERSATION_CHECK_CONTENT = "只读校验：打开目标会话并读取可见�
 REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX = "真实发送前置校验："
 _wecom_archive_poller_started = False
 _wecom_kf_worker_started = False
+_wecom_customer_worker_started = False
 
 REPLY_AGENT_OPTIONS = [
     {"key": "context_agent", "name": "上下文 Agent", "description": "读取家庭画像、最近聊天、周报和话术模板"},
@@ -419,6 +432,17 @@ class WecomKfSyncIn(BaseModel):
     event_token: str = ""
     limit: int = 1000
     auto_generate_reply: bool | None = None
+
+
+class WecomCustomerSyncIn(BaseModel):
+    userids: list[str] = Field(default_factory=list)
+
+
+class WecomCustomerGroupMessageIn(BaseModel):
+    binding_id: int
+    content: str
+    scheduled_at: datetime | None = None
+    confirm_real_send: bool = False
 
 
 class CustomerChannelBindingIn(BaseModel):
@@ -1585,6 +1609,49 @@ def device_has_inflight_real_send(db: Session, dev: Device, exclude_task_id: int
 def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None) -> dict:
     """给控制端展示任务能否被指定设备稳定执行，不改变调度结果。"""
     now = now or datetime.utcnow()
+    if (task.channel or "wecom_rpa") == "wecom_customer":
+        if task.status == "sent":
+            return {"status": "done", "label": "客户联系消息已发送", "reasons": [], "actions": []}
+        if task.status == "pending_confirmation":
+            return {
+                "status": "waiting",
+                "label": "企业群发任务已创建，等待成员在企微确认",
+                "reasons": [],
+                "actions": [],
+            }
+        if task.status == "cancelled":
+            return {"status": "done", "label": "已取消", "reasons": [], "actions": []}
+        if task.status == "failed":
+            return {"status": "review", "label": "客户联系任务创建失败", "reasons": [task.last_error or "需要检查接口权限"], "actions": []}
+        status = wecom_customer_config_status(read_wecom_customer_config())
+        reasons = []
+        if not status.get("configured"):
+            reasons.append(f"客户联系配置不完整：{'、'.join(status.get('missing') or [])}")
+        binding = (
+            db.query(CustomerChannelBinding)
+            .filter(
+                CustomerChannelBinding.channel == "wecom_customer",
+                CustomerChannelBinding.account_id == task.channel_account_id,
+                CustomerChannelBinding.external_userid == task.channel_target_id,
+            )
+            .one_or_none()
+        )
+        if not binding:
+            reasons.append("未找到企业微信客户联系绑定")
+        elif (binding.scene or "").startswith("removed"):
+            reasons.append("客户或企业成员已解除客户联系关系")
+        if len((task.content or "").encode("utf-8")) > 4000:
+            reasons.append("客户联系群发文本超过4000字节")
+        if reasons:
+            return {"status": "blocked", "label": "客户联系发送前需处理", "reasons": reasons, "actions": []}
+        if task.scheduled_at and task.scheduled_at > now:
+            return {
+                "status": "waiting",
+                "label": f"等待计划时间：{timeline_time(task.scheduled_at)}",
+                "reasons": [],
+                "actions": [],
+            }
+        return {"status": "ready", "label": "可创建企业群发任务", "reasons": [], "actions": []}
     if (task.channel or "wecom_rpa") == "wecom_kf":
         if task.status == "sent":
             return {"status": "done", "label": "已通过微信客服发送", "reasons": [], "actions": []}
@@ -2536,6 +2603,49 @@ def start_wecom_kf_worker() -> None:
     print(f"wecom_kf_worker_started interval={config.poll_interval_seconds}s", flush=True)
 
 
+def _wecom_customer_worker_loop(interval_seconds: int, sync_interval_seconds: int) -> None:
+    time.sleep(3)
+    last_sync_at = 0.0
+    while True:
+        db = next(get_db())
+        try:
+            config = read_wecom_customer_config()
+            sync_result = None
+            now = time.monotonic()
+            if config.sync_enabled and now - last_sync_at >= sync_interval_seconds:
+                sync_result = sync_wecom_customer_bindings(db)
+                last_sync_at = now
+            dispatch = dispatch_wecom_customer_tasks(db) if config.dispatch_enabled else {}
+            if sync_result or any(dispatch.values()):
+                print(
+                    f"wecom_customer_worker_ok sync={sync_result or {}} dispatch={dispatch}",
+                    flush=True,
+                )
+        except Exception as exc:
+            db.rollback()
+            print(f"wecom_customer_worker_failed detail={exc}", flush=True)
+        finally:
+            db.close()
+        time.sleep(interval_seconds)
+
+
+def start_wecom_customer_worker() -> None:
+    global _wecom_customer_worker_started
+    config = read_wecom_customer_config()
+    if _wecom_customer_worker_started or not wecom_customer_config_status(config).get("configured"):
+        return
+    if not config.sync_enabled and not config.dispatch_enabled:
+        return
+    thread = threading.Thread(
+        target=_wecom_customer_worker_loop,
+        args=(config.worker_interval_seconds, config.sync_interval_seconds),
+        daemon=True,
+    )
+    thread.start()
+    _wecom_customer_worker_started = True
+    print(f"wecom_customer_worker_started interval={config.worker_interval_seconds}s", flush=True)
+
+
 # 启动时初始化数据库并预置模板。
 @app.on_event("startup")
 def on_startup():
@@ -2551,6 +2661,7 @@ def on_startup():
         db.close()
     start_wecom_archive_poller()
     start_wecom_kf_worker()
+    start_wecom_customer_worker()
 
 
     # 首页返回静态前端页面。
@@ -4604,6 +4715,403 @@ def archive_envelope_from_payload(item: dict) -> ArchiveEnvelope:
     )
 
 
+def resolve_wecom_customer_archive_group(db: Session, group: dict) -> dict:
+    """把客户联系私聊存档归并到客户档案，群聊保持原会话归属。"""
+    external_userid = str(group.get("external_userid") or "").strip()
+    member_userids = [str(item).strip() for item in group.get("archive_self_userids") or [] if str(item).strip()]
+    if not external_userid or not member_userids:
+        return group
+    bindings = (
+        db.query(CustomerChannelBinding)
+        .filter(
+            CustomerChannelBinding.channel == "wecom_customer",
+            CustomerChannelBinding.external_userid == external_userid,
+            CustomerChannelBinding.account_id.in_(member_userids),
+        )
+        .order_by(CustomerChannelBinding.updated_at.desc(), CustomerChannelBinding.id.desc())
+        .all()
+    )
+    binding = next((item for item in bindings if not (item.scene or "").startswith("removed")), None)
+    if not binding:
+        return group
+    inbound_messages = [item for item in group.get("messages") or [] if item.latest_inbound]
+    if inbound_messages:
+        latest = max(inbound_messages, key=lambda item: item.message_time)
+        binding.last_inbound_at = latest.message_time
+        binding.last_inbound_msgid = latest.external_id.removeprefix("wecom_archive:")
+        binding.updated_at = datetime.utcnow()
+    return {
+        **group,
+        "family_id": binding.family_id,
+        "target_name": binding.display_name or group.get("target_name") or external_userid,
+    }
+
+
+def wecom_customer_family_id(external_userid: str) -> str:
+    digest = hashlib.sha256(external_userid.encode("utf-8")).hexdigest()[:20]
+    return f"WECOM_CUSTOMER_{digest}"
+
+
+def ensure_wecom_customer_family(db: Session, external_userid: str, display_name: str) -> Family:
+    family_id = wecom_customer_family_id(external_userid)
+    family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
+    if not family:
+        family = Family(
+            family_id=family_id,
+            parent_nickname=(display_name or f"企微客户-{external_userid[-6:]}")[:120],
+            service_status="企业微信客户联系",
+        )
+        db.add(family)
+        db.flush()
+    return family
+
+
+def upsert_wecom_customer_binding(
+    db: Session,
+    contact: dict,
+    follow_user: dict,
+    *,
+    removed: bool = False,
+) -> CustomerChannelBinding:
+    external_userid = str(contact.get("external_userid") or "").strip()
+    userid = str(follow_user.get("userid") or "").strip()
+    if not external_userid or not userid:
+        raise ValueError("客户联系数据缺少 external_userid 或成员 userid")
+    display_name = str(follow_user.get("remark") or contact.get("name") or "").strip() or f"企微客户-{external_userid[-6:]}"
+    binding = (
+        db.query(CustomerChannelBinding)
+        .filter(
+            CustomerChannelBinding.channel == "wecom_customer",
+            CustomerChannelBinding.account_id == userid,
+            CustomerChannelBinding.external_userid == external_userid,
+        )
+        .one_or_none()
+    )
+    if not binding:
+        family = ensure_wecom_customer_family(db, external_userid, display_name)
+        binding = CustomerChannelBinding(
+            family_id=family.family_id,
+            channel="wecom_customer",
+            account_id=userid,
+            external_userid=external_userid,
+            display_name=display_name,
+        )
+        db.add(binding)
+    binding.display_name = display_name[:120]
+    if removed:
+        binding.scene = "removed"
+    else:
+        state = str(follow_user.get("state") or "").strip()
+        add_way = str(follow_user.get("add_way") or "").strip()
+        binding.scene = ";".join(item for item in [f"state={state}" if state else "", f"add_way={add_way}" if add_way else ""] if item)[:120]
+    binding.updated_at = datetime.utcnow()
+    db.flush()
+    return binding
+
+
+def sync_wecom_customer_bindings(db: Session, userids: list[str] | None = None) -> dict:
+    config = read_wecom_customer_config()
+    status = wecom_customer_config_status(config)
+    if not status.get("configured"):
+        raise HTTPException(400, f"企业微信客户联系配置不完整：{'、'.join(status.get('missing') or [])}")
+    result = sync_customer_contacts(config, userids or None)
+    bindings = []
+    seen: set[tuple[str, str]] = set()
+    for item in result.get("contacts") or []:
+        contact = item.get("external_contact") or {}
+        for follow_user in item.get("follow_user") or []:
+            seen.add((str(follow_user.get("userid") or "").strip(), str(contact.get("external_userid") or "").strip()))
+            bindings.append(upsert_wecom_customer_binding(db, contact, follow_user))
+    synced_members = {str(item).strip() for item in result.get("members") or [] if str(item).strip()}
+    removed = 0
+    if synced_members:
+        existing = db.query(CustomerChannelBinding).filter(
+            CustomerChannelBinding.channel == "wecom_customer",
+            CustomerChannelBinding.account_id.in_(synced_members),
+        ).all()
+        for binding in existing:
+            if (binding.account_id, binding.external_userid) not in seen and not (binding.scene or "").startswith("removed"):
+                binding.scene = "removed:sync"
+                binding.updated_at = datetime.utcnow()
+                removed += 1
+    db.commit()
+    return {
+        "status": "ok",
+        "members": result.get("members") or [],
+        "customers": len(result.get("contacts") or []),
+        "bindings": len(bindings),
+        "removed": removed,
+    }
+
+
+def dispatch_wecom_customer_tasks(db: Session, limit: int = 20) -> dict:
+    config = read_wecom_customer_config()
+    if not wecom_customer_config_status(config).get("configured") or not config.dispatch_enabled:
+        return {"created": 0, "failed": 0, "skipped": 0}
+    now = datetime.utcnow()
+    tasks = (
+        db.query(SendTask)
+        .filter(
+            SendTask.channel == "wecom_customer",
+            SendTask.send_mode == "real_send",
+            SendTask.status == "pending",
+            SendTask.scheduled_at <= now,
+            or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now),
+        )
+        .order_by(SendTask.scheduled_at, SendTask.id)
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    created = failed = skipped = 0
+    for task in tasks:
+        readiness = send_task_readiness(db, task, now)
+        if readiness.get("status") != "ready":
+            task.last_error = "；".join(readiness.get("reasons") or [readiness.get("label") or "发送条件未就绪"])
+            task.status = "failed"
+            failed += 1
+            continue
+        updated = (
+            db.query(SendTask)
+            .filter(SendTask.id == task.id, SendTask.status == "pending")
+            .update({"status": "assigned"}, synchronize_session=False)
+        )
+        if updated != 1:
+            skipped += 1
+            continue
+        db.commit()
+        task = db.get(SendTask, task.id)
+        try:
+            response = create_wecom_customer_group_message(
+                config,
+                sender=task.channel_account_id,
+                external_userids=[task.channel_target_id],
+                content=validate_send_task_content(task.content),
+            )
+            fail_list = {str(item) for item in response.get("fail_list") or []}
+            if task.channel_target_id in fail_list:
+                raise WecomCustomerApiError("客户不在成员可群发范围内")
+            msgid = str(response.get("msgid") or "").strip()
+            if not msgid:
+                raise WecomCustomerApiError("企业群发任务创建成功但未返回 msgid")
+            before = send_task_snapshot(task)
+            task.status = "pending_confirmation"
+            task.last_error = "企业群发任务已创建，等待对应成员在企业微信客户端确认发送"
+            task.next_retry_at = None
+            binding = (
+                db.query(CustomerChannelBinding)
+                .filter(
+                    CustomerChannelBinding.channel == "wecom_customer",
+                    CustomerChannelBinding.account_id == task.channel_account_id,
+                    CustomerChannelBinding.external_userid == task.channel_target_id,
+                )
+                .one()
+            )
+            binding.last_outbound_msgid = msgid
+            binding.updated_at = datetime.utcnow()
+            db.add(
+                SendLog(
+                    task_id=task.id,
+                    family_id=task.family_id,
+                    target_name=task.target_name,
+                    channel="wecom_customer",
+                    status="pending_confirmation",
+                    send_mode="real_send",
+                    client_result_id=msgid,
+                    verify_status="unknown",
+                    verify_detail="官方接口仅创建企业群发任务，需成员确认后客户才会收到",
+                    detail="企业微信客户联系群发任务创建成功",
+                    sent_at=datetime.utcnow(),
+                )
+            )
+            audit_send_task_change(db, task, "wecom_customer_groupmsg", "客户联系API", "企业群发任务已创建，等待成员确认", before)
+            db.commit()
+            created += 1
+        except Exception as exc:
+            task = db.get(SendTask, task.id)
+            task.retry_count = int(task.retry_count or 0) + 1
+            task.last_error = str(exc)
+            if task.retry_count <= int(task.max_retries or 0):
+                task.status = "pending"
+                task.next_retry_at = datetime.utcnow() + timedelta(minutes=5)
+                skipped += 1
+            else:
+                task.status = "failed"
+                task.next_retry_at = None
+                failed += 1
+            db.commit()
+    db.commit()
+    return {"created": created, "failed": failed, "skipped": skipped}
+
+
+@app.get("/api/wecom-customer/callback")
+def verify_wecom_customer_callback(msg_signature: str, timestamp: str, nonce: str, echostr: str):
+    config = read_wecom_customer_config()
+    if not wecom_customer_callback_config_status(config).get("callback_configured"):
+        raise HTTPException(503, "企业微信客户联系回调尚未启用或配置不完整")
+    try:
+        value = verify_wecom_customer_callback_echo(
+            echostr,
+            signature=msg_signature,
+            timestamp=timestamp,
+            nonce=nonce,
+            config=config,
+        )
+    except Exception as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return PlainTextResponse(value)
+
+
+@app.post("/api/wecom-customer/callback")
+async def receive_wecom_customer_callback(request: Request, msg_signature: str, timestamp: str, nonce: str, db: Session = Depends(get_db)):
+    config = read_wecom_customer_config()
+    if not wecom_customer_callback_config_status(config).get("callback_configured"):
+        raise HTTPException(503, "企业微信客户联系回调尚未启用或配置不完整")
+    body = (await request.body()).decode("utf-8")
+    try:
+        plain_xml = decrypt_wecom_customer_callback_request(
+            body,
+            signature=msg_signature,
+            timestamp=timestamp,
+            nonce=nonce,
+            config=config,
+        )
+        event = parse_customer_event(plain_xml)
+        if event.get("event") != "change_external_contact":
+            return PlainTextResponse("success")
+        change_type = event.get("change_type") or ""
+        userid = event.get("userid") or ""
+        external_userid = event.get("external_userid") or ""
+        if config.welcome_enabled and event.get("welcome_code") and config.welcome_text:
+            try:
+                send_wecom_customer_welcome(config, event["welcome_code"], config.welcome_text)
+            except Exception as exc:
+                # welcome_code 只能用一次；失败不阻断关系事件，避免回调重试后重复发送。
+                print(f"wecom_customer_welcome_failed detail={exc}", flush=True)
+        if change_type in {"add_external_contact", "add_half_external_contact", "edit_external_contact"} and userid and external_userid:
+            upsert_wecom_customer_binding(
+                db,
+                {"external_userid": external_userid},
+                {"userid": userid, "state": event.get("state") or ""},
+            )
+        elif change_type in {"del_external_contact", "del_follow_user"} and userid and external_userid:
+            binding = (
+                db.query(CustomerChannelBinding)
+                .filter(
+                    CustomerChannelBinding.channel == "wecom_customer",
+                    CustomerChannelBinding.account_id == userid,
+                    CustomerChannelBinding.external_userid == external_userid,
+                )
+                .one_or_none()
+            )
+            if binding:
+                binding.scene = f"removed:{change_type}"[:120]
+                binding.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(403, str(exc)) from exc
+    return PlainTextResponse("success")
+
+
+@app.get("/api/wecom-customer/status")
+def wecom_customer_status(db: Session = Depends(get_db)):
+    config = read_wecom_customer_config()
+    return {
+        **wecom_customer_config_status(config),
+        "binding_count": db.query(CustomerChannelBinding).filter(CustomerChannelBinding.channel == "wecom_customer").count(),
+        "pending_count": db.query(SendTask).filter(SendTask.channel == "wecom_customer", SendTask.status == "pending").count(),
+        "pending_confirmation_count": db.query(SendTask).filter(SendTask.channel == "wecom_customer", SendTask.status == "pending_confirmation").count(),
+    }
+
+
+@app.post("/api/wecom-customer/sync")
+def sync_wecom_customer_now(payload: WecomCustomerSyncIn, db: Session = Depends(get_db)):
+    return sync_wecom_customer_bindings(db, payload.userids)
+
+
+@app.post("/api/wecom-customer/dispatch")
+def dispatch_wecom_customer_now(db: Session = Depends(get_db)):
+    return dispatch_wecom_customer_tasks(db)
+
+
+@app.get("/api/wecom-customer/bindings")
+def list_wecom_customer_bindings(request: Request = None, db: Session = Depends(get_db)):
+    query = db.query(CustomerChannelBinding).filter(CustomerChannelBinding.channel == "wecom_customer")
+    query = apply_family_id_scope(query, CustomerChannelBinding.family_id, db, request)
+    return [as_dict(item) for item in query.order_by(CustomerChannelBinding.id.desc()).all()]
+
+
+@app.put("/api/wecom-customer/bindings/{binding_id}")
+def update_wecom_customer_binding(binding_id: int, payload: CustomerChannelBindingIn, request: Request = None, db: Session = Depends(get_db)):
+    binding = db.get(CustomerChannelBinding, binding_id)
+    if not binding or binding.channel != "wecom_customer":
+        raise HTTPException(404, "企业微信客户联系绑定不存在")
+    ensure_family_id_access(db, binding.family_id, request)
+    family = require_family_for_request(db, payload.family_id.strip(), request)
+    previous_family_id = binding.family_id
+    related_task_ids = [
+        item[0]
+        for item in db.query(SendTask.id).filter(
+            SendTask.family_id == previous_family_id,
+            SendTask.channel == "wecom_customer",
+            SendTask.channel_account_id == binding.account_id,
+            SendTask.channel_target_id == binding.external_userid,
+        ).all()
+    ]
+    binding.family_id = family.family_id
+    if payload.display_name.strip():
+        binding.display_name = payload.display_name.strip()[:120]
+    if previous_family_id != family.family_id:
+        db.query(SendTask).filter(
+            SendTask.family_id == previous_family_id,
+            SendTask.channel == "wecom_customer",
+            SendTask.channel_account_id == binding.account_id,
+            SendTask.channel_target_id == binding.external_userid,
+        ).update({"family_id": family.family_id}, synchronize_session=False)
+        if related_task_ids:
+            db.query(SendLog).filter(SendLog.task_id.in_(related_task_ids)).update(
+                {"family_id": family.family_id},
+                synchronize_session=False,
+            )
+    binding.updated_at = datetime.utcnow()
+    db.commit()
+    return as_dict(binding)
+
+
+@app.post("/api/wecom-customer/group-messages")
+def create_wecom_customer_group_message_task(payload: WecomCustomerGroupMessageIn, request: Request = None, db: Session = Depends(get_db)):
+    if not payload.confirm_real_send:
+        raise HTTPException(400, "创建企业群发任务前必须确认；任务创建后仍需企业成员在企微客户端确认发送")
+    binding = db.get(CustomerChannelBinding, payload.binding_id)
+    if not binding or binding.channel != "wecom_customer":
+        raise HTTPException(404, "企业微信客户联系绑定不存在")
+    if (binding.scene or "").startswith("removed"):
+        raise HTTPException(400, "客户或企业成员已解除客户联系关系")
+    ensure_family_id_access(db, binding.family_id, request)
+    content = validate_send_task_content(payload.content)
+    if len(content.encode("utf-8")) > 4000:
+        raise HTTPException(400, "客户联系群发文本不能超过4000字节")
+    scheduled_at = payload.scheduled_at or datetime.utcnow()
+    if scheduled_at.tzinfo is not None:
+        scheduled_at = scheduled_at.astimezone(timezone.utc).replace(tzinfo=None)
+    task = SendTask(
+        family_id=binding.family_id,
+        target_name=binding.display_name or binding.external_userid,
+        scene="客户联系定时提醒",
+        content=content,
+        channel="wecom_customer",
+        channel_target_id=binding.external_userid,
+        channel_account_id=binding.account_id,
+        send_mode="real_send",
+        status="pending",
+        scheduled_at=scheduled_at,
+    )
+    add_send_task_with_audit(db, task, "create", actor_from_request(request, "客户联系API"), "创建企业微信客户联系群发任务")
+    db.commit()
+    db.refresh(task)
+    return as_dict(task)
+
+
 @app.get("/api/wecom-archive/status")
 def wecom_archive_status(db: Session = Depends(get_db)):
     config = read_wecom_archive_config()
@@ -4664,7 +5172,8 @@ def sync_wecom_archive(payload: WecomArchiveSyncIn, request: Request = None, db:
                 normalized.append(item)
 
         results = []
-        for group in group_archive_messages(normalized):
+        for archive_group in group_archive_messages(normalized):
+            group = resolve_wecom_customer_archive_group(db, archive_group)
             conversation_payload = RpaConversationIn(
                 target_name=group["target_name"],
                 family_id=group["family_id"],

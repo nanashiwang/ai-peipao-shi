@@ -376,6 +376,29 @@
         <div id="wecomKfStatusBoard"></div>
         <div id="wecomKfBindings" class="stack"></div>
       </section>
+      <section class="assist-section" id="wecomCustomerPanel" style="margin-bottom:14px">
+        <div class="section-head compact-head">
+          <div>
+            <h2>企业微信客户联系</h2>
+            <span class="muted">家长添加企业成员后自动建档；支持欢迎语和定时企业群发任务</span>
+          </div>
+          <div class="actions left">
+            <span id="wecomCustomerStatusPill" class="badge">检查中…</span>
+            <button onclick="syncWecomCustomer()">同步客户</button>
+            <button onclick="dispatchWecomCustomer()">执行到期任务</button>
+          </div>
+        </div>
+        <div id="wecomCustomerStatusBoard"></div>
+        <div id="wecomCustomerBindings" class="stack"></div>
+        <form id="wecomCustomerMessageForm" class="wecom-form" onsubmit="createWecomCustomerMessage(event)">
+          <select name="binding_id" id="wecomCustomerBindingSelect" required></select>
+          <input name="scheduled_at" type="datetime-local" aria-label="计划时间" />
+          <textarea name="content" rows="2" placeholder="任务安排或通知内容" required></textarea>
+          <label class="inline-check"><input name="confirm_real_send" type="checkbox" required />确认创建真实企业群发任务</label>
+          <button>创建定时提醒</button>
+        </form>
+        <p class="muted">到期后系统只会创建企业群发任务；对应企业成员仍需在企业微信客户端确认，确认前客户不会收到。</p>
+      </section>
       <form id="wecomForm" class="wecom-form">
         <input name="parent_nickname" placeholder="企微会话名/家长名，如：艺博展讯" required />
         <input name="family_id" placeholder="家庭编号，可空" />

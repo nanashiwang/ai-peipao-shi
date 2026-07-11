@@ -62,6 +62,7 @@ class NormalizedArchiveMessage:
     external_id: str
     latest_inbound: bool = False
     archive_self_userids: list[str] | None = None
+    external_userid: str = ""
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -510,6 +511,8 @@ def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveCon
     is_self = bool(sender and sender in self_userids)
     speaker = "我" if is_self else _display_user(sender, cfg)
     archive_self_userids = _archive_self_userids_for_message(message, cfg)
+    external_userids = [item for item in participants if item not in self_userids]
+    external_userid = external_userids[0] if not roomid and len(external_userids) == 1 else ""
 
     if mapping.get("target_name"):
         target_name = str(mapping["target_name"]).strip()
@@ -530,6 +533,7 @@ def normalize_archive_message(envelope: ArchiveEnvelope, config: WecomArchiveCon
         external_id=f"wecom_archive:{msgid}" if msgid else "",
         latest_inbound=not is_self,
         archive_self_userids=archive_self_userids,
+        external_userid=external_userid,
     )
 
 
@@ -545,12 +549,15 @@ def group_archive_messages(messages: list[NormalizedArchiveMessage]) -> list[dic
                 "messages": [],
                 "latest_message": "",
                 "archive_self_userids": [],
+                "external_userid": "",
             },
         )
         item["messages"].append(msg)
+        if msg.external_userid:
+            item["external_userid"] = msg.external_userid
+        item["archive_self_userids"] = sorted(set(item["archive_self_userids"]) | set(msg.archive_self_userids or []))
         if msg.latest_inbound:
             item["latest_message"] = msg.content
-            item["archive_self_userids"] = sorted(set(item["archive_self_userids"]) | set(msg.archive_self_userids or []))
     return list(grouped.values())
 
 

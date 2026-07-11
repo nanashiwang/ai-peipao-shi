@@ -18,7 +18,7 @@ OPERATION_LABELS = {
     "confirm_real_send": "确认真实发送",
 }
 
-TERMINAL_STATUSES = {"sent", "cancelled"}
+TERMINAL_STATUSES = {"sent", "cancelled", "pending_confirmation"}
 WRITE_ROLES = {"admin", "coach"}
 
 
@@ -36,6 +36,8 @@ def send_task_workflow_stage(status: str | None, send_mode: str | None) -> str:
         return "待审核/试运行"
     if clean_status == "assigned":
         return "被控端发送中"
+    if clean_status == "pending_confirmation":
+        return "企业群发待成员确认"
     if clean_status == "dry_run":
         return "试运行完成"
     if clean_status == "failed":
@@ -86,7 +88,9 @@ def send_task_operation_state(status: str | None, send_mode: str | None, role: s
         warnings.append("只读角色仅可查看，敏感字段返回脱敏视图。")
     if (send_mode or "dry_run") == "real_send" and role != "admin":
         warnings.append("真实发送任务仅管理员可编辑或确认。")
-    if (status or "pending") in TERMINAL_STATUSES:
+    if (status or "pending") == "pending_confirmation":
+        warnings.append("企业群发任务已创建，只能查看并等待成员确认。")
+    elif (status or "pending") in TERMINAL_STATUSES:
         warnings.append("终态任务只能查看审计与发送结果。")
     return {
         "workflow_stage": send_task_workflow_stage(status, send_mode),

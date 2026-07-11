@@ -150,6 +150,20 @@ def runtime_config_report(
         aes_key = str(source.get("WECOM_KF_ENCODING_AES_KEY") or "").strip()
         if aes_key and len(aes_key) != 43:
             critical.append("WECOM_KF_ENCODING_AES_KEY 必须为43位")
+    if str(source.get("WECOM_CUSTOMER_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        required_wecom_customer_callback = (
+            "WECOM_CUSTOMER_CORP_ID",
+            "WECOM_CUSTOMER_TOKEN",
+            "WECOM_CUSTOMER_ENCODING_AES_KEY",
+        )
+        missing_callback = [name for name in required_wecom_customer_callback if not str(source.get(name) or "").strip()]
+        if missing_callback:
+            critical.append(f"企业微信客户联系已启用但缺少回调配置：{', '.join(missing_callback)}")
+        if not str(source.get("WECOM_CUSTOMER_SECRET") or "").strip():
+            warnings.append("企业微信客户联系回调可用，但缺少 WECOM_CUSTOMER_SECRET，客户同步和群发任务尚未启用")
+        aes_key = str(source.get("WECOM_CUSTOMER_ENCODING_AES_KEY") or "").strip()
+        if aes_key and len(aes_key) != 43:
+            critical.append("WECOM_CUSTOMER_ENCODING_AES_KEY 必须为43位")
     if is_production_env(env):
         if not database_url_explicit:
             critical.append("正式环境必须显式设置 DATABASE_URL")

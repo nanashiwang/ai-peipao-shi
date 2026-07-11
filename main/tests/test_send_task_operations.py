@@ -40,6 +40,13 @@ class SendTaskOperationsTest(unittest.TestCase):
         self.assertEqual(state["workflow_stage"], "已发送归档")
         self.assertEqual(state["allowed_operations"], ["view"])
 
+    def test_customer_group_message_waits_for_member_and_is_read_only(self):
+        state = send_task_operation_state("pending_confirmation", "real_send", "admin")
+
+        self.assertEqual(state["workflow_stage"], "企业群发待成员确认")
+        self.assertEqual(state["allowed_operations"], ["view"])
+        self.assertIn("等待成员确认", state["operation_warnings"][0])
+
     def test_workflow_stage_labels(self):
         self.assertEqual(send_task_workflow_stage("pending", "real_send"), "待企微真实发送")
         self.assertEqual(send_task_workflow_stage("failed", "dry_run"), "发送失败待复核")

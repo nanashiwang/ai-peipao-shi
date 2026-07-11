@@ -69,6 +69,7 @@ class AdminAuthTest(unittest.TestCase):
     def test_protected_paths_and_role_permissions(self):
         self.assertFalse(path_requires_admin_auth("/health"))
         self.assertFalse(path_requires_admin_auth("/api/wecom-kf/callback"))
+        self.assertFalse(path_requires_admin_auth("/api/wecom-customer/callback"))
         self.assertFalse(path_requires_admin_auth("/api/admin/auth/status"))
         self.assertFalse(path_requires_admin_auth("/api/admin/auth/login"))
         self.assertFalse(path_requires_admin_auth("/api/admin/auth/register"))

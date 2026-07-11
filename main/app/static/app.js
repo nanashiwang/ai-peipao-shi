@@ -24,6 +24,8 @@ const state = {
   replyAgentConfig: {},
   wecomKfStatus: {},
   wecomKfBindings: [],
+  wecomCustomerStatus: {},
+  wecomCustomerBindings: [],
   templates: [],
   outputs: [],
   accounts: [],
@@ -506,13 +508,14 @@ function sendTaskStatusBadge(status) {
     pending: "待处理",
     approved: "已审核",
     assigned: "发送中",
+    pending_confirmation: "待成员确认",
     sent: "已发送",
     failed: "发送失败",
     dry_run: "试运行完成（未发送）",
     skipped: "已跳过",
     cancelled: "已取消",
   };
-  const kind = status === "sent" || status === "dry_run" ? "ok" : (status === "failed" || status === "assigned" ? "warn" : "");
+  const kind = status === "sent" || status === "dry_run" ? "ok" : (status === "failed" || status === "assigned" || status === "pending_confirmation" ? "warn" : "");
   return badge(labels[status] || status || "未知", kind);
 }
 
@@ -1945,6 +1948,7 @@ function renderWecomPage() {
   }
   renderArchiveStatus();
   renderWecomKfStatus();
+  renderWecomCustomerStatus();
 }
 
 function renderWecomKfStatus() {
@@ -2014,6 +2018,116 @@ async function syncWecomKf() {
       body: JSON.stringify({}),
     });
     toast(`微信客服同步完成：${result.normalized || 0} 条消息`);
+    await refreshAll();
+  });
+}
+
+function renderWecomCustomerStatus() {
+  const pill = $("wecomCustomerStatusPill");
+  const board = $("wecomCustomerStatusBoard");
+  if (!board) return;
+  const st = state.wecomCustomerStatus || {};
+  if (pill) {
+    if (!st.enabled) { pill.textContent = "未启用"; pill.className = "badge"; }
+    else if (!st.configured) { pill.textContent = "配置不完整"; pill.className = "badge warn"; }
+    else { pill.textContent = "已接入"; pill.className = "badge ok"; }
+  }
+  const rows = [
+    ["API", st.configured ? "配置完整" : `缺少：${(st.missing || []).join("、") || "—"}`],
+    ["客户关系", String(st.binding_count || 0)],
+    ["待到期", String(st.pending_count || 0)],
+    ["待成员确认", String(st.pending_confirmation_count || 0)],
+    ["后台同步", st.sync_enabled ? `每 ${st.sync_interval_seconds || 300} 秒` : "未开启"],
+    ["欢迎语", st.welcome_enabled ? "已开启" : "未开启"],
+  ];
+  board.innerHTML = `<div class="summary-grid">${rows.map(([label, value]) => `
+    <article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>
+  `).join("")}</div>`;
+
+  const familyOptions = (selected) => state.families.map((family) => `
+    <option value="${esc(family.family_id)}" ${family.family_id === selected ? "selected" : ""}>${esc(family.parent_nickname || family.family_id)} · ${esc(family.family_id)}</option>
+  `).join("");
+  const bindings = $("wecomCustomerBindings");
+  if (bindings) {
+    bindings.innerHTML = state.wecomCustomerBindings.length ? `
+      <div class="section-head compact-head"><h3>客户与负责成员</h3><span class="muted">可合并到已有家庭档案</span></div>
+      ${state.wecomCustomerBindings.slice(0, 100).map((item) => `
+        <form class="row-card" onsubmit="saveWecomCustomerBinding(event, ${Number(item.id)})">
+          <div>
+            <strong>${esc(item.display_name || item.external_userid)}</strong>
+            <p>负责成员 ${esc(item.account_id)} · ${esc(item.scene || "关系正常")} · 最近消息 ${esc(item.last_inbound_at || "—")}</p>
+          </div>
+          <div class="actions left">
+            <input name="display_name" value="${esc(item.display_name || "")}" placeholder="客户显示名" />
+            <select name="family_id">${familyOptions(item.family_id)}</select>
+            <button>保存绑定</button>
+          </div>
+        </form>
+      `).join("")}
+    ` : emptyState("暂无客户联系关系", "家长添加企业成员后会通过回调自动建档，也可以点击“同步客户”。");
+  }
+  const select = $("wecomCustomerBindingSelect");
+  if (select) {
+    const activeBindings = state.wecomCustomerBindings.filter((item) => !String(item.scene || "").startsWith("removed"));
+    select.innerHTML = activeBindings.length
+      ? activeBindings.map((item) => `<option value="${Number(item.id)}">${esc(item.display_name || item.external_userid)} · ${esc(item.account_id)}</option>`).join("")
+      : '<option value="">暂无可用客户</option>';
+    select.disabled = !activeBindings.length;
+  }
+}
+
+async function saveWecomCustomerBinding(event, bindingId) {
+  event.preventDefault();
+  return withAction("保存客户联系绑定", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    await api(`/api/wecom-customer/bindings/${encodeURIComponent(bindingId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    toast("客户联系已绑定到家庭");
+    await refreshAll();
+  });
+}
+
+async function syncWecomCustomer() {
+  return withAction("同步客户联系", async () => {
+    const result = await api("/api/wecom-customer/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    toast(`客户同步完成：${result.customers || 0} 位客户，${result.bindings || 0} 条关系`);
+    await refreshAll();
+  });
+}
+
+async function dispatchWecomCustomer() {
+  return withAction("执行客户联系任务", async () => {
+    const result = await api("/api/wecom-customer/dispatch", { method: "POST" });
+    toast(`执行完成：创建 ${result.created || 0}，失败 ${result.failed || 0}，跳过 ${result.skipped || 0}`);
+    await refreshAll();
+  });
+}
+
+async function createWecomCustomerMessage(event) {
+  event.preventDefault();
+  return withAction("创建客户联系提醒", async () => {
+    const form = event.target;
+    const data = Object.fromEntries(new FormData(form).entries());
+    const scheduledAt = data.scheduled_at ? new Date(data.scheduled_at).toISOString() : null;
+    await api("/api/wecom-customer/group-messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        binding_id: Number(data.binding_id),
+        content: data.content,
+        scheduled_at: scheduledAt,
+        confirm_real_send: data.confirm_real_send === "on",
+      }),
+    });
+    form.reset();
+    toast("提醒任务已创建；到期后仍需成员在企微确认发送");
     await refreshAll();
   });
 }
@@ -2706,6 +2820,8 @@ async function refreshAll() {
       safeApi("/api/agent/reply-config", DEFAULT_REPLY_AGENT_CONFIG),
       safeApi("/api/wecom-kf/status", {}),
       safeApi("/api/wecom-kf/bindings", []),
+      safeApi("/api/wecom-customer/status", {}),
+      safeApi("/api/wecom-customer/bindings", []),
     ]);
     const [families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices] = await corePromise;
     Object.assign(state, { families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices });
@@ -2718,8 +2834,8 @@ async function refreshAll() {
           .then((messages) => { state.chatMessages = messages; renderChatMessages(); })
           .catch(() => { state.chatMessages = state.chatMessages || []; })
       : Promise.resolve();
-    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig, wecomKfStatus, wecomKfBindings] = await restPromise;
-    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig, wecomKfStatus, wecomKfBindings });
+    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig, wecomKfStatus, wecomKfBindings, wecomCustomerStatus, wecomCustomerBindings] = await restPromise;
+    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig, wecomKfStatus, wecomKfBindings, wecomCustomerStatus, wecomCustomerBindings });
     renderAll();
     await chatPromise;
     saveStateCache();

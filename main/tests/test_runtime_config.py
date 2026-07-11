@@ -133,6 +133,38 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertEqual(report["status"], "ok")
 
+    def test_enabled_wecom_customer_requires_callback_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = runtime_config_report(
+                "local",
+                "sqlite:///./coach_mvp.db",
+                Path(tmp) / "ark.json",
+                database_url_explicit=False,
+                env={"WECOM_CUSTOMER_ENABLED": "true", "WECOM_CUSTOMER_CORP_ID": "corp"},
+            )
+
+        self.assertEqual(report["status"], "critical")
+        self.assertIn("WECOM_CUSTOMER_TOKEN", report["detail"])
+        self.assertIn("WECOM_CUSTOMER_ENCODING_AES_KEY", report["detail"])
+
+    def test_enabled_wecom_customer_accepts_complete_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = runtime_config_report(
+                "local",
+                "sqlite:///./coach_mvp.db",
+                Path(tmp) / "ark.json",
+                database_url_explicit=False,
+                env={
+                    "WECOM_CUSTOMER_ENABLED": "true",
+                    "WECOM_CUSTOMER_CORP_ID": "corp",
+                    "WECOM_CUSTOMER_SECRET": "secret-value",
+                    "WECOM_CUSTOMER_TOKEN": "callback-token",
+                    "WECOM_CUSTOMER_ENCODING_AES_KEY": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+                },
+            )
+
+        self.assertEqual(report["status"], "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

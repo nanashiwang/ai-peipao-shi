@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.main import RpaConversationIn, RpaMessageIn, WecomArchiveSyncIn, build_wecom_archive_poll_payload, sync_conversation_payload, sync_wecom_archive
-from app.models import AIOutput, Device, Family, RawMessage, SendLog, SendTask, WecomArchiveState
+from app.models import AIOutput, CustomerChannelBinding, Device, Family, RawMessage, SendLog, SendTask, WecomArchiveState
 from app.services.wecom_archive import WecomArchiveConfig, config_status, normalize_archive_message, ArchiveEnvelope
 
 
@@ -169,6 +169,44 @@ class WecomArchiveTest(unittest.TestCase):
         self.assertEqual(item.speaker, "许宝月")
         self.assertEqual(item.external_id, "wecom_archive:msg-1")
         self.assertTrue(item.latest_inbound)
+        self.assertEqual(item.external_userid, "parent-a")
+
+    def test_archive_private_chat_reuses_customer_contact_family(self):
+        self.db.add(Family(family_id="customer-family", parent_nickname="林妈妈"))
+        self.db.add(
+            CustomerChannelBinding(
+                family_id="customer-family",
+                channel="wecom_customer",
+                account_id="coach-a",
+                external_userid="parent-a",
+                display_name="林妈妈",
+            )
+        )
+        self.db.commit()
+        payload = WecomArchiveSyncIn(
+            messages=[
+                {
+                    "seq": 1,
+                    "msgid": "customer-msg-1",
+                    "decrypted": {
+                        "msgid": "customer-msg-1",
+                        "from": "parent-a",
+                        "tolist": ["coach-a"],
+                        "msgtime": 1782850000000,
+                        "msgtype": "text",
+                        "text": {"content": "老师，今天的任务是什么？"},
+                    },
+                }
+            ],
+            auto_generate_reply=False,
+        )
+
+        with patch("app.main.read_wecom_archive_config", return_value=archive_config()):
+            result = sync_wecom_archive(payload, db=self.db)
+
+        self.assertEqual(result["results"][0]["family_id"], "customer-family")
+        message = self.db.query(RawMessage).filter_by(external_id="wecom_archive:customer-msg-1").one()
+        self.assertEqual(message.family_id, "customer-family")
 
     def test_auto_resolves_group_archive_name_without_manual_mapping(self):
         cfg = WecomArchiveConfig(
