@@ -136,6 +136,19 @@ def runtime_config_report(
             db_reason = weak_secret_reason("数据库口令", database_password(database_url), 12)
             if db_reason:
                 critical.append(db_reason)
+    if str(source.get("WECOM_KF_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        required_wecom_kf = (
+            "WECOM_KF_CORP_ID",
+            "WECOM_KF_SECRET",
+            "WECOM_KF_TOKEN",
+            "WECOM_KF_ENCODING_AES_KEY",
+        )
+        missing_wecom_kf = [name for name in required_wecom_kf if not str(source.get(name) or "").strip()]
+        if missing_wecom_kf:
+            critical.append(f"微信客服已启用但缺少配置：{', '.join(missing_wecom_kf)}")
+        aes_key = str(source.get("WECOM_KF_ENCODING_AES_KEY") or "").strip()
+        if aes_key and len(aes_key) != 43:
+            critical.append("WECOM_KF_ENCODING_AES_KEY 必须为43位")
     if is_production_env(env):
         if not database_url_explicit:
             critical.append("正式环境必须显式设置 DATABASE_URL")

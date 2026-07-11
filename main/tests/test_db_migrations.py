@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.db import migrations_enabled, run_schema_migrations
 
 
-HEAD_REVISION = "20260710_0003"
+HEAD_REVISION = "20260712_0004"
 
 
 class DbMigrationsTest(unittest.TestCase):
@@ -45,12 +45,17 @@ class DbMigrationsTest(unittest.TestCase):
                 self.assertIn("send_logs", tables)
                 self.assertIn("agent_configs", tables)
                 self.assertIn("knowledge_chunks", tables)
+                self.assertIn("customer_channel_bindings", tables)
+                self.assertIn("wecom_kf_states", tables)
                 self.assertIn("alembic_version", tables)
 
                 family_columns = {column["name"] for column in inspector.get_columns("families")}
                 device_columns = {column["name"] for column in inspector.get_columns("devices")}
+                send_task_columns = {column["name"] for column in inspector.get_columns("send_tasks")}
                 self.assertIn("campus_name", family_columns)
                 self.assertIn("allow_real_send", device_columns)
+                self.assertIn("channel", send_task_columns)
+                self.assertIn("channel_target_id", send_task_columns)
 
                 with engine.connect() as conn:
                     version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
@@ -85,6 +90,7 @@ class DbMigrationsTest(unittest.TestCase):
                 self.assertIn("campus_name", family_columns)
                 self.assertIn("screenshot_path", send_log_columns)
                 self.assertIn("verify_status", send_log_columns)
+                self.assertIn("channel", send_log_columns)
             finally:
                 engine.dispose()
 

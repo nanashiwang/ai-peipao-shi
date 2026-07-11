@@ -20,6 +20,12 @@ AGENT_LABELS = {
     "checkin_pbl": "打卡/PBL Agent",
 }
 
+CHANNEL_PROMPT_GUIDANCE = {
+    "wecom_kf": """当前会话渠道是微信客服。用户在个人微信内看到企业微信客服账号，而不是企业微信好友或群聊。回复正文不得提及企微群、添加好友、RPA、设备或内部系统；只生成一条完整文本，传输层会独立校验48小时回复窗口、单轮5条额度和2048字节限制。""",
+    "wecom_rpa": "当前会话渠道是企业微信好友或群聊，回复将由企业微信客户端发送。",
+    "wecom_archive": "当前消息来自企业微信会话内容存档，回复将由企业微信客户端发送。",
+}
+
 
 # 把结构化数据转成格式化 JSON 字符串，便于调试和落库。
 def _json(data: dict) -> str:
@@ -181,6 +187,7 @@ def _context_payload(context: dict, extra: dict | None = None) -> dict:
             }
             for template in context["templates"]
         ],
+        "channel": context.get("channel") or {"type": "unknown"},
     }
     if extra:
         payload.update(extra)
@@ -191,11 +198,18 @@ def _context_query(context: dict, latest: str = "") -> str:
     messages = " ".join(msg.content or "" for msg in _recent_messages(context.get("messages", []), 12))
     family = context.get("family")
     family_text = f"{family.parent_nickname} {family.child_grade} {family.course_stage}" if family else ""
-    return " ".join(item for item in [latest, family_text, messages] if item).strip()
+    channel = context.get("channel") or {}
+    channel_text = f"渠道 {channel.get('type', '')} {channel.get('label', '')}".strip()
+    return " ".join(item for item in [latest, family_text, messages, channel_text] if item).strip()
 
 
 def _prompt_and_knowledge(context: dict, agent_key: str, fallback_prompt: str, query: str = "") -> tuple[str, list[dict]]:
-    return agent_prompt_with_knowledge(context.get("db"), agent_key, fallback_prompt, query or _context_query(context))
+    prompt, hits = agent_prompt_with_knowledge(context.get("db"), agent_key, fallback_prompt, query or _context_query(context))
+    channel = context.get("channel") or {}
+    guidance = CHANNEL_PROMPT_GUIDANCE.get(str(channel.get("type") or "").strip())
+    if guidance:
+        prompt = f"{prompt}\n\n【当前渠道约束】\n{guidance}"
+    return prompt, hits
 
 
 # 统一 Ark 返回格式，保证后续保存逻辑只处理同一种结构。
@@ -232,7 +246,7 @@ def _call_ark_or_none(system_prompt: str, payload: dict) -> dict | None:
 
 
 # 读取家庭相关的完整上下文，给各类 Agent 复用。
-def build_agent_context(db, family_id: str) -> dict:
+def build_agent_context(db, family_id: str, channel: dict | None = None) -> dict:
     family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
     messages = db.query(RawMessage).filter(RawMessage.family_id == family_id).order_by(RawMessage.message_time).all()
     profile = db.query(ParentProfile).filter(ParentProfile.family_id == family_id).one_or_none()
@@ -247,6 +261,7 @@ def build_agent_context(db, family_id: str) -> dict:
         "reports": reports,
         "logs": logs,
         "templates": templates,
+        "channel": channel or {"type": "unknown", "label": "未指定渠道"},
     }
 
 

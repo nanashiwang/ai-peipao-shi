@@ -218,6 +218,10 @@ class SendTask(Base):
     target_name: Mapped[str] = mapped_column(String(120), default="")
     scene: Mapped[str] = mapped_column(String(80), default="")
     content: Mapped[str] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(String(32), default="wecom_rpa", index=True)
+    channel_target_id: Mapped[str] = mapped_column(String(160), default="", index=True)
+    channel_account_id: Mapped[str] = mapped_column(String(160), default="")
+    source_message_id: Mapped[str] = mapped_column(String(160), default="")
     send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     status: Mapped[str] = mapped_column(String(30), default="pending")
     device_id: Mapped[str] = mapped_column(String(64), default="", index=True)
@@ -237,6 +241,7 @@ class SendLog(Base):
     task_id: Mapped[int] = mapped_column(Integer, index=True)
     family_id: Mapped[str] = mapped_column(String(64), index=True)
     target_name: Mapped[str] = mapped_column(String(120), default="")
+    channel: Mapped[str] = mapped_column(String(32), default="wecom_rpa", index=True)
     status: Mapped[str] = mapped_column(String(30))
     send_mode: Mapped[str] = mapped_column(String(20), default="dry_run")
     device_id: Mapped[str] = mapped_column(String(64), default="")
@@ -296,6 +301,43 @@ class WecomArchiveState(Base):
     corp_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     seq: Mapped[int] = mapped_column(Integer, default=0)
     last_msg_time: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CustomerChannelBinding(Base):
+    __tablename__ = "customer_channel_bindings"
+    __table_args__ = (
+        UniqueConstraint("channel", "account_id", "external_userid", name="uq_customer_channel_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(64), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="wecom_kf", index=True)
+    account_id: Mapped[str] = mapped_column(String(160), default="", index=True)
+    external_userid: Mapped[str] = mapped_column(String(160), default="", index=True)
+    display_name: Mapped[str] = mapped_column(String(120), default="")
+    scene: Mapped[str] = mapped_column(String(120), default="")
+    last_inbound_msgid: Mapped[str] = mapped_column(String(160), default="")
+    last_outbound_msgid: Mapped[str] = mapped_column(String(160), default="")
+    last_inbound_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    reply_window_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    reply_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WecomKfState(Base):
+    __tablename__ = "wecom_kf_states"
+    __table_args__ = (UniqueConstraint("corp_id", "open_kfid", name="uq_wecom_kf_state_account"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corp_id: Mapped[str] = mapped_column(String(120), index=True)
+    open_kfid: Mapped[str] = mapped_column(String(160), default="", index=True)
+    cursor: Mapped[str] = mapped_column(Text, default="")
+    event_token: Mapped[str] = mapped_column(Text, default="")
+    event_token_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
+    last_sync_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=None)
     last_error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

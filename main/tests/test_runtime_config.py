@@ -83,6 +83,37 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(report["metrics"]["ark_source"], "env")
         self.assertTrue(report["metrics"]["ark_configured"])
 
+    def test_enabled_wecom_kf_requires_complete_callback_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = runtime_config_report(
+                "local",
+                "sqlite:///./coach_mvp.db",
+                Path(tmp) / "ark.json",
+                database_url_explicit=False,
+                env={"WECOM_KF_ENABLED": "true", "WECOM_KF_CORP_ID": "corp"},
+            )
+
+        self.assertEqual(report["status"], "critical")
+        self.assertIn("WECOM_KF_SECRET", report["detail"])
+
+    def test_enabled_wecom_kf_accepts_complete_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = runtime_config_report(
+                "local",
+                "sqlite:///./coach_mvp.db",
+                Path(tmp) / "ark.json",
+                database_url_explicit=False,
+                env={
+                    "WECOM_KF_ENABLED": "true",
+                    "WECOM_KF_CORP_ID": "corp",
+                    "WECOM_KF_SECRET": "secret-value",
+                    "WECOM_KF_TOKEN": "callback-token",
+                    "WECOM_KF_ENCODING_AES_KEY": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+                },
+            )
+
+        self.assertEqual(report["status"], "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

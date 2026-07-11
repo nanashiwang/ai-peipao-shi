@@ -22,6 +22,8 @@ const state = {
   importTemplates: [],
   agentEval: {},
   replyAgentConfig: {},
+  wecomKfStatus: {},
+  wecomKfBindings: [],
   templates: [],
   outputs: [],
   accounts: [],
@@ -1663,6 +1665,26 @@ function renderChatSendHint(family) {
     hint.textContent = "请选择会话后再发送；可人工输入，也可勾选本次 AI 生成后直接发送。";
     return;
   }
+  const channelBinding = family.channel_binding;
+  if (channelBinding?.channel === "wecom_kf") {
+    const st = state.wecomKfStatus || {};
+    if (!st.configured) {
+      hint.textContent = `当前会话走微信客服 API，但配置未完成：${(st.missing || []).join("、") || "请检查服务器环境变量"}。`;
+      return;
+    }
+    const inboundAt = channelBinding.last_inbound_at ? new Date(channelBinding.last_inbound_at) : null;
+    if (!inboundAt || Number.isNaN(inboundAt.getTime()) || Date.now() - inboundAt.getTime() > 48 * 3600 * 1000) {
+      hint.textContent = "家长最近一次主动消息已超过 48 小时，微信客服 API 不允许继续回复。";
+      return;
+    }
+    if (Number(channelBinding.reply_count || 0) >= 5) {
+      hint.textContent = "当前消息窗口已回复 5 条，需要家长再次发送消息后才能继续回复。";
+      return;
+    }
+    directBtn.disabled = false;
+    hint.textContent = `将通过微信客服 API 回复到家长个人微信；Prompt 与知识库复用“Agent配置 / AI回复 Agent”，本窗口还可发送 ${5 - Number(channelBinding.reply_count || 0)} 条。`;
+    return;
+  }
   if (!["admin", "coach"].includes(state.currentUser?.role || "")) {
     hint.textContent = "当前角色不能直接真实发送；请使用控制端超管或陪跑师账号。";
     return;
@@ -1928,6 +1950,78 @@ function renderWecomPage() {
     $("wecomPreview").innerHTML = emptyState("请选择一个会话", "选择左侧已登记会话后，这里会汇总聊天记录和 AI 输出。");
   }
   renderArchiveStatus();
+  renderWecomKfStatus();
+}
+
+function renderWecomKfStatus() {
+  const pill = $("wecomKfStatusPill");
+  const board = $("wecomKfStatusBoard");
+  if (!board) return;
+  const st = state.wecomKfStatus || {};
+  if (pill) {
+    if (!st.enabled) { pill.textContent = "未启用"; pill.className = "badge"; }
+    else if (!st.configured) { pill.textContent = "配置不完整"; pill.className = "badge warn"; }
+    else if ((st.states || []).some((item) => item.last_error)) { pill.textContent = "同步异常"; pill.className = "badge danger"; }
+    else { pill.textContent = "已接入"; pill.className = "badge ok"; }
+  }
+  const rows = [
+    ["API", st.configured ? "配置完整" : `缺少：${(st.missing || []).join("、") || "—"}`],
+    ["客户绑定", String(st.binding_count || 0)],
+    ["待发送", String(st.pending_count || 0)],
+    ["自动回复", st.auto_reply_enabled ? `已开启 / ${st.auto_reply_send_mode || "—"}` : "未开启"],
+    ["Prompt", st.prompt_source || "Agent配置 / ai_reply_agent"],
+    ["知识库", st.knowledge_source || "Agent配置 / 知识库"],
+  ];
+  board.innerHTML = `<div class="summary-grid">${rows.map(([label, value]) => `
+    <article class="summary"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>
+  `).join("")}</div>`;
+  const bindings = $("wecomKfBindings");
+  if (!bindings) return;
+  const familyOptions = (selected) => state.families.map((family) => `
+    <option value="${esc(family.family_id)}" ${family.family_id === selected ? "selected" : ""}>${esc(family.parent_nickname || family.family_id)} · ${esc(family.family_id)}</option>
+  `).join("");
+  bindings.innerHTML = state.wecomKfBindings.length ? `
+    <div class="section-head compact-head"><h3>微信客户与家庭绑定</h3><span class="muted">首次消息自动建档；已有家庭可在这里合并</span></div>
+    ${state.wecomKfBindings.slice(0, 50).map((item) => `
+      <form class="row-card" onsubmit="saveWecomKfBinding(event, ${Number(item.id)})">
+        <div>
+          <strong>${esc(item.display_name || item.external_userid)}</strong>
+          <p>${esc(item.account_id)} · 最近主动消息 ${esc(item.last_inbound_at || "—")} · 已回复 ${esc(item.reply_count || 0)}/5</p>
+        </div>
+        <div class="actions left">
+          <input name="display_name" value="${esc(item.display_name || "")}" placeholder="客户显示名" />
+          <select name="family_id">${familyOptions(item.family_id)}</select>
+          <button>保存绑定</button>
+        </div>
+      </form>
+    `).join("")}
+  ` : emptyState("暂无微信客服客户", "家长首次从个人微信发送消息后，会自动出现在这里。");
+}
+
+async function saveWecomKfBinding(event, bindingId) {
+  event.preventDefault();
+  return withAction("保存微信客户绑定", async () => {
+    const data = Object.fromEntries(new FormData(event.target).entries());
+    await api(`/api/wecom-kf/bindings/${encodeURIComponent(bindingId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    toast("微信客户已绑定到家庭");
+    await refreshAll();
+  });
+}
+
+async function syncWecomKf() {
+  return withAction("同步微信客服", async () => {
+    const result = await api("/api/wecom-kf/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    toast(`微信客服同步完成：${result.normalized || 0} 条消息`);
+    await refreshAll();
+  });
 }
 
 // 渲染会话内容存档状态卡（官方 API 接入的健康度）。
@@ -2616,6 +2710,8 @@ async function refreshAll() {
       adminOnly ? api("/api/import/templates") : Promise.resolve([]),
       safeApi("/api/agent/config", { agents: [], knowledge_chunks: [] }),
       safeApi("/api/agent/reply-config", DEFAULT_REPLY_AGENT_CONFIG),
+      safeApi("/api/wecom-kf/status", {}),
+      safeApi("/api/wecom-kf/bindings", []),
     ]);
     const [families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices] = await corePromise;
     Object.assign(state, { families, profiles, reports, tasks, logs, outputs, conversations, todayPriorities, workbenchOverview, devices });
@@ -2628,8 +2724,8 @@ async function refreshAll() {
           .then((messages) => { state.chatMessages = messages; renderChatMessages(); })
           .catch(() => { state.chatMessages = state.chatMessages || []; })
       : Promise.resolve();
-    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig] = await restPromise;
-    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig });
+    const [templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig, wecomKfStatus, wecomKfBindings] = await restPromise;
+    Object.assign(state, { templates, auditLogs, serviceQuality, accounts, opsHealth, backups, retention, arkConfig, importTemplates, agentConfig, replyAgentConfig, wecomKfStatus, wecomKfBindings });
     renderAll();
     await chatPromise;
     saveStateCache();

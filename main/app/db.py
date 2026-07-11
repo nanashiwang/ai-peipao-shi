@@ -98,6 +98,10 @@ def ensure_columns_for_bind(conn):
             ("parent_feedback_at", "DATETIME"),
         ],
         "send_tasks": [
+            ("channel", "VARCHAR(32)"),
+            ("channel_target_id", "VARCHAR(160)"),
+            ("channel_account_id", "VARCHAR(160)"),
+            ("source_message_id", "VARCHAR(160)"),
             ("device_id", "VARCHAR(64)"),
             ("send_mode", "VARCHAR(20)"),
             ("retry_count", "INTEGER"),
@@ -106,6 +110,7 @@ def ensure_columns_for_bind(conn):
             ("last_error", "TEXT"),
         ],
         "send_logs": [
+            ("channel", "VARCHAR(32)"),
             ("device_id", "VARCHAR(64)"),
             ("client_result_id", "VARCHAR(120)"),
             ("screenshot_path", "TEXT"),
@@ -142,6 +147,7 @@ def ensure_columns_for_bind(conn):
                 continue
             default = {
                 "send_mode": "'dry_run'",
+                "channel": "'wecom_rpa'",
                 "send_task_id": "0",
                 "send_status": "'not_created'",
                 "sent_at": "NULL",

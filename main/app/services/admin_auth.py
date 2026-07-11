@@ -45,6 +45,7 @@ MIN_TOKEN_TTL_SECONDS = 3600
 MAX_TOKEN_TTL_SECONDS = 365 * 24 * 3600
 PUBLIC_PATHS = {
     "/health",
+    "/api/wecom-kf/callback",
     "/api/admin/auth/status",
     "/api/admin/auth/login",
     "/api/admin/auth/register",

@@ -2065,7 +2065,10 @@ summary { cursor: pointer; color: var(--muted); }
 
 .reply-config-status { display: grid; align-content: start; gap: 8px; }
 
-.agent-config-page { display: grid; gap: 18px; }
+.agent-config-page { gap: 18px; }
+.agent-config-page.active { display: grid; }
+#archivePanel, #wecomKfPanel { grid-template-columns: minmax(0, 1fr); }
+#archivePanel > *, #wecomKfPanel > * { min-width: 0; }
 .agent-config-card, .agent-knowledge-panel, .knowledge-hit {
   background: var(--card);
   border: 1px solid var(--line);

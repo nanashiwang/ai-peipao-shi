@@ -361,6 +361,21 @@
         </div>
         <div id="archiveStatusBoard"></div>
       </section>
+      <section class="assist-section" id="wecomKfPanel" style="margin-bottom:14px">
+        <div class="section-head compact-head">
+          <div>
+            <h2>微信客服（个人微信入口）</h2>
+            <span class="muted">家长在个人微信咨询，系统复用同一套 Prompt、知识库与安全审核，通过微信客服 API 回复</span>
+          </div>
+          <div class="actions left">
+            <span id="wecomKfStatusPill" class="badge">检查中…</span>
+            <button onclick="syncWecomKf()">立即同步</button>
+            <button onclick="switchTab('agentConfig')">配置 Prompt / 知识库</button>
+          </div>
+        </div>
+        <div id="wecomKfStatusBoard"></div>
+        <div id="wecomKfBindings" class="stack"></div>
+      </section>
       <form id="wecomForm" class="wecom-form">
         <input name="parent_nickname" placeholder="企微会话名/家长名，如：艺博展讯" required />
         <input name="family_id" placeholder="家庭编号，可空" />

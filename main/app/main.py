@@ -22,7 +22,7 @@ from urllib.parse import unquote
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
@@ -33,6 +33,7 @@ from app.models import (
     AIOutput,
     AuditLog,
     CheckinRecord,
+    CustomerChannelBinding,
     Device,
     DeviceConversationCheck,
     Family,
@@ -44,6 +45,7 @@ from app.models import (
     Template,
     UserAccount,
     WecomArchiveState,
+    WecomKfState,
     WeeklyReport,
 )
 from app.services.agent_service import (
@@ -109,6 +111,18 @@ from app.services.wecom_archive import (
     pull_archive_messages,
     read_wecom_archive_config,
 )
+from app.services.wecom_kf import (
+    WecomKfApiError,
+    batch_get_customers,
+    config_status as wecom_kf_config_status,
+    decrypt_callback_request,
+    normalized_inbound_message,
+    parse_callback_event,
+    read_wecom_kf_config,
+    send_text as send_wecom_kf_text,
+    sync_messages as sync_wecom_kf_messages,
+    verify_callback_echo,
+)
 from rpa.package_manifest import build_package_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +151,7 @@ CONVERSATION_CHECK_SCENE = "会话可读校验"
 CONVERSATION_CHECK_CONTENT = "只读校验：打开目标会话并读取可见消息，不粘贴不发送。"
 REAL_SEND_PREP_CONVERSATION_CHECK_PREFIX = "真实发送前置校验："
 _wecom_archive_poller_started = False
+_wecom_kf_worker_started = False
 
 REPLY_AGENT_OPTIONS = [
     {"key": "context_agent", "name": "上下文 Agent", "description": "读取家庭画像、最近聊天、周报和话术模板"},
@@ -228,6 +243,10 @@ class SendTaskIn(BaseModel):
     target_name: str
     scene: str = "手动测试"
     content: str
+    channel: str = "wecom_rpa"
+    channel_target_id: str = ""
+    channel_account_id: str = ""
+    source_message_id: str = ""
     device_id: str = ""
     send_mode: str = "dry_run"
     confirm_real_send: bool = False
@@ -381,6 +400,10 @@ class RpaConversationIn(BaseModel):
     conversation_opened: bool = False
     empty_conversation_ok: bool = False
     archive_self_userids: list[str] = Field(default_factory=list)
+    channel: str = "wecom_rpa"
+    channel_target_id: str = ""
+    channel_account_id: str = ""
+    source_message_id: str = ""
 
 
 class WecomArchiveSyncIn(BaseModel):
@@ -389,6 +412,18 @@ class WecomArchiveSyncIn(BaseModel):
     auto_create_reply_task: bool = False
     auto_generate_all_agents: bool = False
     messages: list[dict] = []
+
+
+class WecomKfSyncIn(BaseModel):
+    open_kfid: str = ""
+    event_token: str = ""
+    limit: int = 1000
+    auto_generate_reply: bool | None = None
+
+
+class CustomerChannelBindingIn(BaseModel):
+    family_id: str
+    display_name: str = ""
 
 
 # 更新发送任务的可编辑字段。
@@ -512,6 +547,7 @@ def send_log_view(log: SendLog) -> dict:
 def is_real_send_attempt_log(log: SendLog) -> bool:
     return bool(
         log.send_mode == "real_send"
+        and (log.channel or "wecom_rpa") != "wecom_kf"
         and (
             log.status == "sent"
             or log.verify_status in {"failed", "unknown"}
@@ -793,6 +829,10 @@ def send_task_snapshot(task: SendTask | None) -> dict:
         "target_name": task.target_name,
         "scene": task.scene,
         "content": task.content,
+        "channel": task.channel,
+        "channel_target_id": task.channel_target_id,
+        "channel_account_id": task.channel_account_id,
+        "source_message_id": task.source_message_id,
         "send_mode": task.send_mode,
         "status": task.status,
         "device_id": task.device_id,
@@ -1138,7 +1178,7 @@ REAL_SEND_MANUAL_CONFIRM_EVIDENCE_TERMS = REAL_SEND_AFTER_HOTKEY_TERMS + (
 
 
 def send_log_has_real_send_attempt_evidence(log: SendLog) -> bool:
-    if log.send_mode != "real_send":
+    if log.send_mode != "real_send" or (log.channel or "wecom_rpa") == "wecom_kf":
         return False
     detail = f"{log.detail or ''}\n{log.verify_detail or ''}"
     return log.status == "sent" or any(term in detail for term in REAL_SEND_MANUAL_CONFIRM_EVIDENCE_TERMS)
@@ -1614,6 +1654,37 @@ def device_has_inflight_real_send(db: Session, dev: Device, exclude_task_id: int
 def send_task_readiness(db: Session, task: SendTask, now: datetime | None = None) -> dict:
     """给控制端展示任务能否被指定设备稳定执行，不改变调度结果。"""
     now = now or datetime.utcnow()
+    if (task.channel or "wecom_rpa") == "wecom_kf":
+        if task.status == "sent":
+            return {"status": "done", "label": "已通过微信客服发送", "reasons": [], "actions": []}
+        if task.status == "cancelled":
+            return {"status": "done", "label": "已取消", "reasons": [], "actions": []}
+        if task.status == "failed":
+            return {"status": "review", "label": "微信客服发送失败", "reasons": [task.last_error or "需要人工复核"], "actions": []}
+        status = wecom_kf_config_status(read_wecom_kf_config())
+        reasons = []
+        if not status.get("configured"):
+            reasons.append(f"微信客服配置不完整：{'、'.join(status.get('missing') or [])}")
+        binding = (
+            db.query(CustomerChannelBinding)
+            .filter(
+                CustomerChannelBinding.channel == "wecom_kf",
+                CustomerChannelBinding.account_id == task.channel_account_id,
+                CustomerChannelBinding.external_userid == task.channel_target_id,
+            )
+            .one_or_none()
+        )
+        if not binding:
+            reasons.append("未找到微信客服客户绑定")
+        elif not binding.last_inbound_at or binding.last_inbound_at < now - timedelta(hours=48):
+            reasons.append("客户最近一次主动消息已超过48小时")
+        elif int(binding.reply_count or 0) >= 5:
+            reasons.append("当前客户消息窗口已回复5条，需等待客户再次发消息")
+        if len((task.content or "").encode("utf-8")) > 2048:
+            reasons.append("微信客服文本超过2048字节")
+        if reasons:
+            return {"status": "blocked", "label": "微信客服发送前需处理", "reasons": reasons, "actions": []}
+        return {"status": "ready", "label": "微信客服 API 就绪", "reasons": [], "actions": []}
     reasons: list[str] = []
     actions: list[dict] = []
     mode = send_log_mode(task)
@@ -1918,6 +1989,42 @@ def sync_weekly_report_send_status(
         report.updated_at = now
 
 
+def family_delivery_route(db: Session, family_id: str) -> dict:
+    binding = (
+        db.query(CustomerChannelBinding)
+        .filter(CustomerChannelBinding.family_id == family_id, CustomerChannelBinding.channel == "wecom_kf")
+        .order_by(CustomerChannelBinding.last_inbound_at.desc(), CustomerChannelBinding.id.desc())
+        .first()
+    )
+    if not binding:
+        return {
+            "channel": "wecom_rpa",
+            "channel_target_id": "",
+            "channel_account_id": "",
+            "source_message_id": "",
+        }
+    return {
+        "channel": "wecom_kf",
+        "channel_target_id": binding.external_userid,
+        "channel_account_id": binding.account_id,
+        "source_message_id": binding.last_inbound_msgid,
+    }
+
+
+def build_family_agent_context(db: Session, family_id: str) -> dict:
+    route = family_delivery_route(db, family_id)
+    return build_agent_context(
+        db,
+        family_id,
+        {
+            "type": route["channel"],
+            "label": "微信客服" if route["channel"] == "wecom_kf" else "企业微信",
+            "account_id": route["channel_account_id"],
+            "customer_id": route["channel_target_id"],
+        },
+    )
+
+
 def ensure_weekly_report_send_task(db: Session, report: WeeklyReport, actor: str) -> tuple[SendTask, bool]:
     if report.status != "approved":
         raise HTTPException(400, "只有已审核周报可以创建发送任务")
@@ -1958,6 +2065,7 @@ def ensure_weekly_report_send_task(db: Session, report: WeeklyReport, actor: str
         target_name=target_name,
         scene=WEEKLY_REPORT_SCENE,
         content=content,
+        **family_delivery_route(db, report.family_id),
         send_mode="dry_run",
     )
     add_send_task_with_audit(db, task, "create", actor, f"已审核周报 {report.id} 创建发送任务")
@@ -2450,6 +2558,54 @@ def start_wecom_archive_poller() -> None:
     print(f"wecom_archive_poller_started interval={interval}s", flush=True)
 
 
+def _wecom_kf_worker_loop(interval_seconds: int) -> None:
+    time.sleep(3)
+    while True:
+        db = next(get_db())
+        try:
+            config = read_wecom_kf_config()
+            sync_results = []
+            if config.poll_enabled:
+                states = db.query(WecomKfState).filter(WecomKfState.corp_id == config.corp_id).all()
+                open_kfids = [
+                    item.open_kfid
+                    for item in states
+                    if item.open_kfid
+                    and item.event_token_at
+                    and (not item.last_sync_at or item.last_sync_at < item.event_token_at)
+                ]
+                known_open_kfids = {item.open_kfid for item in states if item.open_kfid}
+                if config.default_open_kfid and config.default_open_kfid not in known_open_kfids:
+                    open_kfids.append(config.default_open_kfid)
+                for open_kfid in open_kfids:
+                    sync_results.append(sync_wecom_kf_channel(WecomKfSyncIn(open_kfid=open_kfid), db))
+            dispatch = dispatch_wecom_kf_tasks(db)
+            if sync_results or any(dispatch.values()):
+                print(
+                    f"wecom_kf_worker_ok accounts={len(sync_results)} "
+                    f"pulled={sum(item.get('pulled', 0) for item in sync_results)} dispatch={dispatch}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"wecom_kf_worker_failed detail={exc}", flush=True)
+        finally:
+            db.close()
+        time.sleep(interval_seconds)
+
+
+def start_wecom_kf_worker() -> None:
+    global _wecom_kf_worker_started
+    config = read_wecom_kf_config()
+    if _wecom_kf_worker_started or not wecom_kf_config_status(config).get("configured"):
+        return
+    if not config.poll_enabled and not config.dispatch_enabled:
+        return
+    thread = threading.Thread(target=_wecom_kf_worker_loop, args=(config.poll_interval_seconds,), daemon=True)
+    thread.start()
+    _wecom_kf_worker_started = True
+    print(f"wecom_kf_worker_started interval={config.poll_interval_seconds}s", flush=True)
+
+
 # 启动时初始化数据库并预置模板。
 @app.on_event("startup")
 def on_startup():
@@ -2459,10 +2615,12 @@ def on_startup():
     try:
         seed_bootstrap_admin(db)
         seed_templates(db)
+        list_agent_configs(db)
         db.commit()
     finally:
         db.close()
     start_wecom_archive_poller()
+    start_wecom_kf_worker()
 
 
     # 首页返回静态前端页面。
@@ -2787,12 +2945,14 @@ def list_test_conversations(request: Request = None, db: Session = Depends(get_d
     rows = []
     for family in scoped_family_query(db, request).order_by(Family.family_id).all():
         last = db.query(RawMessage).filter(RawMessage.family_id == family.family_id).order_by(RawMessage.message_time.desc()).first()
+        binding = db.query(CustomerChannelBinding).filter(CustomerChannelBinding.family_id == family.family_id).order_by(CustomerChannelBinding.last_inbound_at.desc(), CustomerChannelBinding.id.desc()).first()
         rows.append(
             {
                 **as_dict(family),
                 "message_count": db.query(RawMessage).filter(RawMessage.family_id == family.family_id).count(),
                 "last_message": last.content if last else "",
                 "last_speaker": last.speaker if last else "",
+                "channel_binding": as_dict(binding) if binding else None,
             }
         )
     return rows
@@ -2867,17 +3027,29 @@ def send_chat_message(payload: ChatMessageIn, request: Request = None, db: Sessi
 
 @app.post("/api/conversations/{family_id}/direct-send")
 def direct_send_conversation_message(family_id: str, payload: ConversationDirectSendIn, request: Request = None, db: Session = Depends(get_db)):
-    """会话工作台发送：人工文本或智能回复都会直接进入对应设备真实发送队列。"""
+    """会话工作台发送：按家庭绑定通道进入微信客服 API 或企微 RPA 队列。"""
     ensure_conversation_direct_send_allowed(request)
     family = require_family_for_request(db, family_id, request)
     target_name = (family.parent_nickname or "").strip()
     if not target_name:
         raise HTTPException(400, "当前会话没有企微目标名，无法直接发送")
+    binding = (
+        db.query(CustomerChannelBinding)
+        .filter(CustomerChannelBinding.family_id == family.family_id, CustomerChannelBinding.channel == "wecom_kf")
+        .order_by(CustomerChannelBinding.last_inbound_at.desc(), CustomerChannelBinding.id.desc())
+        .first()
+    )
+    channel_context = {
+        "type": "wecom_kf" if binding else "wecom_rpa",
+        "label": "微信客服" if binding else "企业微信",
+        "account_id": binding.account_id if binding else "",
+        "customer_id": binding.external_userid if binding else "",
+    }
 
     ai_output = None
     scene = "会话工作台人工发送"
     if payload.smart_reply:
-        context = build_agent_context(db, family.family_id)
+        context = build_agent_context(db, family.family_id, channel_context)
         if not context["messages"]:
             raise HTTPException(404, "当前会话还没有消息，无法智能回复")
         reply_config = read_reply_agent_config()
@@ -2894,14 +3066,20 @@ def direct_send_conversation_message(family_id: str, payload: ConversationDirect
     else:
         content = validate_send_task_content(payload.content)
 
-    device_id = resolve_real_send_device_binding(db, payload.device_id, target_name)
-    validate_real_send_device_binding(device_id)
+    device_id = ""
+    if not binding:
+        device_id = resolve_real_send_device_binding(db, payload.device_id, target_name)
+        validate_real_send_device_binding(device_id)
     validate_real_send_risk(db, target_name, content)
     task = SendTask(
         family_id=family.family_id,
         target_name=target_name,
         scene=scene,
         content=content,
+        channel="wecom_kf" if binding else "wecom_rpa",
+        channel_target_id=binding.external_userid if binding else "",
+        channel_account_id=binding.account_id if binding else "",
+        source_message_id=binding.last_inbound_msgid if binding else "",
         device_id=device_id,
         send_mode="real_send",
         status="pending",
@@ -2913,7 +3091,10 @@ def direct_send_conversation_message(family_id: str, payload: ConversationDirect
         task,
         "smart_reply_real_send" if payload.smart_reply else "direct_real_send",
         actor_from_request(request),
-        "会话工作台智能回复，跳过确认直接加入企微真实发送队列" if payload.smart_reply else "会话工作台人工输入，跳过确认直接加入企微真实发送队列",
+        "会话工作台智能回复，直接加入微信客服发送队列" if binding and payload.smart_reply else
+        "会话工作台人工输入，直接加入微信客服发送队列" if binding else
+        "会话工作台智能回复，跳过确认直接加入企微真实发送队列" if payload.smart_reply else
+        "会话工作台人工输入，跳过确认直接加入企微真实发送队列",
     )
     db.commit()
     return {
@@ -2921,8 +3102,11 @@ def direct_send_conversation_message(family_id: str, payload: ConversationDirect
         "ai_output": as_dict(ai_output) if ai_output else None,
         "family_id": family.family_id,
         "target_name": target_name,
-        "device_id": device_id,
-        "note": "智能回复已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。" if payload.smart_reply else "已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。",
+        "device_id": device_id or "微信客服API",
+        "channel": task.channel,
+        "note": "已加入微信客服 API 发送队列。" if binding else
+        "智能回复已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。" if payload.smart_reply else
+        "已直接加入企微真实发送队列；发送成功后由被控端回读确认并落库。",
     }
 
 
@@ -2935,7 +3119,7 @@ def seed_test_chat(db: Session = Depends(get_db)):
 def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Session = Depends(get_db)):
     started = perf_counter()
     family = require_family_for_request(db, payload.family_id, request)
-    context = build_agent_context(db, family.family_id)
+    context = build_family_agent_context(db, family.family_id)
     if not context["messages"]:
         raise HTTPException(404, "该会话还没有消息")
 
@@ -2953,6 +3137,7 @@ def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Sessio
             target_name=family.parent_nickname,
             scene=ai_reply_scene(reply_result["raw"], "网页AI回复"),
             content=reply_result["display_text"],
+            **family_delivery_route(db, family.family_id),
             status="pending",
         )
         reply_output.status = "task_created"
@@ -2972,7 +3157,7 @@ def generate_test_chat_ai(payload: ChatAiIn, request: Request = None, db: Sessio
 def generate_test_chat_reply(payload: ChatReplyIn, request: Request = None, db: Session = Depends(get_db)):
     started = perf_counter()
     family = require_family_for_request(db, payload.family_id, request)
-    context = build_agent_context(db, family.family_id)
+    context = build_family_agent_context(db, family.family_id)
     if not context["messages"]:
         raise HTTPException(404, "该会话还没有消息")
 
@@ -2986,6 +3171,7 @@ def generate_test_chat_reply(payload: ChatReplyIn, request: Request = None, db: 
             target_name=family.parent_nickname,
             scene=ai_reply_scene(reply_result["raw"], "网页AI回复"),
             content=reply_result["display_text"],
+            **family_delivery_route(db, family.family_id),
             status="pending",
         )
         reply_output.status = "task_created"
@@ -3040,7 +3226,14 @@ def list_families(campus_name: str = "", request: Request = None, db: Session = 
     if clean_campus:
         query = query.filter(Family.campus_name == clean_campus)
     families = query.order_by(Family.family_id).all()
-    rows = [{**as_dict(f), "message_count": db.query(RawMessage).filter(RawMessage.family_id == f.family_id).count()} for f in families]
+    rows = []
+    for family in families:
+        binding = db.query(CustomerChannelBinding).filter(CustomerChannelBinding.family_id == family.family_id).order_by(CustomerChannelBinding.last_inbound_at.desc(), CustomerChannelBinding.id.desc()).first()
+        rows.append({
+            **as_dict(family),
+            "message_count": db.query(RawMessage).filter(RawMessage.family_id == family.family_id).count(),
+            "channel_binding": as_dict(binding) if binding else None,
+        })
     return maybe_redact_for_request(rows, request)
 
 
@@ -3868,7 +4061,7 @@ def generate_for_family(db: Session, family_id: str):
 
 def create_family_ai_bundle(db: Session, family_id: str, source: str = "家庭详情一键生成") -> dict:
     family = require_family(db, family_id)
-    context = build_agent_context(db, family_id)
+    context = build_family_agent_context(db, family_id)
     if not context["messages"]:
         raise HTTPException(404, "该家庭还没有消息，无法生成 AI 操作区内容")
 
@@ -3978,19 +4171,24 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
     if data.device_id:
         ensure_new_task_operation_allowed(request, "assign_device")
     send_mode = validate_send_mode_submit(data.send_mode, data.confirm_real_send)
+    route = family_delivery_route(db, output.family_id)
     validate_ai_output_send_boundary(output, content, send_mode)
     if send_mode == "real_send":
         ensure_new_task_operation_allowed(request, "confirm_real_send")
-        device_id = resolve_real_send_device_binding(db, data.device_id, target_name)
-        validate_real_send_device_binding(device_id)
+        if route["channel"] == "wecom_kf":
+            device_id = ""
+        else:
+            device_id = resolve_real_send_device_binding(db, data.device_id, target_name)
+            validate_real_send_device_binding(device_id)
         validate_real_send_risk(db, target_name, content)
     else:
-        device_id = validate_task_device_binding(db, data.device_id, target_name)
+        device_id = "" if route["channel"] == "wecom_kf" else validate_task_device_binding(db, data.device_id, target_name)
     task = SendTask(
         family_id=output.family_id,
         target_name=target_name,
         scene=scene,
         content=content,
+        **route,
         device_id=device_id,
         send_mode=send_mode,
         status="pending",
@@ -4009,7 +4207,7 @@ def create_task_from_ai_output(output_id: int, payload: AIOutputTaskIn | None = 
 @app.post("/agent/profile")
 def run_profile_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
     family = require_family_for_request(db, payload.family_id, request)
-    context = build_agent_context(db, payload.family_id)
+    context = build_family_agent_context(db, payload.family_id)
     result = run_family_profile_agent_service(context)
     output = save_ai_output(db, payload.family_id, "family_profile", payload.source or "生成画像", result)
 
@@ -4024,7 +4222,7 @@ def run_profile_agent(payload: AgentRequest, request: Request = None, db: Sessio
 @app.post("/agent/weekly-report")
 def run_weekly_report_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
     family = require_family_for_request(db, payload.family_id, request)
-    context = build_agent_context(db, payload.family_id)
+    context = build_family_agent_context(db, payload.family_id)
     result = run_weekly_report_agent_service(context)
     output = save_ai_output(db, payload.family_id, "weekly_report", payload.source or "生成周报", result)
     create_weekly_report_from_agent(db, payload.family_id, result)
@@ -4111,7 +4309,7 @@ def auto_draft_replies(payload: AutoReplyDraftIn | None = None, request: Request
             skipped_items.append({"family_id": family.family_id, "family_name": family_name, "reason": "已有近期待审核回复"})
             continue
 
-        context = build_agent_context(db, family.family_id)
+        context = build_family_agent_context(db, family.family_id)
         message = latest_effective_parent_message(context)
         if not message:
             skipped_items.append({"family_id": family.family_id, "family_name": family_name, "reason": "暂无有效家长消息"})
@@ -4139,7 +4337,7 @@ def auto_draft_replies(payload: AutoReplyDraftIn | None = None, request: Request
 @app.post("/agent/reply")
 def run_reply_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
     family = require_family_for_request(db, payload.family_id, request)
-    context = build_agent_context(db, payload.family_id)
+    context = build_family_agent_context(db, payload.family_id)
     result = run_reply_agent_service(context, payload.message, payload.tone)
     output = save_ai_output(db, payload.family_id, "ai_reply", payload.source or "生成回复", result)
     db.commit()
@@ -4151,7 +4349,7 @@ def run_reply_agent(payload: AgentRequest, request: Request = None, db: Session 
 @app.post("/agent/checkin-pbl")
 def run_checkin_pbl_agent(payload: AgentRequest, request: Request = None, db: Session = Depends(get_db)):
     family = require_family_for_request(db, payload.family_id, request)
-    context = build_agent_context(db, payload.family_id)
+    context = build_family_agent_context(db, payload.family_id)
     result = run_checkin_pbl_agent_service(context)
     output = save_ai_output(db, payload.family_id, "checkin_pbl", payload.source or "识别打卡/PBL", result)
     created = create_checkin_records_from_context(db, context)
@@ -4216,6 +4414,15 @@ def sync_conversation_payload(
     source_prefix: str = "企微RPA",
     dev: Device | None = None,
 ) -> dict:
+    channel = (payload.channel or "wecom_rpa").strip()
+    if channel not in {"wecom_rpa", "wecom_archive", "wecom_kf"}:
+        channel = "wecom_rpa"
+    channel_context = {
+        "type": channel,
+        "label": "微信客服" if channel == "wecom_kf" else "企业微信",
+        "account_id": payload.channel_account_id,
+        "customer_id": payload.channel_target_id,
+    }
     family_id = payload.family_id.strip()
     family = None
     if family_id:
@@ -4230,7 +4437,7 @@ def sync_conversation_payload(
             child_grade=payload.child_grade,
             campus_name=payload.campus_name,
             coach_name=payload.coach_name,
-            service_status="企微RPA同步",
+            service_status="微信客服同步" if channel == "wecom_kf" else "企微RPA同步",
         )
         db.add(family)
         db.flush()
@@ -4313,11 +4520,15 @@ def sync_conversation_payload(
             try:
                 send_mode_for_guard = validate_send_mode(reply_config["send_mode"])
                 if reply_config["auto_create_send_task"] and send_mode_for_guard == "real_send":
-                    if source_prefix == "企业微信存档" or payload.archive_self_userids:
+                    if channel == "wecom_kf":
+                        if not payload.channel_target_id or not payload.channel_account_id:
+                            raise HTTPException(400, "微信客服消息缺少 external_userid 或 open_kfid")
+                    elif source_prefix == "企业微信存档" or payload.archive_self_userids:
                         auto_reply_device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
+                        validate_real_send_device_binding(auto_reply_device_id)
                     else:
                         auto_reply_device_id = resolve_real_send_device_binding(db, "", payload.target_name)
-                    validate_real_send_device_binding(auto_reply_device_id)
+                        validate_real_send_device_binding(auto_reply_device_id)
             except HTTPException as exc:
                 auto_reply_note = f"已跳过自动回复：{exc.detail}"
             if auto_reply_note:
@@ -4333,7 +4544,7 @@ def sync_conversation_payload(
                     "generated_outputs": [],
                     "send_task": None,
                 }
-            context = build_agent_context(db, family_id)
+            context = build_agent_context(db, family_id, channel_context)
             if reply_config["reply_agent"] == "quick_reply_agent":
                 result = run_quick_reply_agent_service(context, latest_parent_message, reply_config["tone"])
             else:
@@ -4351,13 +4562,15 @@ def sync_conversation_payload(
                         content = validate_send_task_content(result["display_text"])
                         send_mode = validate_send_mode(reply_config["send_mode"])
                         if send_mode == "real_send":
-                            device_id = auto_reply_device_id
-                            if not device_id:
-                                if source_prefix == "企业微信存档" or payload.archive_self_userids:
-                                    device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
-                                else:
-                                    device_id = resolve_real_send_device_binding(db, "", payload.target_name)
-                            validate_real_send_device_binding(device_id)
+                            device_id = ""
+                            if channel != "wecom_kf":
+                                device_id = auto_reply_device_id
+                                if not device_id:
+                                    if source_prefix == "企业微信存档" or payload.archive_self_userids:
+                                        device_id = resolve_auto_reply_device_binding(db, payload.archive_self_userids, payload.target_name)
+                                    else:
+                                        device_id = resolve_real_send_device_binding(db, "", payload.target_name)
+                                validate_real_send_device_binding(device_id)
                             validate_real_send_risk(
                                 db,
                                 payload.target_name,
@@ -4372,6 +4585,10 @@ def sync_conversation_payload(
                             target_name=payload.target_name,
                             scene=auto_reply_task_scene(ai_reply_scene(result["raw"], "普通咨询")),
                             content=content,
+                            channel=channel,
+                            channel_target_id=payload.channel_target_id,
+                            channel_account_id=payload.channel_account_id,
+                            source_message_id=payload.source_message_id,
                             device_id=device_id,
                             send_mode=send_mode,
                             status="pending",
@@ -4384,7 +4601,7 @@ def sync_conversation_payload(
 
     if payload.auto_generate_all_agents:
         db.flush()
-        context = build_agent_context(db, family_id)
+        context = build_agent_context(db, family_id, channel_context)
         if context["messages"]:
             profile_result = run_family_profile_agent_service(context)
             profile_output = save_ai_output(db, family_id, "family_profile", f"{source_prefix}：{payload.target_name}", profile_result)
@@ -4545,6 +4762,7 @@ def sync_wecom_archive(payload: WecomArchiveSyncIn, request: Request = None, db:
                 conversation_opened=True,
                 empty_conversation_ok=False,
                 archive_self_userids=group.get("archive_self_userids") or [],
+                channel="wecom_archive",
             )
             results.append(
                 sync_conversation_payload(
@@ -4580,6 +4798,419 @@ def sync_wecom_archive(payload: WecomArchiveSyncIn, request: Request = None, db:
         state.updated_at = datetime.utcnow()
         db.commit()
         raise HTTPException(500, f"企业微信会话存档同步失败：{exc}") from exc
+
+
+def wecom_kf_state_for(db: Session, corp_id: str, open_kfid: str) -> WecomKfState:
+    state = (
+        db.query(WecomKfState)
+        .filter(WecomKfState.corp_id == corp_id, WecomKfState.open_kfid == open_kfid)
+        .one_or_none()
+    )
+    if not state:
+        state = WecomKfState(corp_id=corp_id, open_kfid=open_kfid)
+        db.add(state)
+        db.flush()
+    return state
+
+
+def upsert_wecom_kf_binding(db: Session, item: dict) -> CustomerChannelBinding:
+    binding = (
+        db.query(CustomerChannelBinding)
+        .filter(
+            CustomerChannelBinding.channel == "wecom_kf",
+            CustomerChannelBinding.account_id == item["open_kfid"],
+            CustomerChannelBinding.external_userid == item["external_userid"],
+        )
+        .one_or_none()
+    )
+    inbound_at = parse_rpa_time(item["message_time"])
+    if not binding:
+        binding = CustomerChannelBinding(
+            family_id=item["family_id"],
+            channel="wecom_kf",
+            account_id=item["open_kfid"],
+            external_userid=item["external_userid"],
+            display_name=item["display_name"],
+        )
+        db.add(binding)
+    binding.display_name = item["display_name"] or binding.display_name
+    binding.last_inbound_msgid = item["msgid"]
+    binding.last_inbound_at = inbound_at
+    binding.reply_window_started_at = inbound_at
+    binding.reply_count = 0
+    binding.updated_at = datetime.utcnow()
+    db.flush()
+    return binding
+
+
+def mark_wecom_kf_send_failure_event(db: Session, message: dict) -> bool:
+    event = message.get("event") or {}
+    if message.get("msgtype") != "event" or event.get("event_type") != "msg_send_fail":
+        return False
+    fail_msgid = str(event.get("fail_msgid") or "").strip()
+    if not fail_msgid:
+        return False
+    log = db.query(SendLog).filter(SendLog.client_result_id == fail_msgid).order_by(SendLog.id.desc()).first()
+    if not log:
+        return False
+    detail = f"微信客服发送失败事件：fail_type={event.get('fail_type', 'unknown')}"
+    log.status = "failed"
+    log.detail = detail
+    log.verify_status = "failed"
+    log.verify_detail = detail
+    task = db.get(SendTask, log.task_id)
+    if task:
+        task.status = "failed"
+        task.last_error = detail
+        sync_weekly_report_send_status(db, task, "failed")
+    return True
+
+
+def sync_wecom_kf_channel(payload: WecomKfSyncIn, db: Session) -> dict:
+    config = read_wecom_kf_config()
+    status = wecom_kf_config_status(config)
+    if not status["configured"]:
+        raise HTTPException(400, f"微信客服配置不完整：{'、'.join(status['missing'])}")
+    open_kfid = (payload.open_kfid or config.default_open_kfid).strip()
+    if not open_kfid:
+        known_accounts = [item[0] for item in db.query(WecomKfState.open_kfid).filter(WecomKfState.corp_id == config.corp_id).all() if item[0]]
+        if len(known_accounts) == 1:
+            open_kfid = known_accounts[0]
+    if not open_kfid:
+        raise HTTPException(400, "缺少微信客服 open_kfid；请先完成一次回调，或配置 WECOM_KF_DEFAULT_OPEN_KFID")
+    state = wecom_kf_state_for(db, config.corp_id, open_kfid)
+    if payload.event_token:
+        state.event_token = payload.event_token
+        state.event_token_at = datetime.utcnow()
+    event_token = state.event_token
+    processed_event_token_at = state.event_token_at
+    if not state.event_token_at or state.event_token_at < datetime.utcnow() - timedelta(minutes=9):
+        event_token = ""
+    reply_config = read_reply_agent_config()
+    auto_generate_reply = reply_config["auto_reply_enabled"] if payload.auto_generate_reply is None else payload.auto_generate_reply
+    cursor = state.cursor or ""
+    raw_messages: list[dict] = []
+    try:
+        while True:
+            result = sync_wecom_kf_messages(
+                config,
+                cursor=cursor,
+                event_token=event_token,
+                open_kfid=open_kfid,
+                limit=payload.limit,
+            )
+            raw_messages.extend(result.get("msg_list") or [])
+            cursor = str(result.get("next_cursor") or cursor)
+            if not int(result.get("has_more") or 0):
+                break
+
+        failure_events = sum(1 for item in raw_messages if mark_wecom_kf_send_failure_event(db, item))
+        external_ids = [str(item.get("external_userid") or "") for item in raw_messages if int(item.get("origin") or 0) == 3]
+        try:
+            customers = batch_get_customers(config, external_ids)
+        except WecomKfApiError:
+            customers = {}
+
+        normalized = []
+        for raw in raw_messages:
+            item = normalized_inbound_message(raw, customers.get(str(raw.get("external_userid") or "")))
+            if item and not db.query(RawMessage).filter(RawMessage.external_id == f"wecom_kf:{item['msgid']}").first():
+                normalized.append(item)
+        normalized.sort(key=lambda item: (item["message_time"], item["msgid"]))
+
+        groups: dict[tuple[str, str], dict] = {}
+        for item in normalized:
+            binding = upsert_wecom_kf_binding(db, item)
+            key = (item["open_kfid"], item["external_userid"])
+            group = groups.setdefault(key, {"binding": binding, "items": []})
+            group["items"].append(item)
+
+        results = []
+        for group in groups.values():
+            binding = group["binding"]
+            items = group["items"]
+            latest = items[-1]
+            conversation = RpaConversationIn(
+                target_name=binding.display_name or latest["target_name"],
+                family_id=binding.family_id,
+                parent_nickname=binding.display_name,
+                messages=[
+                    RpaMessageIn(
+                        speaker=binding.display_name or item["target_name"],
+                        content=item["content"],
+                        message_time=item["message_time"],
+                        source=f"微信客服:{item['msgtype']}",
+                        external_id=f"wecom_kf:{item['msgid']}",
+                    )
+                    for item in items
+                ],
+                auto_generate_reply=bool(auto_generate_reply and latest["auto_reply"]),
+                auto_create_reply_task=bool(reply_config["auto_create_send_task"]),
+                channel="wecom_kf",
+                channel_target_id=binding.external_userid,
+                channel_account_id=binding.account_id,
+                source_message_id=latest["msgid"],
+                conversation_opened=True,
+            )
+            results.append(sync_conversation_payload(db, conversation, actor="微信客服API", source_prefix="微信客服"))
+
+        state.cursor = cursor
+        state.last_sync_at = processed_event_token_at or datetime.utcnow()
+        state.last_error = ""
+        state.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "status": "ok",
+            "open_kfid": open_kfid,
+            "pulled": len(raw_messages),
+            "normalized": len(normalized),
+            "conversations": len(results),
+            "failure_events": failure_events,
+            "cursor": cursor,
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        state.last_error = str(exc)
+        state.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(500, f"微信客服消息同步失败：{exc}") from exc
+
+
+def wecom_kf_message_id(task: SendTask) -> str:
+    digest = hashlib.sha256(f"{task.id}:{task.channel_target_id}:{task.content}".encode("utf-8")).hexdigest()[:16]
+    return f"kf_{task.id}_{digest}"[:32]
+
+
+def dispatch_wecom_kf_tasks(db: Session, limit: int = 20) -> dict:
+    config = read_wecom_kf_config()
+    if not wecom_kf_config_status(config).get("configured") or not config.dispatch_enabled:
+        return {"sent": 0, "failed": 0, "skipped": 0}
+    now = datetime.utcnow()
+    tasks = (
+        db.query(SendTask)
+        .filter(
+            SendTask.channel == "wecom_kf",
+            SendTask.send_mode == "real_send",
+            SendTask.status == "pending",
+            or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now),
+        )
+        .order_by(SendTask.id)
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    sent = failed = skipped = 0
+    for task in tasks:
+        readiness = send_task_readiness(db, task, now)
+        if readiness["status"] != "ready":
+            task.last_error = "；".join(readiness.get("reasons") or [readiness.get("label") or "发送条件未就绪"])
+            if "48小时" in task.last_error or "已回复5条" in task.last_error or "超过2048" in task.last_error:
+                task.status = "failed"
+                failed += 1
+            else:
+                task.next_retry_at = now + timedelta(minutes=5)
+                skipped += 1
+            continue
+        updated = (
+            db.query(SendTask)
+            .filter(SendTask.id == task.id, SendTask.status == "pending")
+            .update({"status": "assigned", "scheduled_at": now}, synchronize_session=False)
+        )
+        if updated != 1:
+            skipped += 1
+            continue
+        db.commit()
+        task = db.get(SendTask, task.id)
+        msgid = wecom_kf_message_id(task)
+        try:
+            response = send_wecom_kf_text(
+                config,
+                external_userid=task.channel_target_id,
+                open_kfid=task.channel_account_id,
+                content=validate_send_task_content(task.content),
+                msgid=msgid,
+            )
+            api_msgid = str(response.get("msgid") or msgid)
+            binding = (
+                db.query(CustomerChannelBinding)
+                .filter(
+                    CustomerChannelBinding.channel == "wecom_kf",
+                    CustomerChannelBinding.account_id == task.channel_account_id,
+                    CustomerChannelBinding.external_userid == task.channel_target_id,
+                )
+                .one()
+            )
+            binding.reply_count = int(binding.reply_count or 0) + 1
+            binding.last_outbound_msgid = api_msgid
+            binding.updated_at = datetime.utcnow()
+            before = send_task_snapshot(task)
+            task.status = "sent"
+            task.last_error = ""
+            task.next_retry_at = None
+            db.add(
+                SendLog(
+                    task_id=task.id,
+                    family_id=task.family_id,
+                    target_name=task.target_name,
+                    channel="wecom_kf",
+                    status="sent",
+                    send_mode="real_send",
+                    client_result_id=api_msgid,
+                    verify_status="unknown",
+                    verify_detail="微信客服 API 已受理；若后续收到 msg_send_fail 事件会回写失败",
+                    detail="微信客服 API send_msg 返回成功",
+                    sent_at=datetime.utcnow(),
+                )
+            )
+            outbound_external_id = f"wecom_kf_out:{api_msgid}"
+            if not db.query(RawMessage).filter(RawMessage.external_id == outbound_external_id).first():
+                db.add(
+                    RawMessage(
+                        family_id=task.family_id,
+                        speaker="我",
+                        content=task.content,
+                        source="微信客服API:text",
+                        external_id=outbound_external_id,
+                        is_effective="Y",
+                    )
+                )
+            audit_send_task_change(db, task, "wecom_kf_send", "微信客服API", "微信客服 API 已受理发送", before)
+            sync_weekly_report_send_status(db, task, "sent", datetime.utcnow())
+            db.commit()
+            sent += 1
+        except Exception as exc:
+            task = db.get(SendTask, task.id)
+            task.status = "failed"
+            task.last_error = str(exc)
+            task.next_retry_at = None
+            db.add(
+                SendLog(
+                    task_id=task.id,
+                    family_id=task.family_id,
+                    target_name=task.target_name,
+                    channel="wecom_kf",
+                    status="failed",
+                    send_mode="real_send",
+                    client_result_id=msgid,
+                    verify_status="failed",
+                    verify_detail=str(exc),
+                    detail=str(exc),
+                    sent_at=datetime.utcnow(),
+                )
+            )
+            sync_weekly_report_send_status(db, task, "failed")
+            db.commit()
+            failed += 1
+    db.commit()
+    return {"sent": sent, "failed": failed, "skipped": skipped}
+
+
+@app.get("/api/wecom-kf/callback")
+def verify_wecom_kf_callback(msg_signature: str, timestamp: str, nonce: str, echostr: str):
+    config = read_wecom_kf_config()
+    if not wecom_kf_config_status(config).get("configured"):
+        raise HTTPException(503, "微信客服回调尚未启用或配置不完整")
+    try:
+        value = verify_callback_echo(echostr, signature=msg_signature, timestamp=timestamp, nonce=nonce, config=config)
+    except Exception as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return PlainTextResponse(value)
+
+
+@app.post("/api/wecom-kf/callback")
+async def receive_wecom_kf_callback(request: Request, msg_signature: str, timestamp: str, nonce: str, db: Session = Depends(get_db)):
+    config = read_wecom_kf_config()
+    if not wecom_kf_config_status(config).get("configured"):
+        raise HTTPException(503, "微信客服回调尚未启用或配置不完整")
+    body = (await request.body()).decode("utf-8")
+    try:
+        plain_xml = decrypt_callback_request(body, signature=msg_signature, timestamp=timestamp, nonce=nonce, config=config)
+        event = parse_callback_event(plain_xml)
+        if event.get("event") != "kf_msg_or_event":
+            return PlainTextResponse("success")
+        open_kfid = event.get("open_kfid") or config.default_open_kfid
+        if not open_kfid:
+            raise ValueError("微信客服回调缺少 OpenKfId")
+        state = wecom_kf_state_for(db, config.corp_id, open_kfid)
+        state.event_token = event.get("token") or ""
+        state.event_token_at = datetime.utcnow()
+        state.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return PlainTextResponse("success")
+
+
+@app.get("/api/wecom-kf/status")
+def wecom_kf_status(db: Session = Depends(get_db)):
+    config = read_wecom_kf_config()
+    states = db.query(WecomKfState).order_by(WecomKfState.open_kfid).all()
+    reply_config = read_reply_agent_config()
+    return {
+        **wecom_kf_config_status(config),
+        "auto_reply_enabled": bool(reply_config.get("auto_reply_enabled")),
+        "auto_create_send_task": bool(reply_config.get("auto_create_send_task")),
+        "auto_reply_send_mode": reply_config.get("send_mode"),
+        "binding_count": db.query(CustomerChannelBinding).filter(CustomerChannelBinding.channel == "wecom_kf").count(),
+        "pending_count": db.query(SendTask).filter(SendTask.channel == "wecom_kf", SendTask.status == "pending").count(),
+        "states": [
+            {
+                "open_kfid": item.open_kfid,
+                "cursor": item.cursor,
+                "last_sync_at": timeline_time(item.last_sync_at) if item.last_sync_at else "",
+                "last_error": item.last_error,
+            }
+            for item in states
+        ],
+    }
+
+
+@app.post("/api/wecom-kf/sync")
+def sync_wecom_kf_now(payload: WecomKfSyncIn, db: Session = Depends(get_db)):
+    result = sync_wecom_kf_channel(payload, db)
+    result["dispatch"] = dispatch_wecom_kf_tasks(db)
+    return result
+
+
+@app.get("/api/wecom-kf/bindings")
+def list_wecom_kf_bindings(request: Request = None, db: Session = Depends(get_db)):
+    query = db.query(CustomerChannelBinding).filter(CustomerChannelBinding.channel == "wecom_kf")
+    query = apply_family_id_scope(query, CustomerChannelBinding.family_id, db, request)
+    return [as_dict(item) for item in query.order_by(CustomerChannelBinding.id.desc()).all()]
+
+
+@app.put("/api/wecom-kf/bindings/{binding_id}")
+def update_wecom_kf_binding(binding_id: int, payload: CustomerChannelBindingIn, request: Request = None, db: Session = Depends(get_db)):
+    binding = db.get(CustomerChannelBinding, binding_id)
+    if not binding or binding.channel != "wecom_kf":
+        raise HTTPException(404, "微信客服客户绑定不存在")
+    ensure_family_id_access(db, binding.family_id, request)
+    family = require_family_for_request(db, payload.family_id.strip(), request)
+    previous_family_id = binding.family_id
+    binding.family_id = family.family_id
+    if payload.display_name.strip():
+        binding.display_name = payload.display_name.strip()[:120]
+    if previous_family_id != family.family_id:
+        db.query(RawMessage).filter(
+            RawMessage.family_id == previous_family_id,
+            RawMessage.source.startswith("微信客服"),
+        ).update({"family_id": family.family_id}, synchronize_session=False)
+        db.query(SendTask).filter(
+            SendTask.family_id == previous_family_id,
+            SendTask.channel == "wecom_kf",
+        ).update({"family_id": family.family_id}, synchronize_session=False)
+        db.query(SendLog).filter(
+            SendLog.family_id == previous_family_id,
+            SendLog.channel == "wecom_kf",
+        ).update({"family_id": family.family_id}, synchronize_session=False)
+        db.query(AIOutput).filter(
+            AIOutput.family_id == previous_family_id,
+            AIOutput.source.startswith("微信客服"),
+        ).update({"family_id": family.family_id}, synchronize_session=False)
+    binding.updated_at = datetime.utcnow()
+    db.commit()
+    return as_dict(binding)
 
 
 # 周报列表接口。
@@ -4721,9 +5352,17 @@ def create_tasks_from_scenes(request: Request = None, db: Session = Depends(get_
         if exists:
             continue
         family = db.query(Family).filter(Family.family_id == msg.family_id).first()
+        route = family_delivery_route(db, msg.family_id)
         add_send_task_with_audit(
             db,
-            SendTask(family_id=msg.family_id, target_name=family.parent_nickname if family else msg.family_id, scene=scene, content=validate_send_task_content(templates[scene]), send_mode="dry_run"),
+            SendTask(
+                family_id=msg.family_id,
+                target_name=family.parent_nickname if family else msg.family_id,
+                scene=scene,
+                content=validate_send_task_content(templates[scene]),
+                send_mode="dry_run",
+                **route,
+            ),
             "create",
             actor_from_request(request),
             f"场景「{scene}」自动创建发送任务",
@@ -4759,15 +5398,32 @@ def create_send_task(payload: SendTaskIn, request: Request = None, db: Session =
     ensure_family_id_access(db, data.get("family_id", ""), request)
     data["content"] = validate_send_task_content(data.get("content", ""))
     data["send_mode"] = validate_send_mode_submit(data.get("send_mode", "dry_run"), bool(data.pop("confirm_real_send", False)))
-    if data.get("device_id"):
+    channel = str(data.get("channel") or "wecom_rpa").strip()
+    if channel not in {"wecom_rpa", "wecom_archive", "wecom_kf"}:
+        raise HTTPException(400, "channel 不合法")
+    data["channel"] = channel
+    if channel == "wecom_kf" and (not data.get("channel_target_id") or not data.get("channel_account_id")):
+        binding = db.query(CustomerChannelBinding).filter(
+            CustomerChannelBinding.family_id == data.get("family_id"),
+            CustomerChannelBinding.channel == "wecom_kf",
+        ).order_by(CustomerChannelBinding.last_inbound_at.desc(), CustomerChannelBinding.id.desc()).first()
+        if not binding:
+            raise HTTPException(400, "微信客服任务缺少客户绑定")
+        data["channel_target_id"] = binding.external_userid
+        data["channel_account_id"] = binding.account_id
+        data["source_message_id"] = binding.last_inbound_msgid
+    if data.get("device_id") and channel != "wecom_kf":
         ensure_new_task_operation_allowed(request, "assign_device")
     if data["send_mode"] == "real_send":
         ensure_new_task_operation_allowed(request, "confirm_real_send")
-        data["device_id"] = resolve_real_send_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
-        validate_real_send_device_binding(data["device_id"])
+        if channel == "wecom_kf":
+            data["device_id"] = ""
+        else:
+            data["device_id"] = resolve_real_send_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
+            validate_real_send_device_binding(data["device_id"])
         validate_real_send_risk(db, data.get("target_name", ""), data["content"])
     else:
-        data["device_id"] = validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
+        data["device_id"] = "" if channel == "wecom_kf" else validate_task_device_binding(db, data.get("device_id", ""), data.get("target_name", ""))
     task = SendTask(**data)
     ensure_real_send_readiness(db, task)
     add_send_task_with_audit(db, task, "create", actor_from_request(request), "控制端手动创建发送任务")
@@ -4810,7 +5466,7 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
     send_mode = task.send_mode
     if payload.send_mode:
         send_mode = validate_send_mode_submit(payload.send_mode, payload.confirm_real_send, task.send_mode)
-    if send_mode == "real_send":
+    if send_mode == "real_send" and task.channel != "wecom_kf":
         clean_device_id = resolve_real_send_device_binding(db, device_id or "", target_name)
         validate_real_send_device_binding(clean_device_id)
         validate_real_send_risk(
@@ -4820,8 +5476,17 @@ def update_send_task(task_id: int, payload: SendTaskUpdate, request: Request = N
             exclude_task_id=task.id,
             duplicate_window_seconds=send_task_duplicate_window_seconds(task),
         )
-    else:
+    elif task.channel != "wecom_kf":
         clean_device_id = validate_task_device_binding(db, device_id or "", target_name)
+    else:
+        clean_device_id = ""
+        validate_real_send_risk(
+            db,
+            target_name,
+            content,
+            exclude_task_id=task.id,
+            duplicate_window_seconds=send_task_duplicate_window_seconds(task),
+        )
     next_status = payload.status
     if previous_mode != "real_send" and send_mode == "real_send":
         next_status = "pending"
@@ -4867,7 +5532,7 @@ def queue_task_dry_run(task_id: int, request: Request = None, db: Session = Depe
     if task.status != "pending":
         raise HTTPException(400, "只有 pending 状态的任务可以发起试运行")
     content = validate_send_task_content(task.content)
-    clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
+    clean_device_id = "" if task.channel == "wecom_kf" else validate_task_device_binding(db, task.device_id or "", task.target_name)
     before = send_task_snapshot(task)
     task.content = content
     task.device_id = clean_device_id
@@ -4895,8 +5560,11 @@ def queue_task_real_send(
     content_source = task.content if not payload or payload.content is None else payload.content
     content = validate_send_task_content(content_source)
     device_id = task.device_id if not payload or payload.device_id is None else payload.device_id
-    clean_device_id = resolve_real_send_device_binding(db, device_id or "", task.target_name)
-    validate_real_send_device_binding(clean_device_id)
+    if task.channel == "wecom_kf":
+        clean_device_id = ""
+    else:
+        clean_device_id = resolve_real_send_device_binding(db, device_id or "", task.target_name)
+        validate_real_send_device_binding(clean_device_id)
     validate_real_send_risk(
         db,
         task.target_name,
@@ -4929,7 +5597,7 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
     if task.status != "failed":
         raise HTTPException(400, "只有 failed 状态的任务可以重试")
     content = validate_send_task_content(task.content)
-    if task.send_mode == "real_send":
+    if task.send_mode == "real_send" and task.channel != "wecom_kf":
         clean_device_id = resolve_real_send_device_binding(db, task.device_id or "", task.target_name)
         validate_real_send_device_binding(clean_device_id)
         validate_real_send_risk(
@@ -4939,8 +5607,17 @@ def retry_failed_task(task_id: int, request: Request = None, db: Session = Depen
             exclude_task_id=task.id,
             duplicate_window_seconds=send_task_duplicate_window_seconds(task),
         )
-    else:
+    elif task.channel != "wecom_kf":
         clean_device_id = validate_task_device_binding(db, task.device_id or "", task.target_name)
+    else:
+        clean_device_id = ""
+        validate_real_send_risk(
+            db,
+            task.target_name,
+            content,
+            exclude_task_id=task.id,
+            duplicate_window_seconds=send_task_duplicate_window_seconds(task),
+        )
     before = send_task_snapshot(task)
     now = datetime.utcnow()
     task.content = content
@@ -5057,6 +5734,8 @@ def ensure_manual_send_log_verification_allowed(log: SendLog, request: Request |
         raise HTTPException(403, f"只有超管可以人工核验真实发送结果（当前角色：{role_label}）")
     if log.send_mode != "real_send":
         raise HTTPException(400, "只有企微真实发送日志需要人工核验")
+    if (log.channel or "wecom_rpa") == "wecom_kf":
+        raise HTTPException(400, "微信客服 API 发送结果由接口和失败事件自动回写，不使用 RPA 人工回读核验")
     if not send_log_has_real_send_attempt_evidence(log):
         raise HTTPException(400, "该日志没有真实发送热键触发证据，不能人工标记为已发；请按原失败原因处理或重新下发")
 
@@ -5559,6 +6238,7 @@ def queue_real_send_missing_proof_checks_for_claim(
 def pending_conversation_check_query(db: Session, dev: Device, convs: list[str], now: datetime):
     query = (
         db.query(SendTask)
+        .filter(SendTask.channel != "wecom_kf")
         .filter(SendTask.status == "pending")
         .filter(SendTask.device_id == dev.device_id)
         .filter(SendTask.scene == CONVERSATION_CHECK_SCENE)
@@ -5675,6 +6355,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
     if not candidates:
         candidates_query = (
             db.query(SendTask)
+            .filter(SendTask.channel != "wecom_kf")
             .filter(SendTask.status == "pending")
             .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
             .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= now))
@@ -5708,6 +6389,7 @@ def claim_tasks(device_id: str, limit: int = 5, dev: Device = Depends(require_de
         updated = (
             db.query(SendTask)
             .filter(SendTask.id == task.id, SendTask.status == "pending")
+            .filter(SendTask.channel != "wecom_kf")
             .filter(or_(SendTask.device_id == "", SendTask.device_id == dev.device_id, SendTask.device_id.is_(None)))
             .filter(or_(SendTask.next_retry_at.is_(None), SendTask.next_retry_at <= assigned_at))
             .filter(or_(SendTask.send_mode != "real_send", SendTask.device_id == dev.device_id))
@@ -5812,7 +6494,11 @@ def backup_artifact_stats() -> dict:
 def real_send_verification_report(db: Session, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     since = now - timedelta(hours=24)
-    logs = db.query(SendLog).filter(SendLog.send_mode == "real_send", SendLog.sent_at >= since).all()
+    logs = db.query(SendLog).filter(
+        SendLog.send_mode == "real_send",
+        SendLog.channel != "wecom_kf",
+        SendLog.sent_at >= since,
+    ).all()
     metrics = real_send_closure_metrics(logs)
     attempted_count = metrics["attempted_24h"]
     confirmed_count = metrics["confirmed_24h"]
@@ -5872,6 +6558,36 @@ def device_outbox_report(devices: list[Device]) -> dict:
     )
 
 
+def wecom_kf_health_report(db: Session) -> dict:
+    config = read_wecom_kf_config()
+    status = wecom_kf_config_status(config)
+    states = db.query(WecomKfState).all()
+    errors = [item.last_error for item in states if (item.last_error or "").strip()]
+    pending = db.query(SendTask).filter(SendTask.channel == "wecom_kf", SendTask.status == "pending").count()
+    failed = db.query(SendTask).filter(SendTask.channel == "wecom_kf", SendTask.status == "failed").count()
+    if not config.enabled:
+        return component_status("ok", "微信客服 API", "未启用，不影响企业微信 RPA 通道", {"enabled": False})
+    health = "critical" if not status["configured"] else ("warn" if errors or failed else "ok")
+    detail = (
+        f"配置不完整：{'、'.join(status['missing'])}"
+        if not status["configured"]
+        else f"{len(states)} 个客服账号游标，pending={pending}，failed={failed}"
+    )
+    return component_status(
+        health,
+        "微信客服 API",
+        detail,
+        {
+            "enabled": True,
+            "configured": status["configured"],
+            "account_count": len(states),
+            "pending": pending,
+            "failed": failed,
+            "last_errors": errors[:5],
+        },
+    )
+
+
 def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict:
     now = now or datetime.utcnow()
     devices = db.query(Device).all()
@@ -5907,6 +6623,7 @@ def build_ops_health_dashboard(db: Session, now: datetime | None = None) -> dict
             f"{len(wecom_ok_devices)}/{len(online_devices)} 台在线设备企微正常",
             {"online": len(online_devices), "wecom_ok": len(wecom_ok_devices)},
         ),
+        wecom_kf_health_report(db),
         device_outbox_report(devices),
         component_status(
             "critical" if stale_assigned_count else ("warn" if pending_count >= 50 else "ok"),
