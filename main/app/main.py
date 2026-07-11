@@ -1747,6 +1747,30 @@ def hard_real_send_readiness_reasons(readiness: dict) -> list[str]:
     ]
 
 
+AUTO_REPLY_QUEUE_WAITING_TERMS = (
+    "等待同设备自动重试",
+    "不在线或心跳超时",
+    "企微状态异常",
+    "发送结果待补传",
+    "已有真实发送任务执行中",
+    "任务已被该设备领取但超时未回写",
+    *CONVERSATION_PROOF_PREPARATION_TERMS,
+)
+
+
+def is_auto_reply_queue_waiting_reason(reason: str) -> bool:
+    text = str(reason or "")
+    return any(term in text for term in AUTO_REPLY_QUEUE_WAITING_TERMS)
+
+
+def auto_reply_queue_blocking_reasons(readiness: dict) -> list[str]:
+    return [
+        reason
+        for reason in readiness.get("reasons", []) or []
+        if not is_auto_reply_queue_waiting_reason(reason)
+    ]
+
+
 def build_send_task_preflight(db: Session, payload: SendTaskPreflightIn, request: Request | None = None) -> dict:
     reasons: list[str] = []
     target_name = (payload.target_name or "").strip()
@@ -1853,6 +1877,18 @@ def ensure_real_send_readiness(db: Session, task: SendTask) -> None:
     hard_reasons = hard_real_send_readiness_reasons(readiness)
     if readiness.get("status") != "ready" and hard_reasons:
         detail = "；".join(hard_reasons) or readiness.get("label") or "真实发送条件未就绪"
+        raise HTTPException(400, f"真实发送预检未通过：{detail}")
+
+
+def ensure_auto_reply_real_send_queueable(db: Session, task: SendTask) -> None:
+    if send_log_mode(task) != "real_send":
+        return
+    if (task.status or "pending").strip() != "pending":
+        return
+    readiness = send_task_readiness(db, task)
+    blocking_reasons = auto_reply_queue_blocking_reasons(readiness)
+    if readiness.get("status") != "ready" and blocking_reasons:
+        detail = "；".join(blocking_reasons) or readiness.get("label") or "真实发送条件未就绪"
         raise HTTPException(400, f"真实发送预检未通过：{detail}")
 
 
@@ -4340,7 +4376,7 @@ def sync_conversation_payload(
                             send_mode=send_mode,
                             status="pending",
                         )
-                        ensure_real_send_readiness(db, task)
+                        ensure_auto_reply_real_send_queueable(db, task)
                         ai_output.status = "task_created"
                         add_send_task_with_audit(db, task, "create", actor, f"企微会话「{payload.target_name}」自动回复生成发送任务")
                     except HTTPException as exc:
