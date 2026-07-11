@@ -116,6 +116,34 @@ class WecomArchiveTest(unittest.TestCase):
         speakers = [item.speaker for item in self.db.query(RawMessage).order_by(RawMessage.id).all()]
         self.assertEqual(speakers, ["我", "许宝月"])
 
+    def test_sync_uses_stable_family_id_when_target_name_is_duplicated(self):
+        self.db.add(Family(family_id="WECOM_许宝月", parent_nickname="许宝月"))
+        self.db.add(Family(family_id="WECOM_DM_old_xu", parent_nickname="许宝月"))
+        self.db.commit()
+        payload = RpaConversationIn(
+            target_name="许宝月",
+            family_id="WECOM_DM_new_xu",
+            messages=[
+                RpaMessageIn(
+                    speaker="许宝月",
+                    content="我报了个课",
+                    message_time="2026-07-11T23:14:03",
+                    source="企业微信存档:text",
+                    external_id="wecom_archive:new-xu",
+                )
+            ],
+            auto_generate_reply=False,
+        )
+
+        result = sync_conversation_payload(self.db, payload, source_prefix="企业微信存档")
+
+        self.assertEqual(result["family_id"], "WECOM_DM_new_xu")
+        self.assertEqual(result["messages_inserted"], 1)
+        family = self.db.query(Family).filter(Family.family_id == "WECOM_DM_new_xu").one()
+        self.assertEqual(family.parent_nickname, "许宝月")
+        message = self.db.query(RawMessage).filter(RawMessage.external_id == "wecom_archive:new-xu").one()
+        self.assertEqual(message.family_id, "WECOM_DM_new_xu")
+
     def test_normalizes_private_archive_text_message(self):
         cfg = archive_config()
         item = normalize_archive_message(

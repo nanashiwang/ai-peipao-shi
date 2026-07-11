@@ -4183,9 +4183,9 @@ def sync_conversation_payload(
     family_id = payload.family_id.strip()
     family = None
     if family_id:
-        family = db.query(Family).filter(Family.family_id == family_id).one_or_none()
-    if not family:
-        family = db.query(Family).filter(Family.parent_nickname == payload.target_name).one_or_none()
+        family = db.query(Family).filter(Family.family_id == family_id).order_by(Family.id.desc()).first()
+    else:
+        family = db.query(Family).filter(Family.parent_nickname == payload.target_name).order_by(Family.id.desc()).first()
     if not family:
         family_id = family_id or f"WECOM_{payload.target_name}"
         family = Family(
@@ -4397,9 +4397,9 @@ def sync_rpa_conversation(payload: RpaConversationIn, request: Request = None, d
 def resolve_rpa_conversation(target_name: str, request: Request = None, db: Session = Depends(get_db)):
     dev = require_device_for_request(db, request)
     validate_device_conversation_scope(dev, target_name)
-    family = db.query(Family).filter(Family.parent_nickname == target_name).one_or_none()
+    family = db.query(Family).filter(Family.parent_nickname == target_name).order_by(Family.id.desc()).first()
     if not family:
-        family = db.query(Family).filter(Family.family_id == target_name).one_or_none()
+        family = db.query(Family).filter(Family.family_id == target_name).order_by(Family.id.desc()).first()
     return {
         "exists": bool(family),
         "target_name": target_name,
