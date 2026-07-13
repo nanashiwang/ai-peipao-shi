@@ -55,3 +55,25 @@ def test_detects_center_qr_auth_page(tmp_path: Path):
     image.save(path)
 
     assert "扫码" in detect_qr_auth_page_from_image(path)
+
+
+def test_detects_right_side_qr_auth_page(tmp_path: Path):
+    Image = pytest.importorskip("PIL.Image")
+    ImageDraw = pytest.importorskip("PIL.ImageDraw")
+
+    image = Image.new("RGB", (1280, 720), "white")
+    draw = ImageDraw.Draw(image)
+    qr_left, qr_top, cell, grid = 850, 430, 4, 57
+    for y in range(grid):
+        for x in range(grid):
+            finder = (x < 9 and y < 9) or (x > grid - 10 and y < 9) or (x < 9 and y > grid - 10)
+            payload = (x * 7 + y * 11 + x * y) % 3 == 0
+            if finder or payload:
+                draw.rectangle(
+                    [qr_left + x * cell, qr_top + y * cell, qr_left + (x + 1) * cell - 1, qr_top + (y + 1) * cell - 1],
+                    fill="black",
+                )
+    path = tmp_path / "auth-right.png"
+    image.save(path)
+
+    assert "扫码" in detect_qr_auth_page_from_image(path)

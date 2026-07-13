@@ -2941,7 +2941,7 @@ def send_heartbeat(config: dict):
                 reason = detect_wecom_unavailable_reason(
                     wins[0],
                     config,
-                    include_screenshot=bool(config.get("wecom_heartbeat_screenshot_detection_enabled", True)),
+                    include_screenshot=bool(config.get("wecom_heartbeat_screenshot_detection_enabled", False)),
                     activate_before_screenshot=bool(config.get("wecom_heartbeat_activate_for_screenshot", False)),
                     reason="heartbeat",
                 )
@@ -2965,6 +2965,8 @@ def send_heartbeat(config: dict):
         "outbox_pending_count": pending_result_count(config, ROOT) if config.get("result_outbox_enabled", True) else 0,
         "outbox_last_error": outbox_last_error(config, ROOT) if config.get("result_outbox_enabled", True) else "",
     }
+    config["_wecom_status"] = wecom_ok
+    config["_wecom_health_detail"] = detail
     try:
         response = request_json(config["api_base_url"], f"/api/devices/{device_id}/heartbeat",
                                 method="POST", payload=payload, extra_headers=device_headers(config))
@@ -2984,6 +2986,13 @@ def run_once(config: dict):
     flush_pending_send_results(config)
     if device_id:
         send_heartbeat(config)
+        wecom_status = config.get("_wecom_status")
+        if wecom_status and wecom_status != WECOM_STATUS_OK:
+            print(
+                f"wecom_unavailable_pause status={wecom_status} "
+                f"detail={config.get('_wecom_health_detail', '')}"
+            )
+            return
     if result_outbox_blocks_new_sends(config, "run_once"):
         return
     if device_id:

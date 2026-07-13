@@ -17,6 +17,10 @@ WECOM_STATUS_AUTH_REQUIRED = "AUTH_REQ"
 WECOM_STATUS_ERROR = "ERROR"
 
 DEFAULT_AUTH_REQUIRED_DETAIL = "企业微信需要手机扫码安全验证或重新登录，RPA 已暂停真实发送。"
+QR_AUTH_CANDIDATE_BOXES = (
+    (0.42, 0.38, 0.58, 0.64),
+    (0.64, 0.50, 0.86, 0.96),
+)
 
 
 def compact_text(text: str) -> str:
@@ -75,14 +79,17 @@ def _binary_transition_ratio(mask: list[bool], width: int, height: int) -> float
     return changes / comparisons if comparisons else 0.0
 
 
-def qr_auth_page_metrics(image) -> dict[str, float]:
-    """计算“亮背景 + 中央二维码”页面的轻量指标。"""
+def qr_auth_page_metrics(
+    image,
+    qr_box: tuple[float, float, float, float] = QR_AUTH_CANDIDATE_BOXES[0],
+) -> dict[str, float]:
+    """计算“亮背景 + 候选区域二维码”页面的轻量指标。"""
     gray = image.convert("L")
     page = _crop_ratio(gray, (0.18, 0.08, 0.82, 0.88)).resize((240, 180))
     page_pixels = list(page.getdata())
     page_bright_ratio = sum(1 for value in page_pixels if value >= 225) / max(len(page_pixels), 1)
 
-    qr = _crop_ratio(gray, (0.42, 0.38, 0.58, 0.64)).resize((160, 160))
+    qr = _crop_ratio(gray, qr_box).resize((160, 160))
     qr_pixels = list(qr.getdata())
     dark_mask = [value <= 95 for value in qr_pixels]
     qr_dark_ratio = sum(1 for item in dark_mask if item) / max(len(dark_mask), 1)
@@ -97,14 +104,15 @@ def qr_auth_page_metrics(image) -> dict[str, float]:
 
 
 def detect_qr_auth_page_from_pil(image) -> str:
-    metrics = qr_auth_page_metrics(image)
-    if (
-        metrics["page_bright_ratio"] >= 0.70
-        and 0.065 <= metrics["qr_dark_ratio"] <= 0.55
-        and metrics["qr_light_ratio"] >= 0.35
-        and metrics["qr_transition_ratio"] >= 0.085
-    ):
-        return DEFAULT_AUTH_REQUIRED_DETAIL
+    for qr_box in QR_AUTH_CANDIDATE_BOXES:
+        metrics = qr_auth_page_metrics(image, qr_box)
+        if (
+            metrics["page_bright_ratio"] >= 0.70
+            and 0.065 <= metrics["qr_dark_ratio"] <= 0.55
+            and metrics["qr_light_ratio"] >= 0.35
+            and metrics["qr_transition_ratio"] >= 0.085
+        ):
+            return DEFAULT_AUTH_REQUIRED_DETAIL
     return ""
 
 
