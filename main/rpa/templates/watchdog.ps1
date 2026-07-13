@@ -34,11 +34,23 @@ $RestartDelaySeconds = 15
 
 while (!(Test-Path $StopFile)) {
     Write-WatchdogLog "starting wecom_sender.py"
-    & $PythonExe "rpa/wecom_sender.py" --config "rpa/config.json" 2>&1 | ForEach-Object {
-        Add-Content -Path $LogFile -Value $_ -Encoding UTF8
-        Write-Host $_
+    $code = 1
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Python writes normal diagnostics to stderr; do not let PowerShell stop the watchdog.
+        $ErrorActionPreference = "Continue"
+        & $PythonExe "rpa/wecom_sender.py" --config "rpa/config.json" 2>&1 | ForEach-Object {
+            Add-Content -Path $LogFile -Value $_ -Encoding UTF8
+            Write-Host $_
+        }
+        $code = $LASTEXITCODE
     }
-    $code = $LASTEXITCODE
+    catch {
+        Write-WatchdogLog "wecom_sender failed: $($_.Exception.Message)"
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     if (Test-Path $StopFile) {
         break
     }

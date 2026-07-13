@@ -1145,6 +1145,8 @@ def click_visual_region_hit(
         raise RpaError(str(exc)) from exc
     raw_rx = float(config.get(x_ratio_key, config.get(fallback_x_ratio_key, default_x_ratio)))
     raw_ry = float(hit["ry"]) + float(config.get(y_offset_key, 0.0))
+    if hit.get("via") == "ark":
+        raw_ry += float(config.get("ark_visual_click_offset_ratio_y", 0.04))
     rx = max(0.0, min(1.0, raw_rx))
     ry = max(0.0, min(1.0, raw_ry))
     if config.get("visual_click_use_screenshot_coords", True) and hit.get("image_width"):
@@ -1301,7 +1303,10 @@ def ark_locate_in_region(image_path, target: str, config: dict, win_rect_img: di
             "你是企业微信界面定位助手。在给定截图里找到名为目标的会话或聊天标题，"
             "只输出 JSON，不要 Markdown。字段：found(true/false), x_ratio, y_ratio, text。"
             "text 必须是截图里实际看到的会话名或标题文字，不要照抄目标。"
-            "x_ratio/y_ratio 是目标中心相对整张图的位置比例(0~1)。找不到则 found=false。",
+            "同屏有多个近似名称时，必须优先选择文字与目标完全相同的会话行；"
+            "只有不存在完全相同项时，才允许选择带 @微信 等后缀的会话。"
+            "x_ratio/y_ratio 必须是该会话整行可点击区域的中心相对整张图的位置比例(0~1)，"
+            "不要返回文字顶部、行间空白或相邻会话坐标。找不到则 found=false。",
             str(crop_path),
             f"目标名称：{target}",
         )

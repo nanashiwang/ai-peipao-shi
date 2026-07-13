@@ -39,6 +39,7 @@ class DevicePackageTest(unittest.TestCase):
             config = json.loads(zf.read("rpa/config.json").decode("utf-8"))
             manifest = json.loads(zf.read("package_manifest.json").decode("utf-8"))
             readme = zf.read("使用说明.txt").decode("utf-8")
+            watchdog = zf.read("watchdog.ps1").decode("utf-8-sig")
 
         self.assertIn("rpa/wecom_sender.py", names)
         self.assertIn("rpa/send_guard.py", names)
@@ -64,6 +65,7 @@ class DevicePackageTest(unittest.TestCase):
         self.assertTrue(config["post_send_verify_ark_fallback"])
         self.assertTrue(config["post_send_verify_restore_clipboard"])
         self.assertTrue(config["use_ark_vision_for_chat_read"])
+        self.assertEqual(config["ark_visual_click_offset_ratio_y"], 0.04)
         self.assertEqual(config["chat_read_region"], [0.30, 0.10, 1.0, 0.84])
         self.assertTrue(config["result_outbox_enabled"])
         self.assertEqual(config["result_outbox_dir"], "result_outbox")
@@ -71,6 +73,9 @@ class DevicePackageTest(unittest.TestCase):
         self.assertTrue(config["result_outbox_block_new_tasks"])
         self.assertIn("设备监控", readme)
         self.assertIn("真实发送开关", readme)
+        self.assertIn('$ErrorActionPreference = "Continue"', watchdog)
+        self.assertIn("wecom_sender failed", watchdog)
+        self.assertIn("finally", watchdog)
         self.assertEqual(manifest["package_type"], "rpa-client-script")
         self.assertEqual(manifest["device_id"], "rpa-01")
         manifest_paths = {item["path"] for item in manifest["files"]}
