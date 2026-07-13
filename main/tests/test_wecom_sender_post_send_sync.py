@@ -25,6 +25,21 @@ class WecomSenderPostSendSyncTest(unittest.TestCase):
             (0.2, 0.08),
         )
 
+    def test_clear_search_query_clears_and_closes_search_box(self):
+        with (
+            patch.object(wecom_sender, "ensure_foreground_wecom"),
+            patch.object(wecom_sender, "click_window_ratio") as click,
+            patch.object(wecom_sender.keyboard, "send_keys") as send_keys,
+            patch.object(wecom_sender, "human_sleep"),
+        ):
+            wecom_sender.clear_search_query(object(), {})
+
+        click.assert_called_once_with(ANY, 0.13, 0.052, {})
+        self.assertEqual(
+            [call.args[0] for call in send_keys.call_args_list],
+            ["^a", "{BACKSPACE}", "{ESC}"],
+        )
+
     def test_capture_send_screenshot_removes_local_result_image_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "debug_wecom_result_sent_1.png"

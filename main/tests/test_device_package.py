@@ -67,6 +67,7 @@ class DevicePackageTest(unittest.TestCase):
         self.assertTrue(config["use_ark_vision_for_chat_read"])
         self.assertEqual(config["ark_visual_click_offset_ratio_y"], 0.04)
         self.assertFalse(config["wecom_heartbeat_screenshot_detection_enabled"])
+        self.assertTrue(config["clear_search_query_after_attempt"])
         self.assertEqual(config["chat_read_region"], [0.30, 0.10, 1.0, 0.84])
         self.assertTrue(config["result_outbox_enabled"])
         self.assertEqual(config["result_outbox_dir"], "result_outbox")

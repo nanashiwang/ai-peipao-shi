@@ -1379,6 +1379,18 @@ def search_box_click_point(config: dict, box: tuple[float, float, float, float])
     )
 
 
+def clear_search_query(window, config: dict) -> None:
+    """清空左上角会话搜索框，避免失败目标名长期残留。"""
+    ensure_foreground_wecom(window, config)
+    box = tuple(config.get("search_box_region", [0.0, 0.0, 0.30, 0.07]))
+    click_rx, click_ry = search_box_click_point(config, box)
+    click_window_ratio(window, click_rx, click_ry, config)
+    keyboard.send_keys("^a")
+    keyboard.send_keys("{BACKSPACE}")
+    keyboard.send_keys("{ESC}")
+    human_sleep(config, "after_escape")
+
+
 def search_then_locate(window, target: str, config: dict) -> bool:
     """阶段2：点击搜索框(不用 Ctrl+F) -> 输入会话名 -> 截图搜索结果区 -> OCR/ARK 定位 -> 点击。
     覆盖目标会话不在当前可见列表的情况。"""
@@ -1418,6 +1430,11 @@ def search_then_locate(window, target: str, config: dict) -> bool:
             return True
     finally:
         _cleanup_debug_image(img, config)
+        if config.get("clear_search_query_after_attempt", True):
+            try:
+                clear_search_query(window, config)
+            except Exception as exc:
+                print(f"search_query_clear_failed detail={exc}")
     add_send_trace(config, "搜索结果未命中")
     raise RpaError(search_result_not_found_detail(target, "搜索结果"))
 
@@ -3016,6 +3033,13 @@ def check_window(config: dict):
     print("wecom_window_found=true")
 
 
+def clear_search_box(config: dict):
+    window = find_wecom_window(config)
+    activate(window, config)
+    clear_search_query(window, config)
+    print("wecom_search_query_cleared=true")
+
+
 # 诊断 API、窗口、未读识别和配置，尽量一次把问题定位清楚。
 def diagnose(config: dict):
     print("== RPA诊断 ==")
@@ -3120,6 +3144,7 @@ def main():
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="配置文件路径")
     parser.add_argument("--diagnose", action="store_true", help="诊断 API、企微窗口、未读识别与配置")
     parser.add_argument("--check-window", action="store_true", help="只检查是否能找到企业微信窗口")
+    parser.add_argument("--clear-search", action="store_true", help="清空企业微信左上角会话搜索框后退出")
     parser.add_argument("--sync-unread", action="store_true", help="识别未读会话并同步可见聊天记录到数据库")
     parser.add_argument("--sync-known", action="store_true", help="按前端登记的企微会话名逐个搜索并同步聊天记录")
     parser.add_argument("--sync-target", default="", help="直接搜索并同步指定企微会话，例如：艺博展讯")
@@ -3152,6 +3177,9 @@ def main():
         return
     if args.check_window:
         check_window(config)
+        return
+    if args.clear_search:
+        clear_search_box(config)
         return
     if args.sync_unread:
         sync_unread_conversations(config, config_path)
